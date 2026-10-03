@@ -1,0 +1,241 @@
+race_controller:
+  ros__parameters:
+    enable_motion: true
+    # 在车载 HDMI 屏幕显示原图、黑线掩膜、目标点、状态、速度和转向。
+    show_debug_window: true
+    debug_screen_width: 800
+    debug_screen_height: 480
+    debug_display_every_n_frames: 3
+    # 连续 S 弯：以 0.30m/s 通过；误差增加时进一步降至 0.16m/s，
+    # 同时限制角速度，避免短距离大幅转向而让中线离开相机画面。
+    normal_speed: 0.30
+    min_speed: 0.16
+    max_angular_speed: 0.95
+    curve_slowdown: 0.85
+    # 弯道短暂丢线时低速前进找回，避免原地转向造成卡顿。
+    lost_search_speed: 0.03
+    lost_search_angular: 0.65
+    # 赛道中线为黑色；环岛黑色虚线由纵向闭运算连接。
+    line_black_value_max: 105
+    line_black_saturation_max: 150
+    roundabout_dash_close_kernel_height: 31
+    # 虚线间隙中保持上一条已确认黑线的方向；超时后仍按丢线安全逻辑处理。
+    dashed_line_hold_seconds: 0.72
+    dashed_line_hold_confidence: 0.38
+    black_line_memory_frames: 14
+    # 直线用中央走廊排除边线；连续弯允许黑线逐帧移向侧边，
+    # 但绝不超过 max_offset 的硬安全边界。
+    black_line_center_corridor_px: 75.0
+    black_line_max_offset_px: 150.0
+    black_line_track_jump_px: 150.0
+    # 8 点二次曲线：前视越高越早转弯；alpha 越高反应越快。
+    black_line_lookahead_gain: 0.85
+    black_line_target_alpha: 0.96
+    # 急弯中中线可能只覆盖 3 个采样行；仍只用当前帧二次拟合，不跟随边线。
+    black_line_min_curve_points: 3
+    # 拒绝虚线碎片产生的离谱二次曲线外推；只影响实线曲线拟合。
+    black_line_fit_max_extrapolation_px: 26.0
+    black_line_min_fit_row_span_px: 42.0
+    # 连续 S 急弯专用：近处 ROI 保持原有巡线，前方 ROI 预判下一段曲率。
+    # 曲率会先经滑动滤波；仅发生“弯曲方向翻转”才进入 S 弯分支，
+    # 所以直道和普通单弯不使用下面的降速/扩展参数。
+    s_curve_enabled: true
+    s_curve_curvature_filter_alpha: 0.28
+    s_curve_curvature_threshold: 0.12
+    s_curve_hold_frames: 18
+    # 曲率方向翻转必须连续确认 3 帧，避免普通单弯的噪点误切进 S 弯模式。
+    s_curve_enter_confirm_frames: 3
+    s_curve_lookahead_extra: 0.35
+    s_curve_expand_px: 28.0
+    s_curve_preview_top_ratio: 0.30
+    s_curve_preview_bottom_ratio: 0.58
+    s_curve_speed_m_s: 0.20
+    s_curve_min_speed_m_s: 0.12
+    s_curve_max_angular_rad_s: 0.95
+    # 高速 S 弯参数：提早转向，误差刚出现就开始降速，防止冲出赛道。
+    steering_kp: 2.60
+    steering_kd: 0.065
+    steering_error_filter_alpha: 0.78
+    steering_slowdown_start: 0.045
+    # 误差很小时停止微小左右修正，避免转弯后的直线段摇头。
+    steering_center_deadband: 0.025
+    # 环岛只检查最靠近车的一段画面中的短黑虚线簇，拒绝远处环岛和实线碎段。
+    roundabout_marker_roi_top_ratio: 0.70
+    roundabout_marker_roi_bottom_ratio: 0.96
+    roundabout_marker_min_component_area: 8
+    roundabout_marker_max_component_area: 260
+    roundabout_marker_max_component_extent_px: 34
+    roundabout_marker_cluster_x_px: 50.0
+    roundabout_marker_cluster_y_px: 90.0
+    # 双分支发散作为入口调试证据；相机偏向时可能看不全两支，不能作为
+    # 硬门槛。真正入口仍需后续同侧弯曲虚线和连续接近确认。
+    roundabout_marker_curve_min_slope: 0.06
+    roundabout_marker_curve_min_residual_px: 1.0
+    roundabout_fork_min_separation_px: 32.0
+    roundabout_fork_min_divergence_px: 7.0
+    roundabout_entry_require_diverging_fork: false
+    step_pass_observation_max_distance_m: 0.70
+    step_pass_confirm_seconds: 1.0
+    # 环岛前两次黑色虚线都在画面左侧：第一次是出口标记，不能进入；
+    # 首次标记的通过距离为 0.08m（默认 0.10m/s 即 0.8 秒）。若修改
+    # roundabout_marker_pass_speed_m_s，控制器会反比修改等待时间，仍通过 0.08m。
+    # 虚线可在短暂一两帧内断开，0.45 秒内的证据会累计确认。
+    roundabout_first_marker_confirm_frames: 5
+    roundabout_marker_cooldown_seconds: 0.80
+    roundabout_marker_reference_speed_m_s: 0.10
+    roundabout_marker_evidence_seconds: 0.45
+    # 第二个大弯后进入环岛准备低速档。它同时限制线速度与角速度，
+    # 避免尚未完成虚线确认就跑过真正的环岛入口。
+    roundabout_prepare_speed_m_s: 0.20
+    roundabout_prepare_min_speed_m_s: 0.14
+    # 环岛入口尚未确认前禁止大角速度丢线搜索，避免被前向汇聚的出口虚线拉偏。
+    roundabout_prepare_max_angular_rad_s: 0.40
+    # 首次左侧虚线是出口标记：快速通过约 8cm，避免视觉上出现停顿。
+    roundabout_marker_pass_speed_m_s: 0.14
+    roundabout_marker_clear_frames: 5
+    # 入口分支可能仍留在左侧画面；超过此时间必须解除出口直行等待。
+    roundabout_marker_max_hold_seconds: 0.85
+    roundabout_dash_confirm_frames: 5
+    roundabout_dash_min_components: 4
+    # 出口和入口都在左侧。首次“弯曲”左侧簇为出口；后续同侧弯曲虚线
+    # 连续朝车头移动后才可作为入口，双分支发散只作日志辅助。
+    roundabout_entry_min_travel_m: 0.30
+    roundabout_entry_expected_side: same
+    roundabout_entry_approach_min_y_px: 8.0
+    roundabout_entry_confirm_frames: 5
+    roundabout_entry_track_max_x_jump_px: 60.0
+    roundabout_entry_track_max_y_jump_px: 30.0
+    roundabout_entry_y_jitter_px: 2.5
+    # 首个（出口）虚线簇离开后，低速直行等待同侧入口；只允许对画面中
+    # 接近中间的黑实线小幅修正，失线不会触发激进搜索转弯。
+    roundabout_pre_entry_speed_m_s: 0.12
+    roundabout_pre_entry_max_angular_rad_s: 0.25
+    roundabout_pre_entry_max_line_error: 0.35
+    # 看不清近处中线时保留很小逆时针偏置，避免车身向右漂移。
+    roundabout_pre_entry_ccw_bias_rad_s: 0.07
+    # 环岛内是紧凑虚线圆：单独降低线速度并提高角速度，不影响入口前直段。
+    roundabout_track_speed_m_s: 0.11
+    roundabout_track_min_speed_m_s: 0.07
+    roundabout_track_max_angular_rad_s: 0.75
+    # 环岛必须等台阶跳跃完成后再检查，不能用时间提前进入。
+    roundabout_time_mode: false
+    roundabout_min_start_seconds: 5.0
+    # 运行时速度倍率：1.00 对应 YAML 的 normal_speed；不得超过 1.00。
+    speed_scale: 1.0
+    roundabout_exit_confirm_frames: 5
+    roundabout_exit_min_seconds: 3.0
+    roundabout_min_seconds: 6.0
+    roundabout_exit_solid_frames: 12
+    # 进入环岛时记录当前 IMU 航向为相对 0°；逆时针绕行约一整圈并回到
+    # 该方向后才退出环岛，防止环岛内部虚线再次触发入口。
+    roundabout_use_imu_heading: true
+    roundabout_full_turn_rad: 6.00
+    roundabout_heading_return_tolerance_rad: 0.40
+    # 不能仅凭自旋角度退出：还必须有实际轮式里程和最短绕行时间。
+    roundabout_min_odom_travel_m: 0.50
+    roundabout_min_complete_seconds: 8.0
+    roundabout_heading_timeout_s: 35.0
+    roundabout_ccw_imu_sign: 1.0
+    roundabout_ccw_bias_rad_s: 0.20
+    # 已切入环岛后禁止虚线噪点命令顺时针回转；正 angular-z 为逆时针。
+    roundabout_min_ccw_angular_rad_s: 0.25
+    # 环岛虚线专用角速度一阶平滑，避免虚线切换时突然打方向。
+    roundabout_angular_filter_alpha: 0.55
+    # IMU 累计 360°并回到入口 0°后，锁定关闭环岛识别；低速直行，
+    # 只有连续确认黑色实线才恢复普通巡线，防止继续在环岛虚线上绕圈。
+    roundabout_exit_search_speed_m_s: 0.08
+    roundabout_exit_search_timeout_s: 4.0
+    roundabout_exit_straight_min_seconds: 0.35
+    # 识别岔口后，先低速逆时针切入环岛，再交回虚线巡线器。
+    # 真正入口连续确认后：不读取远处黑实线，按正常左转角速度强制逆时针切入 0.5 秒。
+    roundabout_entry_turn_seconds: 0.50
+    roundabout_entry_speed_m_s: 0.08
+    roundabout_entry_angular_rad_s: 0.60
+    # 环岛虚线存在空隙；持续找不到时仍会停车，不会盲目前冲。
+    roundabout_lost_continue_seconds: 1.40
+    roundabout_lost_speed_m_s: 0.05
+    roundabout_lost_angular_rad_s: 0.35
+    # 黑色实线短暂丢失时：仅使用最近真实 5 帧的中位方向，低速找回最多
+    # 0.40 秒；超时后回退到原有 SEARCH/LOST_TIMEOUT_STOP 保护。
+    solid_reacquire_enabled: true
+    solid_reacquire_history_frames: 5
+    solid_reacquire_history_seconds: 0.40
+    solid_reacquire_speed_m_s: 0.08
+    solid_reacquire_min_speed_m_s: 0.05
+    solid_reacquire_max_angular_rad_s: 0.55
+    # 比赛为中间黑线巡线，保持 0；不要使用教学压线的 -35 px 偏置。
+    race_line_target_offset_px: 0.0
+    # 台阶检测只会在首个约 90° 弯道完成且中线居中后才解锁。
+    # 当前未放置台阶，关闭跳跃触发，避免深度地面噪点误判后停车。
+    # 真实比赛放置台阶前改回 true。
+    enable_step_jump: false
+    step_arm_delay_s: 1.0
+    step_arm_timeout_s: 60.0
+    step_min_height_m: 0.045
+    step_max_height_m: 0.105
+    step_min_confidence: 0.70
+    step_min_confirm_frames: 5
+    step_min_distance_m: 0.15
+    step_max_distance_m: 1.30
+    step_max_lateral_offset_m: 0.10
+    step_max_edge_angle_rad: 0.18
+    step_takeoff_distance_m: 0.20
+    step_approach_speed_m_s: 0.20
+    # 深度检测到台阶距车 30cm 时停车，等待人工输入 1 才继续。
+    step_stop_distance_m: 0.30
+    jump_confirm_topic: /race/jump_confirm
+    jump_retreat_speed_m_s: 0.10
+    jump_retreat_seconds: 0.50
+    jump_runup_speed_m_s: 0.30
+    jump_runup_seconds: 1.00
+    jump_pulse_seconds: 0.20
+    jump_forward_speed_m_s: 0.50
+    landing_forward_seconds: 1.20
+    # 首个弯道以启动时 IMU 航向为相对 0°：达到约 90°并连续看到居中的
+    # 黑色实线后，才允许深度相机开始把台阶作为跳跃目标。
+    first_turn_required: true
+    first_turn_target_rad: 1.5708
+    first_turn_tolerance_rad: 0.0
+    first_turn_center_error: 0.12
+    first_turn_center_frames: 5
+    # 环岛入口在累计第二个约 90° 转弯后开始检查，不依赖跳跃完成。
+    roundabout_arm_after_turns: 2
+    # 仅供无台阶测试时把台阶视为完成；本赛道不需要时保持 0。
+    skip_step_after_turns_for_test: 0
+    test_turn_angle_rad: 0.95
+    # 正 angular.z 为逆时针偏置；数值在前面的环岛准备参数区统一设置。
+    roundabout_enabled: true
+    roundabout_arm_after_step_s: 5.0
+    roundabout_ccw_seconds: 5.0
+    crosswalk_enabled: true
+    crosswalk_arm_after_step_s: 8.0
+    # 每圈必须先完成环岛，之后才允许人行道检测；环岛短虚线完全不参与
+    # 人行道候选，避免在环岛内/入口被误停。进入下一圈会自动重新解锁。
+    crosswalk_require_roundabout_complete: true
+    # 只在图像最下方识别横向斑马线：连续 8 帧、至少 5 条宽黑条且
+    # 置信度合格，排除远处地面噪点。
+    crosswalk_confirm_frames: 8
+    crosswalk_min_stripes: 5
+    crosswalk_stop_seconds: 3.0
+    crosswalk_black_value_max: 120
+    crosswalk_min_band_height_px: 3
+    crosswalk_roi_top_ratio: 0.64
+    crosswalk_roi_bottom_ratio: 0.98
+    crosswalk_min_dark_ratio: 0.055
+    crosswalk_row_min_coverage: 0.35
+    # 五条及以上黑条还须长度相近、间隙近似均匀；环岛弧形短虚线不满足。
+    crosswalk_min_bar_width_ratio: 0.32
+    crosswalk_length_ratio_max: 1.65
+    crosswalk_gap_ratio_max: 2.50
+    crosswalk_min_confidence: 0.72
+    crosswalk_approach_speed_m_s: 0.10
+    crosswalk_approach_distance_m: 0.06
+    crosswalk_debug_each_frame: true
+    # 人行道之后才检测起点线：第一次进入第 2 圈，第二次结束比赛。
+    start_line_confirm_frames: 4
+    start_line_min_band_height_px: 5
+    # 巡线姿态：高度降低、机身低头，让 RGB 摄像头优先看到车前近处的黑线。
+    # 正俯仰为低头；本车已实测可到 25°。
+    track_height_m: 0.18
+    track_pitching_deg: 25.0
+    stand_height_m: 0.25
