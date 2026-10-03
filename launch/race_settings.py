@@ -60,21 +60,22 @@ RACE_SETTINGS = {
     "roundabout_prepare_speed_m_s": 0.20,
     "roundabout_prepare_min_speed_m_s": 0.14,
     "roundabout_prepare_max_angular_rad_s": 0.40,
-    # First left marker: clear 8cm briskly, without the former stop-like pause.
-    "roundabout_marker_pass_speed_m_s": 0.14,
-    "roundabout_marker_cooldown_seconds": 0.80,
-    "roundabout_marker_reference_speed_m_s": 0.10,
+    # Confirmed forward-converging exit: drive past it for 2.5 s before any
+    # entrance decision, so its curved dash cannot be mistaken for entry.
+    "roundabout_marker_pass_speed_m_s": 0.12,
+    "roundabout_marker_cooldown_seconds": 2.50,
+    "roundabout_marker_reference_speed_m_s": 0.12,
     "roundabout_marker_evidence_seconds": 0.45,
     # Stop waiting for a left cluster after this bound.  The actual entrance
     # can remain visible while the exit branch leaves the image.
-    "roundabout_marker_max_hold_seconds": 0.85,
-    # Both blue exit and yellow entrance are left-side curved clusters. Fork
-    # geometry is debug evidence only because camera yaw can hide a branch.
+    "roundabout_marker_max_hold_seconds": 2.50,
+    # Both exit and entrance are left-side curved clusters.  Only the true
+    # entrance has two dashed arms that diverge toward the camera.
     "roundabout_marker_curve_min_slope": 0.06,
     "roundabout_marker_curve_min_residual_px": 1.0,
     "roundabout_fork_min_separation_px": 32.0,
     "roundabout_fork_min_divergence_px": 7.0,
-    "roundabout_entry_require_diverging_fork": False,
+    "roundabout_entry_require_diverging_fork": True,
     "roundabout_entry_min_travel_m": 0.30,
     "roundabout_entry_expected_side": "same",
     "roundabout_entry_approach_min_y_px": 8.0,
@@ -85,19 +86,23 @@ RACE_SETTINGS = {
     "roundabout_pre_entry_speed_m_s": 0.12,
     "roundabout_pre_entry_max_angular_rad_s": 0.25,
     "roundabout_pre_entry_max_line_error": 0.35,
-    "roundabout_pre_entry_ccw_bias_rad_s": 0.07,
+    "roundabout_pre_entry_ccw_bias_rad_s": 0.10,
+    "roundabout_entry_fork_search_seconds": 1.20,
+    "roundabout_entry_backup_seconds": 0.55,
+    "roundabout_entry_backup_speed_m_s": 0.06,
+    "roundabout_entry_backup_max_attempts": 1,
     # Dedicated tight-circle profile: it leaves approach and normal curves unchanged.
-    "roundabout_track_speed_m_s": 0.11,
-    "roundabout_track_min_speed_m_s": 0.07,
-    "roundabout_track_max_angular_rad_s": 0.75,
+    "roundabout_track_speed_m_s": 0.09,
+    "roundabout_track_min_speed_m_s": 0.06,
+    "roundabout_track_max_angular_rad_s": 0.90,
     "roundabout_entry_turn_seconds": 0.50,
     "roundabout_entry_speed_m_s": 0.08,
     "roundabout_entry_angular_rad_s": 0.60,
     "roundabout_lost_continue_seconds": 1.40,
-    "roundabout_lost_speed_m_s": 0.05,
-    "roundabout_lost_angular_rad_s": 0.35,
-    "roundabout_ccw_bias_rad_s": 0.20,
-    "roundabout_min_ccw_angular_rad_s": 0.25,
+    "roundabout_lost_speed_m_s": 0.04,
+    "roundabout_lost_angular_rad_s": 0.55,
+    "roundabout_ccw_bias_rad_s": 0.22,
+    "roundabout_min_ccw_angular_rad_s": 0.32,
     "roundabout_angular_filter_alpha": 0.55,
     # A 360-degree yaw cycle is insufficient: the chassis must also travel
     # around the island rather than spin in place.
