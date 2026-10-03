@@ -60,15 +60,14 @@ RACE_SETTINGS = {
     "roundabout_prepare_speed_m_s": 0.20,
     "roundabout_prepare_min_speed_m_s": 0.14,
     "roundabout_prepare_max_angular_rad_s": 0.40,
-    # First left marker: keep a fixed 8cm clearance.  The controller derives
-    # its duration from pass_speed, so this stays correct after speed tuning.
-    "roundabout_marker_pass_speed_m_s": 0.08,
-    "roundabout_marker_cooldown_seconds": 1.00,
-    "roundabout_marker_reference_speed_m_s": 0.08,
+    # First left marker: clear 8cm briskly, without the former stop-like pause.
+    "roundabout_marker_pass_speed_m_s": 0.14,
+    "roundabout_marker_cooldown_seconds": 0.80,
+    "roundabout_marker_reference_speed_m_s": 0.10,
     "roundabout_marker_evidence_seconds": 0.45,
     # Stop waiting for a left cluster after this bound.  The actual entrance
     # can remain visible while the exit branch leaves the image.
-    "roundabout_marker_max_hold_seconds": 1.40,
+    "roundabout_marker_max_hold_seconds": 0.85,
     # Both blue exit and yellow entrance are left-side curved clusters. Fork
     # geometry is debug evidence only because camera yaw can hide a branch.
     "roundabout_marker_curve_min_slope": 0.06,
@@ -87,13 +86,19 @@ RACE_SETTINGS = {
     "roundabout_pre_entry_max_angular_rad_s": 0.25,
     "roundabout_pre_entry_max_line_error": 0.35,
     "roundabout_pre_entry_ccw_bias_rad_s": 0.07,
+    # Dedicated tight-circle profile: it leaves approach and normal curves unchanged.
+    "roundabout_track_speed_m_s": 0.11,
+    "roundabout_track_min_speed_m_s": 0.07,
+    "roundabout_track_max_angular_rad_s": 0.75,
     "roundabout_entry_turn_seconds": 0.50,
     "roundabout_entry_speed_m_s": 0.08,
     "roundabout_entry_angular_rad_s": 0.60,
+    "roundabout_lost_continue_seconds": 1.40,
     "roundabout_lost_speed_m_s": 0.05,
-    "roundabout_ccw_bias_rad_s": 0.14,
-    "roundabout_min_ccw_angular_rad_s": 0.16,
-    "roundabout_angular_filter_alpha": 0.35,
+    "roundabout_lost_angular_rad_s": 0.35,
+    "roundabout_ccw_bias_rad_s": 0.20,
+    "roundabout_min_ccw_angular_rad_s": 0.25,
+    "roundabout_angular_filter_alpha": 0.55,
     # A 360-degree yaw cycle is insufficient: the chassis must also travel
     # around the island rather than spin in place.
     "roundabout_min_odom_travel_m": 0.50,

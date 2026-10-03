@@ -500,17 +500,17 @@ class RaceController(OutdoorLineFollower):
             # is the exit marker; after it clears the camera, the second is
             # the actual island entry marker.
             "roundabout_first_marker_confirm_frames": 5,
-            "roundabout_marker_cooldown_seconds": 1.00,
+            "roundabout_marker_cooldown_seconds": 0.80,
             # The nominal cooldown is expressed at this reference speed.
             # Runtime duration is rescaled to preserve the physical distance
             # driven past the first (exit) marker when speed is changed.
-            "roundabout_marker_reference_speed_m_s": 0.08,
+            "roundabout_marker_reference_speed_m_s": 0.10,
             "roundabout_marker_evidence_seconds": 0.45,
-            "roundabout_marker_pass_speed_m_s": 0.10,
+            "roundabout_marker_pass_speed_m_s": 0.14,
             "roundabout_marker_clear_frames": 5,
             # A later entrance branch can still be visible on the left.  Do
             # not wait indefinitely for every left dashed component to clear.
-            "roundabout_marker_max_hold_seconds": 1.40,
+            "roundabout_marker_max_hold_seconds": 0.85,
             "roundabout_dash_confirm_frames": 5,
             "roundabout_dash_min_components": 3,
             # The two dashed curves at the exit can otherwise be reported as
@@ -531,6 +531,11 @@ class RaceController(OutdoorLineFollower):
             "roundabout_pre_entry_max_angular_rad_s": 0.25,
             "roundabout_pre_entry_max_line_error": 0.35,
             "roundabout_pre_entry_ccw_bias_rad_s": 0.07,
+            # The close dashed circle needs its own profile: much lower
+            # forward speed and more yaw authority than the entry approach.
+            "roundabout_track_speed_m_s": 0.11,
+            "roundabout_track_min_speed_m_s": 0.07,
+            "roundabout_track_max_angular_rad_s": 0.75,
             "roundabout_time_mode": False,
             "roundabout_min_start_seconds": 5.0,
             "roundabout_exit_confirm_frames": 5,
@@ -549,21 +554,22 @@ class RaceController(OutdoorLineFollower):
             "roundabout_min_complete_seconds": 8.0,
             "roundabout_heading_timeout_s": 35.0,
             "roundabout_ccw_imu_sign": 1.0,
-            "roundabout_ccw_bias_rad_s": 0.24,
+            "roundabout_ccw_bias_rad_s": 0.20,
             # Never let a noisy dashed segment command the robot back in the
             # clockwise direction after it has committed to the island.
-            "roundabout_min_ccw_angular_rad_s": 0.16,
+            "roundabout_min_ccw_angular_rad_s": 0.25,
             # Smooth the ring-specific angular command.  This is deliberately
             # not applied to the ordinary solid-line follower.
-            "roundabout_angular_filter_alpha": 0.35,
+            "roundabout_angular_filter_alpha": 0.55,
             # Once the true entrance is confirmed, ignore every remote solid
             # target and apply the normal left-turn angular speed for this
             # short forced CCW commit before dashed-line tracking starts.
             "roundabout_entry_turn_seconds": 0.50,
             "roundabout_entry_speed_m_s": 0.08,
             "roundabout_entry_angular_rad_s": 0.60,
-            "roundabout_lost_continue_seconds": 1.20,
+            "roundabout_lost_continue_seconds": 1.40,
             "roundabout_lost_speed_m_s": 0.06,
+            "roundabout_lost_angular_rad_s": 0.35,
             # After a heading-confirmed 360-degree island lap, do not hand a
             # remaining dash straight back to normal line following.  Move
             # straight at low speed until a long solid line is stable.
@@ -684,7 +690,7 @@ class RaceController(OutdoorLineFollower):
         if getattr(self, "phase", None) == self.ROUNDABOUT:
             island_cap = min(
                 float(self.max_angular_speed),
-                float(self.roundabout_prepare_max_angular_rad_s),
+                float(self.roundabout_track_max_angular_rad_s),
             )
             desired = float(np.clip(
                 float(angular) + float(self.roundabout_ccw_bias_rad_s),
@@ -770,13 +776,17 @@ class RaceController(OutdoorLineFollower):
             "track_height_m", "track_pitching_deg", "roundabout_min_start_seconds",
             "roundabout_prepare_speed_m_s", "roundabout_prepare_min_speed_m_s",
             "roundabout_prepare_max_angular_rad_s",
+            "roundabout_track_speed_m_s", "roundabout_track_min_speed_m_s",
+            "roundabout_track_max_angular_rad_s",
             "roundabout_marker_pass_speed_m_s", "roundabout_marker_cooldown_seconds",
             "roundabout_pre_entry_speed_m_s", "roundabout_pre_entry_max_angular_rad_s",
             "roundabout_pre_entry_max_line_error", "roundabout_pre_entry_ccw_bias_rad_s",
             "roundabout_marker_max_hold_seconds",
             "roundabout_marker_curve_min_slope", "roundabout_marker_curve_min_residual_px",
             "roundabout_fork_min_separation_px", "roundabout_fork_min_divergence_px",
-            "roundabout_min_ccw_angular_rad_s",
+            "roundabout_min_ccw_angular_rad_s", "roundabout_ccw_bias_rad_s",
+            "roundabout_lost_continue_seconds", "roundabout_lost_speed_m_s",
+            "roundabout_lost_angular_rad_s",
             "s_curve_speed_m_s", "s_curve_min_speed_m_s",
             "s_curve_max_angular_rad_s", "roundabout_angular_filter_alpha",
             "solid_reacquire_speed_m_s", "solid_reacquire_min_speed_m_s",
@@ -795,6 +805,9 @@ class RaceController(OutdoorLineFollower):
             prepare_speed = float(updates.get("roundabout_prepare_speed_m_s", self.roundabout_prepare_speed_m_s))
             prepare_min_speed = float(updates.get("roundabout_prepare_min_speed_m_s", self.roundabout_prepare_min_speed_m_s))
             prepare_max_angular = float(updates.get("roundabout_prepare_max_angular_rad_s", self.roundabout_prepare_max_angular_rad_s))
+            track_speed = float(updates.get("roundabout_track_speed_m_s", self.roundabout_track_speed_m_s))
+            track_min_speed = float(updates.get("roundabout_track_min_speed_m_s", self.roundabout_track_min_speed_m_s))
+            track_max_angular = float(updates.get("roundabout_track_max_angular_rad_s", self.roundabout_track_max_angular_rad_s))
             marker_pass_speed = float(updates.get("roundabout_marker_pass_speed_m_s", self.roundabout_marker_pass_speed_m_s))
             marker_cooldown = float(updates.get("roundabout_marker_cooldown_seconds", self.roundabout_marker_cooldown_seconds))
             pre_entry_speed = float(updates.get("roundabout_pre_entry_speed_m_s", self.roundabout_pre_entry_speed_m_s))
@@ -807,6 +820,10 @@ class RaceController(OutdoorLineFollower):
             fork_min_separation = float(updates.get("roundabout_fork_min_separation_px", self.roundabout_fork_min_separation_px))
             fork_min_divergence = float(updates.get("roundabout_fork_min_divergence_px", self.roundabout_fork_min_divergence_px))
             ring_min_ccw = float(updates.get("roundabout_min_ccw_angular_rad_s", self.roundabout_min_ccw_angular_rad_s))
+            ring_ccw_bias = float(updates.get("roundabout_ccw_bias_rad_s", self.roundabout_ccw_bias_rad_s))
+            ring_lost_seconds = float(updates.get("roundabout_lost_continue_seconds", self.roundabout_lost_continue_seconds))
+            ring_lost_speed = float(updates.get("roundabout_lost_speed_m_s", self.roundabout_lost_speed_m_s))
+            ring_lost_angular = float(updates.get("roundabout_lost_angular_rad_s", self.roundabout_lost_angular_rad_s))
             s_curve_speed = float(updates.get("s_curve_speed_m_s", self.s_curve_speed_m_s))
             s_curve_min_speed = float(updates.get("s_curve_min_speed_m_s", self.s_curve_min_speed_m_s))
             s_curve_max_angular = float(updates.get("s_curve_max_angular_rad_s", self.s_curve_max_angular_rad_s))
@@ -832,6 +849,10 @@ class RaceController(OutdoorLineFollower):
             return SetParametersResult(successful=False, reason="环岛准备速度必须满足 0.05 <= min <= speed <= 0.50")
         if not 0.10 <= prepare_max_angular <= 1.20:
             return SetParametersResult(successful=False, reason="环岛准备角速度必须在 0.10 到 1.20")
+        if not 0.05 <= track_min_speed <= track_speed <= 0.30:
+            return SetParametersResult(successful=False, reason="环岛绕行速度必须满足 0.05 <= min <= speed <= 0.30")
+        if not 0.10 <= track_max_angular <= 1.20:
+            return SetParametersResult(successful=False, reason="环岛绕行角速度必须在 0.10 到 1.20")
         if not 0.03 <= marker_pass_speed <= 0.20:
             return SetParametersResult(successful=False, reason="首次环岛标记通过速度必须在 0.03 到 0.20")
         if not 0.20 <= marker_cooldown <= 3.00:
@@ -850,8 +871,14 @@ class RaceController(OutdoorLineFollower):
             return SetParametersResult(successful=False, reason="环岛曲线判定阈值超出安全范围")
         if not 10.0 <= fork_min_separation <= 240.0 or not 0.0 <= fork_min_divergence <= 120.0:
             return SetParametersResult(successful=False, reason="环岛岔口发散阈值超出安全范围")
-        if not 0.05 <= ring_min_ccw <= min(max_angular, prepare_max_angular):
+        if not 0.05 <= ring_min_ccw <= min(max_angular, track_max_angular):
             return SetParametersResult(successful=False, reason="环岛最小逆时针角速度必须不大于环岛角速度上限")
+        if not 0.0 <= ring_ccw_bias <= 0.50:
+            return SetParametersResult(successful=False, reason="环岛逆时针偏置必须在 0.00 到 0.50")
+        if not 0.30 <= ring_lost_seconds <= 3.00:
+            return SetParametersResult(successful=False, reason="环岛虚线丢失保持时间必须在 0.30 到 3.00")
+        if not 0.03 <= ring_lost_speed <= 0.15 or not 0.05 <= ring_lost_angular <= track_max_angular:
+            return SetParametersResult(successful=False, reason="环岛虚线丢失找回速度或角速度超出安全范围")
         if not 0.05 <= s_curve_min_speed <= s_curve_speed <= 0.50:
             return SetParametersResult(successful=False, reason="S 弯速度必须满足 0.05 <= min <= speed <= 0.50")
         if not 0.10 <= s_curve_max_angular <= 1.20:
@@ -1305,6 +1332,7 @@ class RaceController(OutdoorLineFollower):
             self.roundabout_turn_ready and not self.roundabout_complete
             and self.phase in (self.FOLLOW, self.DASH_APPROACH, self.ROUNDABOUT)
         )
+        in_roundabout_profile = self.phase == self.ROUNDABOUT
         crosswalk_align_profile = self.phase == self.CROSSWALK_APPROACH
         s_curve_profile = (
             bool(self.s_curve_enabled)
@@ -1324,15 +1352,26 @@ class RaceController(OutdoorLineFollower):
             self.min_speed = min(self.normal_speed, float(saved_min), 0.05)
             self.max_angular_speed = min(float(saved_angular), 0.45)
         elif slow_island_profile:
-            self.normal_speed = min(float(saved_normal), float(self.roundabout_prepare_speed_m_s))
-            self.min_speed = min(
-                self.normal_speed,
-                float(saved_min),
-                float(self.roundabout_prepare_min_speed_m_s),
-            )
-            self.max_angular_speed = min(
-                float(saved_angular), float(self.roundabout_prepare_max_angular_rad_s)
-            )
+            if in_roundabout_profile:
+                self.normal_speed = min(float(saved_normal), float(self.roundabout_track_speed_m_s))
+                self.min_speed = min(
+                    self.normal_speed,
+                    float(saved_min),
+                    float(self.roundabout_track_min_speed_m_s),
+                )
+                self.max_angular_speed = min(
+                    float(saved_angular), float(self.roundabout_track_max_angular_rad_s)
+                )
+            else:
+                self.normal_speed = min(float(saved_normal), float(self.roundabout_prepare_speed_m_s))
+                self.min_speed = min(
+                    self.normal_speed,
+                    float(saved_min),
+                    float(self.roundabout_prepare_min_speed_m_s),
+                )
+                self.max_angular_speed = min(
+                    float(saved_angular), float(self.roundabout_prepare_max_angular_rad_s)
+                )
         elif solid_recovery_profile:
             # The target is only a short history-based direction, never a new
             # visual observation.  Keep it deliberately slower than normal;
@@ -1757,7 +1796,7 @@ class RaceController(OutdoorLineFollower):
                 if now - self.roundabout_lost_since <= float(self.roundabout_lost_continue_seconds):
                     linear, angular = self._publish_smooth(
                         float(self.roundabout_lost_speed_m_s),
-                        0.0,
+                        float(self.roundabout_lost_angular_rad_s),
                         1 / CONTROL_RATE_HZ,
                     )
                     return linear, angular, 0.0, "ROUNDABOUT_REACQUIRE"
