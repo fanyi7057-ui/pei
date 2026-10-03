@@ -42,11 +42,20 @@ class CurveProfile:
 
 @dataclass(frozen=True)
 class RingMarker:
-    """One close dashed-junction cluster in the robot-camera image."""
+    """One close dashed-junction cluster in the robot-camera image.
+
+    ``curve_score`` and ``fork_diverging`` deliberately describe local
+    geometry only.  They are not a pose estimate: the former rejects a short
+    row of unrelated dots, while the latter requires a second dashed branch
+    that opens wider toward the bottom of the image (toward the robot).
+    """
     side: str
     center_x: float
     center_y: float
     component_count: int
+    tangent_slope: float = 0.0
+    curve_score: float = 0.0
+    fork_diverging: bool = False
 
 
 class BlackLineDetector(OutdoorWhiteLineDetector):
@@ -473,6 +482,15 @@ class RaceController(OutdoorLineFollower):
             "roundabout_marker_max_component_extent_px": 34,
             "roundabout_marker_cluster_x_px": 50.0,
             "roundabout_marker_cluster_y_px": 90.0,
+            # The first dashed curve is only an exit marker.  A later entry
+            # must additionally be a close curved branch at a fork that
+            # opens toward the robot; this rejects the forward-converging
+            # dashed pair that previously pulled the robot in too early.
+            "roundabout_marker_curve_min_slope": 0.06,
+            "roundabout_marker_curve_min_residual_px": 1.0,
+            "roundabout_fork_min_separation_px": 32.0,
+            "roundabout_fork_min_divergence_px": 7.0,
+            "roundabout_entry_require_diverging_fork": True,
             "speed_scale": 1.0,
             "step_pass_confirm_seconds": 1.0,
             "step_pass_observation_max_distance_m": 0.70,
@@ -536,8 +554,8 @@ class RaceController(OutdoorLineFollower):
             # target and apply the normal left-turn angular speed for this
             # short forced CCW commit before dashed-line tracking starts.
             "roundabout_entry_turn_seconds": 0.50,
-            "roundabout_entry_speed_m_s": 0.07,
-            "roundabout_entry_angular_rad_s": 0.55,
+            "roundabout_entry_speed_m_s": 0.08,
+            "roundabout_entry_angular_rad_s": 0.60,
             "roundabout_lost_continue_seconds": 1.20,
             "roundabout_lost_speed_m_s": 0.06,
             # After a heading-confirmed 360-degree island lap, do not hand a
@@ -748,6 +766,8 @@ class RaceController(OutdoorLineFollower):
             "roundabout_marker_pass_speed_m_s", "roundabout_marker_cooldown_seconds",
             "roundabout_pre_entry_speed_m_s", "roundabout_pre_entry_max_angular_rad_s",
             "roundabout_pre_entry_max_line_error",
+            "roundabout_marker_curve_min_slope", "roundabout_marker_curve_min_residual_px",
+            "roundabout_fork_min_separation_px", "roundabout_fork_min_divergence_px",
             "roundabout_min_ccw_angular_rad_s",
             "s_curve_speed_m_s", "s_curve_min_speed_m_s",
             "s_curve_max_angular_rad_s", "roundabout_angular_filter_alpha",
@@ -772,6 +792,10 @@ class RaceController(OutdoorLineFollower):
             pre_entry_speed = float(updates.get("roundabout_pre_entry_speed_m_s", self.roundabout_pre_entry_speed_m_s))
             pre_entry_max_angular = float(updates.get("roundabout_pre_entry_max_angular_rad_s", self.roundabout_pre_entry_max_angular_rad_s))
             pre_entry_max_error = float(updates.get("roundabout_pre_entry_max_line_error", self.roundabout_pre_entry_max_line_error))
+            curve_min_slope = float(updates.get("roundabout_marker_curve_min_slope", self.roundabout_marker_curve_min_slope))
+            curve_min_residual = float(updates.get("roundabout_marker_curve_min_residual_px", self.roundabout_marker_curve_min_residual_px))
+            fork_min_separation = float(updates.get("roundabout_fork_min_separation_px", self.roundabout_fork_min_separation_px))
+            fork_min_divergence = float(updates.get("roundabout_fork_min_divergence_px", self.roundabout_fork_min_divergence_px))
             ring_min_ccw = float(updates.get("roundabout_min_ccw_angular_rad_s", self.roundabout_min_ccw_angular_rad_s))
             s_curve_speed = float(updates.get("s_curve_speed_m_s", self.s_curve_speed_m_s))
             s_curve_min_speed = float(updates.get("s_curve_min_speed_m_s", self.s_curve_min_speed_m_s))
@@ -808,6 +832,10 @@ class RaceController(OutdoorLineFollower):
             return SetParametersResult(successful=False, reason="环岛入口前保护角速度必须在 0.05 到 0.50")
         if not 0.05 <= pre_entry_max_error <= 0.50:
             return SetParametersResult(successful=False, reason="环岛入口前保护误差阈值必须在 0.05 到 0.50")
+        if not 0.01 <= curve_min_slope <= 1.50 or not 0.10 <= curve_min_residual <= 30.0:
+            return SetParametersResult(successful=False, reason="环岛曲线判定阈值超出安全范围")
+        if not 10.0 <= fork_min_separation <= 240.0 or not 0.0 <= fork_min_divergence <= 120.0:
+            return SetParametersResult(successful=False, reason="环岛岔口发散阈值超出安全范围")
         if not 0.05 <= ring_min_ccw <= min(max_angular, prepare_max_angular):
             return SetParametersResult(successful=False, reason="环岛最小逆时针角速度必须不大于环岛角速度上限")
         if not 0.05 <= s_curve_min_speed <= s_curve_speed <= 0.50:
@@ -1328,7 +1356,15 @@ class RaceController(OutdoorLineFollower):
         return result
 
     def _roundabout_dashes_side(self, frame):
-        """Return only a *near* cluster of short dashed island-marker strokes."""
+        """Return a close dashed cluster and its local fork geometry.
+
+        The old version returned whichever nearby dot group had the most
+        components.  That is adequate for a binary "dash exists" signal but
+        cannot tell the forward-converging exit dashes from the later
+        outward-opening entry fork.  This routine still uses the same close
+        ROI/component limits, then measures a local curve and whether a
+        second dashed branch diverges *towards* the bottom of the image.
+        """
         top = float(np.clip(self.roundabout_marker_roi_top_ratio, .45, .90))
         bottom = float(np.clip(self.roundabout_marker_roi_bottom_ratio, top + .05, 1.0))
         roi = frame[int(top * IMAGE_HEIGHT):int(bottom * IMAGE_HEIGHT)]
@@ -1351,18 +1387,68 @@ class RaceController(OutdoorLineFollower):
                 points.append((float(centers[label, 0]), float(centers[label, 1])))
         if not points:
             return None
-        clusters = []
-        for x, y in points:
-            nearby = [
-                (other_x, other_y) for other_x, other_y in points
-                if (abs(other_x - x) <= float(self.roundabout_marker_cluster_x_px)
-                    and abs(other_y - y) <= float(self.roundabout_marker_cluster_y_px))
-            ]
-            clusters.append((len(nearby), float(np.mean([p[0] for p in nearby])),
-                             float(np.mean([p[1] for p in nearby]))))
-        count, center_x, center_y = max(clusters, key=lambda item: item[0])
+        # Build local component groups, then de-duplicate the groups generated
+        # from neighbouring seed points.  Keeping the original points lets us
+        # compare the direction of two dashed branches instead of merely
+        # comparing their centroids.
+        groups_by_members = {}
+        cluster_x = float(self.roundabout_marker_cluster_x_px)
+        cluster_y = float(self.roundabout_marker_cluster_y_px)
+        for index, (x, y) in enumerate(points):
+            members = frozenset(
+                other_index for other_index, (other_x, other_y) in enumerate(points)
+                if abs(other_x - x) <= cluster_x and abs(other_y - y) <= cluster_y
+            )
+            groups_by_members[members] = [points[item] for item in members]
+        groups = list(groups_by_members.values())
+        group = max(groups, key=lambda item: (len(item), float(np.mean([p[1] for p in item]))))
+        count = len(group)
+        center_x = float(np.mean([p[0] for p in group]))
+        center_y = float(np.mean([p[1] for p in group]))
         if count < int(self.roundabout_dash_min_components):
             return None
+
+        def branch_fit(branch):
+            xs = np.asarray([point[0] for point in branch], dtype=np.float32)
+            ys = np.asarray([point[1] for point in branch], dtype=np.float32)
+            if len(branch) < 2 or float(np.ptp(ys)) < 4.0:
+                return 0.0, 0.0, float(np.min(ys)), float(np.max(ys))
+            slope, intercept = np.polyfit(ys, xs, 1)
+            residual = float(np.mean(np.abs(xs - (slope * ys + intercept))))
+            return float(slope), residual, float(np.min(ys)), float(np.max(ys))
+
+        tangent_slope, curve_score, group_top, group_bottom = branch_fit(group)
+        fork_diverging = False
+        min_components = int(self.roundabout_dash_min_components)
+        for other in groups:
+            if other is group or len(other) < min_components:
+                continue
+            # Ignore alternative seed groups made from substantially the same
+            # strokes; they are not a second fork branch.
+            overlap = len(set(group).intersection(other)) / max(1, min(len(group), len(other)))
+            if overlap > .35:
+                continue
+            other_x = float(np.mean([point[0] for point in other]))
+            if abs(other_x - center_x) < float(self.roundabout_fork_min_separation_px):
+                continue
+            other_slope, _other_residual, other_top, other_bottom = branch_fit(other)
+            common_top = max(group_top, other_top)
+            common_bottom = min(group_bottom, other_bottom)
+            if common_bottom - common_top < 6.0:
+                continue
+            # Image y grows toward the robot.  A true entry fork separates
+            # more at the near end; a forward-converging pair is rejected.
+            separation_far = abs(
+                (center_x + tangent_slope * (common_top - center_y))
+                - (other_x + other_slope * (common_top - float(np.mean([p[1] for p in other]))))
+            )
+            separation_near = abs(
+                (center_x + tangent_slope * (common_bottom - center_y))
+                - (other_x + other_slope * (common_bottom - float(np.mean([p[1] for p in other]))))
+            )
+            if separation_near >= separation_far + float(self.roundabout_fork_min_divergence_px):
+                fork_diverging = True
+                break
         width = roi.shape[1]
         if center_x < .45 * width:
             side = "left"
@@ -1370,7 +1456,8 @@ class RaceController(OutdoorLineFollower):
             side = "right"
         else:
             side = "center"
-        return RingMarker(side, center_x, center_y, int(count))
+        return RingMarker(side, center_x, center_y, int(count), tangent_slope,
+                          curve_score, fork_diverging)
 
     def _roundabout_dashes_seen(self, frame):
         return self._roundabout_dashes_side(frame) is not None
@@ -1392,6 +1479,15 @@ class RaceController(OutdoorLineFollower):
         if expected == "opposite":
             return first_side in ("left", "right") and marker.side != first_side
         return marker.side == expected
+
+    def _roundabout_marker_is_curved(self, marker):
+        """Accept a tilted/curved dashed branch, not an isolated dot row."""
+        if marker is None:
+            return False
+        return (
+            abs(float(marker.tangent_slope)) >= float(self.roundabout_marker_curve_min_slope)
+            or float(marker.curve_score) >= float(self.roundabout_marker_curve_min_residual_px)
+        )
 
     def _roundabout_junction_seen(self, frame):
         """Find a second black direction at the dashed-guide junction."""
@@ -1695,15 +1791,28 @@ class RaceController(OutdoorLineFollower):
         if (bool(self.roundabout_enabled) and roundabout_ready
                 and not self.roundabout_complete and not self.roundabout_used_this_lap):
             left_marker = ring_marker is not None and ring_marker.side == "left"
+            curved_marker = self._roundabout_marker_is_curved(ring_marker)
             evidence_timeout = float(self.roundabout_marker_evidence_seconds)
             if not self.roundabout_first_marker_seen:
-                if left_marker:
+                # The first close *curved* left-hand dashed branch is the
+                # course exit marker.  A simple forward row of dots does not
+                # arm the roundabout sequence.
+                exit_marker = left_marker and curved_marker
+                if exit_marker:
                     self.roundabout_first_marker_hits += 1
                     self.roundabout_marker_last_seen = now
                 elif now - self.roundabout_marker_last_seen > evidence_timeout:
                     self.roundabout_first_marker_hits = 0
-                if left_marker and self.roundabout_first_marker_hits == 1:
-                    self.get_logger().info("RING_LEFT_DASH：发现左侧黑色虚线，正在确认首次出口标记")
+                if left_marker and not curved_marker and now - self.roundabout_debug_last_time >= .25:
+                    self.roundabout_debug_last_time = now
+                    self.get_logger().info(
+                        "RING_EXIT_REJECT：左侧虚线不是弯曲簇 slope=%+.3f residual=%.1f"
+                        % (ring_marker.tangent_slope, ring_marker.curve_score)
+                    )
+                if exit_marker and self.roundabout_first_marker_hits == 1:
+                    self.get_logger().info(
+                        "RING_EXIT_CURVE：发现左侧弯曲黑色虚线，正在确认首次出口标记"
+                    )
                 if self.roundabout_first_marker_hits >= int(self.roundabout_first_marker_confirm_frames):
                     pass_speed, pass_seconds, pass_distance = self._roundabout_marker_pass_profile()
                     self.roundabout_first_marker_seen = True
@@ -1738,14 +1847,27 @@ class RaceController(OutdoorLineFollower):
                     self.roundabout_entry_candidate_last_y = None
                     self.get_logger().info("首次左侧出口标记已通过，开始等待后续同侧的环岛入口虚线")
             else:
-                entry_marker = self._roundabout_entry_marker_matches(ring_marker)
+                # The actual entrance must be a later same-side curved branch
+                # at a fork which opens toward the camera.  It is therefore
+                # impossible for the first forward-converging exit pair to
+                # enter ROUNDABOUT_ENTRY merely because it appears on the
+                # expected left side.
+                side_matches = self._roundabout_entry_marker_matches(ring_marker)
+                fork_matches = (
+                    ring_marker is not None
+                    and (not bool(self.roundabout_entry_require_diverging_fork)
+                         or bool(ring_marker.fork_diverging))
+                )
+                entry_marker = side_matches and curved_marker and fork_matches
                 if ring_marker is not None and not entry_marker:
                     if now - self.roundabout_debug_last_time >= .25:
                         self.roundabout_debug_last_time = now
                         expected = str(self.roundabout_entry_expected_side)
                         self.get_logger().info(
-                            "RING_ENTRY_REJECT：side=%s x=%.1f，入口需要 %s 侧虚线簇"
-                            % (ring_marker.side, ring_marker.center_x, expected)
+                            "RING_ENTRY_REJECT：side=%s x=%.1f slope=%+.3f curve=%.1f fork=%s；入口需要 %s 侧、弯曲且向车头发散的虚线簇"
+                            % (ring_marker.side, ring_marker.center_x,
+                               ring_marker.tangent_slope, ring_marker.curve_score,
+                               "yes" if ring_marker.fork_diverging else "no", expected)
                         )
                 if entry_marker:
                     self.roundabout_entry_last_seen = now

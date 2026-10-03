@@ -66,8 +66,14 @@ RACE_SETTINGS = {
     "roundabout_marker_cooldown_seconds": 1.00,
     "roundabout_marker_reference_speed_m_s": 0.08,
     "roundabout_marker_evidence_seconds": 0.45,
-    # Both the blue exit and yellow entrance are left-side clusters.  Require
-    # a clear interval, a later same-side cluster, and continuous approach.
+    # Both the blue exit and yellow entrance are left-side clusters.  The
+    # first curved cluster is exit-only.  The later entrance must be curved,
+    # continuously approach, and form a fork that opens toward the robot.
+    "roundabout_marker_curve_min_slope": 0.06,
+    "roundabout_marker_curve_min_residual_px": 1.0,
+    "roundabout_fork_min_separation_px": 32.0,
+    "roundabout_fork_min_divergence_px": 7.0,
+    "roundabout_entry_require_diverging_fork": True,
     "roundabout_entry_min_travel_m": 0.30,
     "roundabout_entry_expected_side": "same",
     "roundabout_entry_approach_min_y_px": 12.0,

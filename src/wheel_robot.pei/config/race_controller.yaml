@@ -67,6 +67,13 @@ race_controller:
     roundabout_marker_max_component_extent_px: 34
     roundabout_marker_cluster_x_px: 50.0
     roundabout_marker_cluster_y_px: 90.0
+    # 首个弯曲虚线簇仅为环岛出口；真正入口还必须是后续在车头方向
+    # 发散的双分支虚线簇。这样不会把“向前汇聚”的出口虚线当入口。
+    roundabout_marker_curve_min_slope: 0.06
+    roundabout_marker_curve_min_residual_px: 1.0
+    roundabout_fork_min_separation_px: 32.0
+    roundabout_fork_min_divergence_px: 7.0
+    roundabout_entry_require_diverging_fork: true
     step_pass_observation_max_distance_m: 0.70
     step_pass_confirm_seconds: 1.0
     # 环岛前两次黑色虚线都在画面左侧：第一次是出口标记，不能进入；
@@ -88,8 +95,8 @@ race_controller:
     roundabout_marker_clear_frames: 5
     roundabout_dash_confirm_frames: 5
     roundabout_dash_min_components: 4
-    # 出口和入口都在左侧。首次左侧簇为出口；清空后，必须再次看到同侧
-    # 的独立虚线簇，连续朝车头移动 12px，才可作为后续入口。
+    # 出口和入口都在左侧。首次“弯曲”左侧簇为出口；清空后，必须再次看到
+    # 同侧、朝车头发散的弯曲虚线岔口，连续朝车头移动 12px，才可作为入口。
     roundabout_entry_min_travel_m: 0.30
     roundabout_entry_expected_side: same
     roundabout_entry_approach_min_y_px: 12.0
