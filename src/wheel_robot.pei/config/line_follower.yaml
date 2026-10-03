@@ -1,0 +1,15 @@
+line_follower:
+  ros__parameters:
+    # 安全和显示开关
+    # 首次启动只做识别验证；现场确认转向和安全区域后，在 launch 命令中传 true。
+    enable_motion: false
+    show_debug_window: false
+
+    # 速度参数：线速度 m/s，角速度 rad/s。
+    # 单线赛道的保守起步值。验证稳定后再逐步提高。
+    normal_speed: 0.20
+    min_speed: 0.10
+    max_angular_speed: 0.45
+    curve_slowdown: 0.48
+    lost_search_speed: 0.10
+    lost_search_angular: 0.20

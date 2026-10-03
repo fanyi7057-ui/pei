@@ -1,0 +1,25 @@
+hh_visual:
+  ros__parameters:
+    camera_id: 0
+    enable_motion: false
+    black_v_max: 90
+    black_s_max: 105
+    roi_top: 0.58
+    roi_bottom: 0.98
+    min_component_area: 45
+    max_component_area_ratio: 0.28
+    line_target_offset: 0.0
+    min_line_quality: 0.22
+    min_valid_bands: 2
+    line_speed: 0.10
+    line_kp: 0.55
+    max_angular_speed: 0.28
+    crosswalk_top: 0.58
+    crosswalk_bottom: 0.94
+    crosswalk_row_fill: 0.24
+    crosswalk_min_stripes: 5
+    crosswalk_threshold: 0.75
+    roundabout_top: 0.30
+    roundabout_bottom: 0.70
+    roundabout_min_parts: 4
+    roundabout_threshold: 0.70

@@ -1,0 +1,18 @@
+# Downloaded by wheel_robot/tools/fetch_orbbec_sdk.sh; pinned source is not vendored.
+src/wheel_robot/vendor/OrbbecSDK_ROS2/
+src/wheel_robot.pei/vendor/OrbbecSDK_ROS2/
+__pycache__/
+*.pyc
+
+# ROS build products and field-test media are reproducible or too large for
+# source control. Keep code, launch/configuration, and documentation only.
+build/
+install/
+log/
+Log/
+recordings/
+src/wheel_robot.pei/scripts/log/
+src/wheel_robot.pei/scripts/visual_nav_recordings/
+*.avi
+*.bag
+*.db3
