@@ -7,7 +7,7 @@ Speeds use m/s; angular speeds use rad/s; durations use seconds.
 RACE_SETTINGS = {
     # Master switches
     "enable_motion": True,           # False: vision/debug only, wheels never move
-    "enable_step_jump": True,        # False: never issue a jump command
+    "enable_step_jump": False,       # No physical step in current tuning run
     "show_debug_window": True,
     "speed_scale": 1.00,             # Multiplies normal/min line-follow speeds
 
@@ -66,24 +66,27 @@ RACE_SETTINGS = {
     "roundabout_marker_cooldown_seconds": 1.00,
     "roundabout_marker_reference_speed_m_s": 0.08,
     "roundabout_marker_evidence_seconds": 0.45,
-    # Both the blue exit and yellow entrance are left-side clusters.  The
-    # first curved cluster is exit-only.  The later entrance must be curved,
-    # continuously approach, and form a fork that opens toward the robot.
+    # Stop waiting for a left cluster after this bound.  The actual entrance
+    # can remain visible while the exit branch leaves the image.
+    "roundabout_marker_max_hold_seconds": 1.40,
+    # Both blue exit and yellow entrance are left-side curved clusters. Fork
+    # geometry is debug evidence only because camera yaw can hide a branch.
     "roundabout_marker_curve_min_slope": 0.06,
     "roundabout_marker_curve_min_residual_px": 1.0,
     "roundabout_fork_min_separation_px": 32.0,
     "roundabout_fork_min_divergence_px": 7.0,
-    "roundabout_entry_require_diverging_fork": True,
+    "roundabout_entry_require_diverging_fork": False,
     "roundabout_entry_min_travel_m": 0.30,
     "roundabout_entry_expected_side": "same",
-    "roundabout_entry_approach_min_y_px": 12.0,
-    "roundabout_entry_confirm_frames": 8,
-    "roundabout_entry_track_max_x_jump_px": 45.0,
+    "roundabout_entry_approach_min_y_px": 8.0,
+    "roundabout_entry_confirm_frames": 5,
+    "roundabout_entry_track_max_x_jump_px": 60.0,
     "roundabout_entry_track_max_y_jump_px": 30.0,
     "roundabout_entry_y_jitter_px": 2.5,
-    "roundabout_pre_entry_speed_m_s": 0.08,
-    "roundabout_pre_entry_max_angular_rad_s": 0.20,
-    "roundabout_pre_entry_max_line_error": 0.20,
+    "roundabout_pre_entry_speed_m_s": 0.12,
+    "roundabout_pre_entry_max_angular_rad_s": 0.25,
+    "roundabout_pre_entry_max_line_error": 0.35,
+    "roundabout_pre_entry_ccw_bias_rad_s": 0.07,
     "roundabout_entry_turn_seconds": 0.50,
     "roundabout_entry_speed_m_s": 0.08,
     "roundabout_entry_angular_rad_s": 0.60,

@@ -67,13 +67,13 @@ race_controller:
     roundabout_marker_max_component_extent_px: 34
     roundabout_marker_cluster_x_px: 50.0
     roundabout_marker_cluster_y_px: 90.0
-    # 首个弯曲虚线簇仅为环岛出口；真正入口还必须是后续在车头方向
-    # 发散的双分支虚线簇。这样不会把“向前汇聚”的出口虚线当入口。
+    # 双分支发散作为入口调试证据；相机偏向时可能看不全两支，不能作为
+    # 硬门槛。真正入口仍需后续同侧弯曲虚线和连续接近确认。
     roundabout_marker_curve_min_slope: 0.06
     roundabout_marker_curve_min_residual_px: 1.0
     roundabout_fork_min_separation_px: 32.0
     roundabout_fork_min_divergence_px: 7.0
-    roundabout_entry_require_diverging_fork: true
+    roundabout_entry_require_diverging_fork: false
     step_pass_observation_max_distance_m: 0.70
     step_pass_confirm_seconds: 1.0
     # 环岛前两次黑色虚线都在画面左侧：第一次是出口标记，不能进入；
@@ -93,22 +93,26 @@ race_controller:
     # 首次左侧虚线是出口标记：一秒内以 0.08m/s 直行，只通过约 8cm。
     roundabout_marker_pass_speed_m_s: 0.08
     roundabout_marker_clear_frames: 5
+    # 入口分支可能仍留在左侧画面；超过此时间必须解除出口直行等待。
+    roundabout_marker_max_hold_seconds: 1.40
     roundabout_dash_confirm_frames: 5
     roundabout_dash_min_components: 4
-    # 出口和入口都在左侧。首次“弯曲”左侧簇为出口；清空后，必须再次看到
-    # 同侧、朝车头发散的弯曲虚线岔口，连续朝车头移动 12px，才可作为入口。
+    # 出口和入口都在左侧。首次“弯曲”左侧簇为出口；后续同侧弯曲虚线
+    # 连续朝车头移动后才可作为入口，双分支发散只作日志辅助。
     roundabout_entry_min_travel_m: 0.30
     roundabout_entry_expected_side: same
-    roundabout_entry_approach_min_y_px: 12.0
-    roundabout_entry_confirm_frames: 8
-    roundabout_entry_track_max_x_jump_px: 45.0
+    roundabout_entry_approach_min_y_px: 8.0
+    roundabout_entry_confirm_frames: 5
+    roundabout_entry_track_max_x_jump_px: 60.0
     roundabout_entry_track_max_y_jump_px: 30.0
     roundabout_entry_y_jitter_px: 2.5
     # 首个（出口）虚线簇离开后，低速直行等待同侧入口；只允许对画面中
     # 接近中间的黑实线小幅修正，失线不会触发激进搜索转弯。
-    roundabout_pre_entry_speed_m_s: 0.08
-    roundabout_pre_entry_max_angular_rad_s: 0.20
-    roundabout_pre_entry_max_line_error: 0.20
+    roundabout_pre_entry_speed_m_s: 0.12
+    roundabout_pre_entry_max_angular_rad_s: 0.25
+    roundabout_pre_entry_max_line_error: 0.35
+    # 看不清近处中线时保留很小逆时针偏置，避免车身向右漂移。
+    roundabout_pre_entry_ccw_bias_rad_s: 0.07
     # 环岛必须等台阶跳跃完成后再检查，不能用时间提前进入。
     roundabout_time_mode: false
     roundabout_min_start_seconds: 5.0
@@ -157,7 +161,9 @@ race_controller:
     # 比赛为中间黑线巡线，保持 0；不要使用教学压线的 -35 px 偏置。
     race_line_target_offset_px: 0.0
     # 台阶检测只会在首个约 90° 弯道完成且中线居中后才解锁。
-    enable_step_jump: true
+    # 当前未放置台阶，关闭跳跃触发，避免深度地面噪点误判后停车。
+    # 真实比赛放置台阶前改回 true。
+    enable_step_jump: false
     step_arm_delay_s: 1.0
     step_arm_timeout_s: 60.0
     step_min_height_m: 0.045
