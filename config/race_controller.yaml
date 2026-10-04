@@ -73,16 +73,20 @@ race_controller:
     roundabout_marker_curve_min_residual_px: 1.0
     roundabout_fork_min_separation_px: 32.0
     roundabout_fork_min_divergence_px: 7.0
-    # 真正入口必须是向车头发散的双虚线；前向汇聚的出口虚线不允许切入。
+    # 优先要求向车头发散的双虚线；若其中一股暂时在近处 ROI 外，允许使用
+    # 同侧“越靠近小车越远离中间直虚线”的弯曲分支作为备用证据。
     roundabout_entry_require_diverging_fork: true
+    roundabout_entry_allow_outward_curve_fallback: true
+    roundabout_entry_outward_slope_min: 0.15
     step_pass_observation_max_distance_m: 0.70
     step_pass_confirm_seconds: 1.0
     # 环岛前两次黑色虚线都在画面左侧：第一次是出口标记，不能进入；
-    # 首次标记确认为前向汇聚的出口后，固定以 0.30m/s 向左轻微搜寻 1 秒。
+    # 首次标记确认为前向汇聚的出口后，以 0.30m/s 向左轻微搜寻 1.67 秒。
+    # 距离约 0.50m，比之前的 0.30m 再增加 0.20m。
     # 该分支不倒车、不停车，随后才查找真正的同侧入口。
     # 虚线可在短暂一两帧内断开，0.45 秒内的证据会累计确认。
     roundabout_first_marker_confirm_frames: 5
-    roundabout_marker_cooldown_seconds: 1.00
+    roundabout_marker_cooldown_seconds: 1.67
     roundabout_marker_evidence_seconds: 0.45
     # 第二个大弯后进入环岛准备低速档。它同时限制线速度与角速度，
     # 避免尚未完成虚线确认就跑过真正的环岛入口。
@@ -90,12 +94,12 @@ race_controller:
     roundabout_prepare_min_speed_m_s: 0.14
     # 环岛入口尚未确认前禁止大角速度丢线搜索，避免被前向汇聚的出口虚线拉偏。
     roundabout_prepare_max_angular_rad_s: 0.40
-    # 固定 1 秒的冷却搜寻：约前进 0.30m，并保持小幅逆时针（左）偏置。
+    # 冷却搜寻：约前进 0.50m，并保持小幅逆时针（左）偏置。
     roundabout_marker_pass_speed_m_s: 0.30
     roundabout_marker_search_ccw_bias_rad_s: 0.10
     roundabout_marker_clear_frames: 5
-    # 到达固定 1 秒立即解除出口标记等待，不额外等待其离开画面。
-    roundabout_marker_max_hold_seconds: 1.00
+    # 到达 1.67 秒立即解除出口标记等待，不额外等待其离开画面。
+    roundabout_marker_max_hold_seconds: 1.67
     roundabout_dash_confirm_frames: 5
     roundabout_dash_min_components: 4
     # 出口和入口都在左侧。首次“弯曲”左侧簇为出口；后续同侧弯曲虚线

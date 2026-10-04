@@ -60,14 +60,14 @@ RACE_SETTINGS = {
     "roundabout_prepare_speed_m_s": 0.20,
     "roundabout_prepare_min_speed_m_s": 0.14,
     "roundabout_prepare_max_angular_rad_s": 0.40,
-    # Confirmed forward-converging exit: perform exactly one second of a
-    # controlled, slight-left search before any entrance decision.
+    # Confirmed forward-converging exit: travel about 0.50 m (0.20 m farther
+    # than before) with a controlled slight-left search before entry decision.
     "roundabout_marker_pass_speed_m_s": 0.30,
-    "roundabout_marker_cooldown_seconds": 1.00,
+    "roundabout_marker_cooldown_seconds": 1.67,
     "roundabout_marker_search_ccw_bias_rad_s": 0.10,
     "roundabout_marker_evidence_seconds": 0.45,
-    # The search must release after the same fixed one-second interval.
-    "roundabout_marker_max_hold_seconds": 1.00,
+    # The search must release after the same 1.67-second interval.
+    "roundabout_marker_max_hold_seconds": 1.67,
     # Both exit and entrance are left-side curved clusters.  Only the true
     # entrance has two dashed arms that diverge toward the camera.
     "roundabout_marker_curve_min_slope": 0.06,
@@ -75,6 +75,8 @@ RACE_SETTINGS = {
     "roundabout_fork_min_separation_px": 32.0,
     "roundabout_fork_min_divergence_px": 7.0,
     "roundabout_entry_require_diverging_fork": True,
+    "roundabout_entry_allow_outward_curve_fallback": True,
+    "roundabout_entry_outward_slope_min": 0.15,
     "roundabout_entry_min_travel_m": 0.30,
     "roundabout_entry_expected_side": "same",
     "roundabout_entry_approach_min_y_px": 8.0,
