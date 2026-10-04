@@ -122,8 +122,9 @@ race_controller:
     # 冷却结束后仍只接受向车头发散的入口双虚线；找不到时保持原有受保护巡线，
     # 不执行倒车或环岛入口专用停车。
     # 环岛内是紧凑虚线圆：单独降低线速度并提高角速度，不影响入口前直段。
-    roundabout_track_speed_m_s: 0.08
-    roundabout_track_min_speed_m_s: 0.05
+    # 仅环岛内：降低线速度，让相机在弧顶保留黑色虚线。
+    roundabout_track_speed_m_s: 0.06
+    roundabout_track_min_speed_m_s: 0.04
     roundabout_track_max_angular_rad_s: 0.95
     # 环岛必须等台阶跳跃完成后再检查，不能用时间提前进入。
     roundabout_time_mode: false
@@ -144,11 +145,11 @@ race_controller:
     roundabout_min_complete_seconds: 8.0
     roundabout_heading_timeout_s: 35.0
     roundabout_ccw_imu_sign: 1.0
-    roundabout_ccw_bias_rad_s: 0.25
+    roundabout_ccw_bias_rad_s: 0.27
     # 已切入环岛后禁止虚线噪点命令顺时针回转；正 angular-z 为逆时针。
-    roundabout_min_ccw_angular_rad_s: 0.38
+    roundabout_min_ccw_angular_rad_s: 0.42
     # 环岛虚线专用角速度一阶平滑，避免虚线切换时突然打方向。
-    roundabout_angular_filter_alpha: 0.65
+    roundabout_angular_filter_alpha: 0.70
     # IMU 累计 360°并回到入口 0°后，锁定关闭环岛识别；低速直行，
     # 只有连续确认黑色实线才恢复普通巡线，防止继续在环岛虚线上绕圈。
     roundabout_exit_search_speed_m_s: 0.08
@@ -157,12 +158,12 @@ race_controller:
     # 识别岔口后，先低速逆时针切入环岛，再交回虚线巡线器。
     # 真正入口连续确认后：不读取远处黑实线，按正常左转角速度强制逆时针切入 0.5 秒。
     roundabout_entry_turn_seconds: 0.50
-    roundabout_entry_speed_m_s: 0.08
-    roundabout_entry_angular_rad_s: 0.65
+    roundabout_entry_speed_m_s: 0.06
+    roundabout_entry_angular_rad_s: 0.70
     # 环岛虚线存在空隙；丢失时低速强制逆时针（左）转找回，超时才停车。
     roundabout_lost_continue_seconds: 1.60
-    roundabout_lost_speed_m_s: 0.05
-    roundabout_lost_angular_rad_s: 0.70
+    roundabout_lost_speed_m_s: 0.04
+    roundabout_lost_angular_rad_s: 0.75
     # 黑色实线短暂丢失时：仅使用最近真实 5 帧的中位方向，低速找回最多
     # 0.40 秒；超时后回退到原有 SEARCH/LOST_TIMEOUT_STOP 保护。
     solid_reacquire_enabled: true

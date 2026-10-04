@@ -542,8 +542,10 @@ class RaceController(OutdoorLineFollower):
             # it never commands a reverse or a ring-entry stop here.
             # The close dashed circle needs its own profile: much lower
             # forward speed and more yaw authority than the entry approach.
-            "roundabout_track_speed_m_s": 0.08,
-            "roundabout_track_min_speed_m_s": 0.05,
+            # Tight ring only: reduce forward speed before increasing yaw so
+            # the camera retains the dashed arc through the top of the loop.
+            "roundabout_track_speed_m_s": 0.06,
+            "roundabout_track_min_speed_m_s": 0.04,
             "roundabout_track_max_angular_rad_s": 0.95,
             "roundabout_time_mode": False,
             "roundabout_min_start_seconds": 5.0,
@@ -563,22 +565,22 @@ class RaceController(OutdoorLineFollower):
             "roundabout_min_complete_seconds": 8.0,
             "roundabout_heading_timeout_s": 35.0,
             "roundabout_ccw_imu_sign": 1.0,
-            "roundabout_ccw_bias_rad_s": 0.25,
+            "roundabout_ccw_bias_rad_s": 0.27,
             # Never let a noisy dashed segment command the robot back in the
             # clockwise direction after it has committed to the island.
-            "roundabout_min_ccw_angular_rad_s": 0.38,
+            "roundabout_min_ccw_angular_rad_s": 0.42,
             # Smooth the ring-specific angular command.  This is deliberately
             # not applied to the ordinary solid-line follower.
-            "roundabout_angular_filter_alpha": 0.65,
+            "roundabout_angular_filter_alpha": 0.70,
             # Once the true entrance is confirmed, ignore every remote solid
             # target and apply the normal left-turn angular speed for this
             # short forced CCW commit before dashed-line tracking starts.
             "roundabout_entry_turn_seconds": 0.50,
-            "roundabout_entry_speed_m_s": 0.08,
-            "roundabout_entry_angular_rad_s": 0.65,
+            "roundabout_entry_speed_m_s": 0.06,
+            "roundabout_entry_angular_rad_s": 0.70,
             "roundabout_lost_continue_seconds": 1.60,
-            "roundabout_lost_speed_m_s": 0.05,
-            "roundabout_lost_angular_rad_s": 0.70,
+            "roundabout_lost_speed_m_s": 0.04,
+            "roundabout_lost_angular_rad_s": 0.75,
             # After a heading-confirmed 360-degree island lap, do not hand a
             # remaining dash straight back to normal line following.  Move
             # straight at low speed until a long solid line is stable.
