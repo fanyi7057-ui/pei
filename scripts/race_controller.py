@@ -525,7 +525,11 @@ class RaceController(OutdoorLineFollower):
             "roundabout_entry_allow_outward_curve_fallback": True,
             "roundabout_entry_outward_slope_min": 0.15,
             "roundabout_entry_approach_min_y_px": 8.0,
-            "roundabout_entry_confirm_frames": 5,
+            # The camera normally changes from one short dash component to
+            # the next while the vehicle cuts into the circle.  Confirm the
+            # entrance across the evidence window instead of requiring five
+            # frames from one identical component.
+            "roundabout_entry_confirm_frames": 3,
             "roundabout_entry_track_max_x_jump_px": 60.0,
             "roundabout_entry_track_max_y_jump_px": 30.0,
             "roundabout_entry_y_jitter_px": 2.5,
@@ -2027,17 +2031,21 @@ class RaceController(OutdoorLineFollower):
                                 and abs(dy) <= float(self.roundabout_entry_track_max_y_jump_px)
                             )
                             approaching = dy >= -float(self.roundabout_entry_y_jitter_px)
-                            if same_cluster and approaching:
-                                self.roundabout_dash_hits += 1
-                            else:
-                                # The component selector jumped to another
-                                # dash group or it receded.  Restart instead
-                                # of combining blue-exit and true-entry data.
-                                self.roundabout_entry_candidate_start_y = ring_marker.center_y
-                                self.roundabout_dash_hits = 1
+                            # Once the exit marker has been cleared and the
+                            # later same-side entry geometry is present, a
+                            # component jump is expected: the camera moves
+                            # from one dashed segment to the next as the car
+                            # physically enters the circle.  Keep evidence
+                            # within the short timeout instead of resetting
+                            # it, otherwise the robot can be in the circle
+                            # while its state machine still searches outside.
+                            self.roundabout_dash_hits += 1
+                            if not (same_cluster and approaching):
                                 self.get_logger().info(
-                                    "RING_ENTRY_RESTART：虚线簇跳变/远离 dx=%+.1f dy=%+.1f，重新跟踪"
-                                    % (dx, dy)
+                                    "RING_ENTRY_EVIDENCE：虚线簇切换 dx=%+.1f dy=%+.1f；保留 %.2fs 内的入口证据（%d/%d）"
+                                    % (dx, dy, evidence_timeout,
+                                       self.roundabout_dash_hits,
+                                       int(self.roundabout_entry_confirm_frames))
                                 )
                             self.roundabout_entry_candidate_last_x = ring_marker.center_x
                             self.roundabout_entry_candidate_last_y = ring_marker.center_y
@@ -2046,16 +2054,11 @@ class RaceController(OutdoorLineFollower):
                     self.roundabout_entry_candidate_start_y = None
                     self.roundabout_entry_candidate_last_x = None
                     self.roundabout_entry_candidate_last_y = None
-                entered_toward_vehicle = (
-                    self.roundabout_entry_candidate_start_y is not None
-                    and self.roundabout_entry_candidate_last_y is not None
-                    and float(self.roundabout_entry_candidate_last_y)
-                    - float(self.roundabout_entry_candidate_start_y)
-                    >= float(self.roundabout_entry_approach_min_y_px)
-                )
-                if (self.roundabout_dash_hits >= int(self.roundabout_entry_confirm_frames)
-                        and entered_toward_vehicle):
-                    self._begin_roundabout_entry(now, "确认后续同侧黑色虚线为环岛入口，低速逆时针切入")
+                if self.roundabout_dash_hits >= int(self.roundabout_entry_confirm_frames):
+                    self._begin_roundabout_entry(
+                        now,
+                        "确认后续同侧入口几何：虚线段切换证据已累计，低速逆时针切入",
+                    )
         # The first left dashed group is explicitly the exit marker.  Do not
         # feed it to the normal curve tracker during its short pass-over.
         # Keep the fixed one-second exit-mark search isolated from the normal

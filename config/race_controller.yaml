@@ -104,11 +104,12 @@ race_controller:
     roundabout_dash_confirm_frames: 5
     roundabout_dash_min_components: 4
     # 出口和入口都在左侧。首次“弯曲”左侧簇为出口；后续同侧弯曲虚线
-    # 连续朝车头移动后才可作为入口，双分支发散只作日志辅助。
+    # 只要在短证据窗口内连续看到后续同侧入口几何即可进入；切入时相机
+    # 会从一段虚线跳到下一段，不能要求始终锁定同一个虚线簇。
     roundabout_entry_min_travel_m: 0.30
     roundabout_entry_expected_side: same
     roundabout_entry_approach_min_y_px: 8.0
-    roundabout_entry_confirm_frames: 5
+    roundabout_entry_confirm_frames: 3
     roundabout_entry_track_max_x_jump_px: 60.0
     roundabout_entry_track_max_y_jump_px: 30.0
     roundabout_entry_y_jitter_px: 2.5
