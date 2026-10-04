@@ -60,15 +60,14 @@ RACE_SETTINGS = {
     "roundabout_prepare_speed_m_s": 0.20,
     "roundabout_prepare_min_speed_m_s": 0.14,
     "roundabout_prepare_max_angular_rad_s": 0.40,
-    # Confirmed forward-converging exit: drive past it for 2.5 s before any
-    # entrance decision, so its curved dash cannot be mistaken for entry.
-    "roundabout_marker_pass_speed_m_s": 0.12,
-    "roundabout_marker_cooldown_seconds": 2.50,
-    "roundabout_marker_reference_speed_m_s": 0.12,
+    # Confirmed forward-converging exit: perform exactly one second of a
+    # controlled, slight-left search before any entrance decision.
+    "roundabout_marker_pass_speed_m_s": 0.30,
+    "roundabout_marker_cooldown_seconds": 1.00,
+    "roundabout_marker_search_ccw_bias_rad_s": 0.10,
     "roundabout_marker_evidence_seconds": 0.45,
-    # Stop waiting for a left cluster after this bound.  The actual entrance
-    # can remain visible while the exit branch leaves the image.
-    "roundabout_marker_max_hold_seconds": 2.50,
+    # The search must release after the same fixed one-second interval.
+    "roundabout_marker_max_hold_seconds": 1.00,
     # Both exit and entrance are left-side curved clusters.  Only the true
     # entrance has two dashed arms that diverge toward the camera.
     "roundabout_marker_curve_min_slope": 0.06,
@@ -87,10 +86,6 @@ RACE_SETTINGS = {
     "roundabout_pre_entry_max_angular_rad_s": 0.25,
     "roundabout_pre_entry_max_line_error": 0.35,
     "roundabout_pre_entry_ccw_bias_rad_s": 0.10,
-    "roundabout_entry_fork_search_seconds": 1.20,
-    "roundabout_entry_backup_seconds": 0.55,
-    "roundabout_entry_backup_speed_m_s": 0.06,
-    "roundabout_entry_backup_max_attempts": 1,
     # Dedicated tight-circle profile: it leaves approach and normal curves unchanged.
     "roundabout_track_speed_m_s": 0.09,
     "roundabout_track_min_speed_m_s": 0.06,

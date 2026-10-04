@@ -374,8 +374,7 @@ class RaceController(OutdoorLineFollower):
     """The only RGB-camera and /cmd_vel owner during a competition run."""
     (FOLLOW, STEP_APPROACH, JUMP_WAIT, JUMP_RETREAT, JUMP_RUNUP, JUMP, LAND,
      DASH_APPROACH, ROUNDABOUT_ENTRY, ROUNDABOUT, CROSSWALK_APPROACH,
-     CROSSWALK_STOP, FINISHED, ROUNDABOUT_EXIT_SEARCH,
-     ROUNDABOUT_ENTRY_BACKUP) = range(15)
+     CROSSWALK_STOP, FINISHED, ROUNDABOUT_EXIT_SEARCH) = range(14)
 
     def __init__(self):
         super().__init__()
@@ -502,13 +501,15 @@ class RaceController(OutdoorLineFollower):
             # is the exit marker; after it clears the camera, the second is
             # the actual island entry marker.
             "roundabout_first_marker_confirm_frames": 5,
-            "roundabout_marker_cooldown_seconds": 2.50,
-            # The nominal cooldown is expressed at this reference speed.
-            # Runtime duration is rescaled to preserve the physical distance
-            # driven past the first (exit) marker when speed is changed.
-            "roundabout_marker_reference_speed_m_s": 0.12,
+            # Use a fixed one-second controlled search after the exit mark.
+            # This is deliberately time based: the robot must not wait for a
+            # partly visible exit cluster to leave the image before searching.
+            "roundabout_marker_cooldown_seconds": 1.00,
             "roundabout_marker_evidence_seconds": 0.45,
-            "roundabout_marker_pass_speed_m_s": 0.12,
+            "roundabout_marker_pass_speed_m_s": 0.30,
+            # A small CCW bias keeps the camera looking toward the left-side
+            # dashed entrance instead of drifting right during this search.
+            "roundabout_marker_search_ccw_bias_rad_s": 0.10,
             "roundabout_marker_clear_frames": 5,
             # A later entrance branch can still be visible on the left.  Do
             # not wait indefinitely for every left dashed component to clear.
@@ -533,13 +534,9 @@ class RaceController(OutdoorLineFollower):
             "roundabout_pre_entry_max_angular_rad_s": 0.25,
             "roundabout_pre_entry_max_line_error": 0.35,
             "roundabout_pre_entry_ccw_bias_rad_s": 0.10,
-            # After the mandatory exit cooldown, require the true outward
-            # opening fork.  If it cannot be seen, step back once and inspect
-            # it again instead of entering the forward-converging exit curve.
-            "roundabout_entry_fork_search_seconds": 1.20,
-            "roundabout_entry_backup_seconds": 0.55,
-            "roundabout_entry_backup_speed_m_s": 0.06,
-            "roundabout_entry_backup_max_attempts": 1,
+            # The true entry still requires the outward-opening fork.  A
+            # missed frame falls back to the protected normal line follower;
+            # it never commands a reverse or a ring-entry stop here.
             # The close dashed circle needs its own profile: much lower
             # forward speed and more yaw authority than the entry approach.
             "roundabout_track_speed_m_s": 0.09,
@@ -668,9 +665,6 @@ class RaceController(OutdoorLineFollower):
         self.roundabout_entry_candidate_start_y = None
         self.roundabout_entry_candidate_last_x = None
         self.roundabout_entry_candidate_last_y = None
-        self.roundabout_entry_search_started_at = 0.0
-        self.roundabout_entry_fork_last_seen = 0.0
-        self.roundabout_entry_backup_count = 0
         self.roundabout_used_this_lap = False
         self.roundabout_started_at = 0.0
         self.latest_yaw = None
@@ -791,10 +785,9 @@ class RaceController(OutdoorLineFollower):
             "roundabout_track_speed_m_s", "roundabout_track_min_speed_m_s",
             "roundabout_track_max_angular_rad_s",
             "roundabout_marker_pass_speed_m_s", "roundabout_marker_cooldown_seconds",
+            "roundabout_marker_search_ccw_bias_rad_s",
             "roundabout_pre_entry_speed_m_s", "roundabout_pre_entry_max_angular_rad_s",
             "roundabout_pre_entry_max_line_error", "roundabout_pre_entry_ccw_bias_rad_s",
-            "roundabout_entry_fork_search_seconds", "roundabout_entry_backup_seconds",
-            "roundabout_entry_backup_speed_m_s", "roundabout_entry_backup_max_attempts",
             "roundabout_marker_max_hold_seconds",
             "roundabout_marker_curve_min_slope", "roundabout_marker_curve_min_residual_px",
             "roundabout_fork_min_separation_px", "roundabout_fork_min_divergence_px",
@@ -824,14 +817,11 @@ class RaceController(OutdoorLineFollower):
             track_max_angular = float(updates.get("roundabout_track_max_angular_rad_s", self.roundabout_track_max_angular_rad_s))
             marker_pass_speed = float(updates.get("roundabout_marker_pass_speed_m_s", self.roundabout_marker_pass_speed_m_s))
             marker_cooldown = float(updates.get("roundabout_marker_cooldown_seconds", self.roundabout_marker_cooldown_seconds))
+            marker_search_ccw_bias = float(updates.get("roundabout_marker_search_ccw_bias_rad_s", self.roundabout_marker_search_ccw_bias_rad_s))
             pre_entry_speed = float(updates.get("roundabout_pre_entry_speed_m_s", self.roundabout_pre_entry_speed_m_s))
             pre_entry_max_angular = float(updates.get("roundabout_pre_entry_max_angular_rad_s", self.roundabout_pre_entry_max_angular_rad_s))
             pre_entry_max_error = float(updates.get("roundabout_pre_entry_max_line_error", self.roundabout_pre_entry_max_line_error))
             pre_entry_ccw_bias = float(updates.get("roundabout_pre_entry_ccw_bias_rad_s", self.roundabout_pre_entry_ccw_bias_rad_s))
-            entry_fork_search_seconds = float(updates.get("roundabout_entry_fork_search_seconds", self.roundabout_entry_fork_search_seconds))
-            entry_backup_seconds = float(updates.get("roundabout_entry_backup_seconds", self.roundabout_entry_backup_seconds))
-            entry_backup_speed = float(updates.get("roundabout_entry_backup_speed_m_s", self.roundabout_entry_backup_speed_m_s))
-            entry_backup_max_attempts = float(updates.get("roundabout_entry_backup_max_attempts", self.roundabout_entry_backup_max_attempts))
             marker_max_hold = float(updates.get("roundabout_marker_max_hold_seconds", self.roundabout_marker_max_hold_seconds))
             curve_min_slope = float(updates.get("roundabout_marker_curve_min_slope", self.roundabout_marker_curve_min_slope))
             curve_min_residual = float(updates.get("roundabout_marker_curve_min_residual_px", self.roundabout_marker_curve_min_residual_px))
@@ -871,10 +861,12 @@ class RaceController(OutdoorLineFollower):
             return SetParametersResult(successful=False, reason="环岛绕行速度必须满足 0.05 <= min <= speed <= 0.30")
         if not 0.10 <= track_max_angular <= 1.20:
             return SetParametersResult(successful=False, reason="环岛绕行角速度必须在 0.10 到 1.20")
-        if not 0.03 <= marker_pass_speed <= 0.20:
-            return SetParametersResult(successful=False, reason="首次环岛标记通过速度必须在 0.03 到 0.20")
+        if not 0.03 <= marker_pass_speed <= 0.50:
+            return SetParametersResult(successful=False, reason="首次环岛标记冷却搜寻速度必须在 0.03 到 0.50")
         if not 0.20 <= marker_cooldown <= 3.00:
-            return SetParametersResult(successful=False, reason="首次标记名义通过时间必须在 0.20 到 3.00")
+            return SetParametersResult(successful=False, reason="首次标记冷却搜寻时间必须在 0.20 到 3.00")
+        if not 0.0 <= marker_search_ccw_bias <= 0.25:
+            return SetParametersResult(successful=False, reason="首次标记冷却搜寻左转偏置必须在 0.00 到 0.25")
         if not 0.03 <= pre_entry_speed <= 0.20:
             return SetParametersResult(successful=False, reason="环岛入口前保护速度必须在 0.03 到 0.20")
         if not 0.05 <= pre_entry_max_angular <= 0.50:
@@ -883,12 +875,6 @@ class RaceController(OutdoorLineFollower):
             return SetParametersResult(successful=False, reason="环岛入口前保护误差阈值必须在 0.05 到 0.50")
         if not 0.0 <= pre_entry_ccw_bias <= 0.20:
             return SetParametersResult(successful=False, reason="环岛入口前逆时针偏置必须在 0.00 到 0.20")
-        if not 0.40 <= entry_fork_search_seconds <= 5.00:
-            return SetParametersResult(successful=False, reason="环岛入口双虚线搜索时间必须在 0.40 到 5.00")
-        if not 0.20 <= entry_backup_seconds <= 2.00 or not 0.03 <= entry_backup_speed <= 0.12:
-            return SetParametersResult(successful=False, reason="环岛入口倒车时间或速度超出安全范围")
-        if entry_backup_max_attempts not in (0.0, 1.0, 2.0):
-            return SetParametersResult(successful=False, reason="环岛入口倒车复查次数只能是 0、1 或 2")
         if not 0.50 <= marker_max_hold <= 4.00:
             return SetParametersResult(successful=False, reason="环岛出口最大等待时间必须在 0.50 到 4.00")
         if not 0.01 <= curve_min_slope <= 1.50 or not 0.10 <= curve_min_residual <= 30.0:
@@ -1058,12 +1044,10 @@ class RaceController(OutdoorLineFollower):
         )
 
     def _roundabout_marker_pass_profile(self):
-        """Return a speed and duration that preserve first-marker clearance."""
+        """Return the fixed-duration, left-biased exit-marker search profile."""
         pass_speed = max(0.03, float(self.roundabout_marker_pass_speed_m_s))
-        reference_speed = max(0.03, float(self.roundabout_marker_reference_speed_m_s))
-        nominal_seconds = max(0.10, float(self.roundabout_marker_cooldown_seconds))
-        distance = nominal_seconds * reference_speed
-        return pass_speed, distance / pass_speed, distance
+        duration = max(0.10, float(self.roundabout_marker_cooldown_seconds))
+        return pass_speed, duration, pass_speed * duration
 
     def _roundabout_pre_entry_guard_active(self):
         """Protect the straight segment between the exit mark and true entry.
@@ -1646,9 +1630,6 @@ class RaceController(OutdoorLineFollower):
         self.roundabout_entry_candidate_start_y = None
         self.roundabout_entry_candidate_last_x = None
         self.roundabout_entry_candidate_last_y = None
-        self.roundabout_entry_search_started_at = 0.0
-        self.roundabout_entry_fork_last_seen = 0.0
-        self.roundabout_entry_backup_count = 0
         self.roundabout_used_this_lap = False
         self.roundabout_started_at = 0.0
         self.roundabout_heading_reference = self.roundabout_heading_last = None
@@ -1788,22 +1769,6 @@ class RaceController(OutdoorLineFollower):
                 float(self.jump_forward_speed_m_s) * float(self.landing_forward_speed_ratio),
                 0., 1 / CONTROL_RATE_HZ,
             ), 0., "LAND")
-        if self.phase == self.ROUNDABOUT_ENTRY_BACKUP:
-            if now >= self.deadline:
-                self.phase = self.FOLLOW
-                self.roundabout_entry_search_started_at = now
-                self.roundabout_entry_fork_last_seen = now
-                self.roundabout_dash_hits = 0
-                self.roundabout_entry_candidate_start_y = None
-                self.roundabout_entry_candidate_last_x = None
-                self.roundabout_entry_candidate_last_y = None
-                self.get_logger().warn("环岛入口岔口复查：倒车完成，重新低速寻找向车头发散的虚线簇")
-            else:
-                linear, angular = self._publish_smooth(
-                    -float(self.roundabout_entry_backup_speed_m_s), 0.0,
-                    1 / CONTROL_RATE_HZ,
-                )
-                return linear, angular, 0.0, "ROUNDABOUT_ENTRY_BACKUP"
         if self.phase == self.DASH_APPROACH:
             linear, angular, derivative, _ = self._control(detection, now)
             if (now - self.dash_approach_started_at >= float(self.roundabout_approach_min_seconds)
@@ -1939,18 +1904,15 @@ class RaceController(OutdoorLineFollower):
                     self.roundabout_entry_candidate_start_y = None
                     self.roundabout_entry_candidate_last_x = None
                     self.roundabout_entry_candidate_last_y = None
-                    self.roundabout_entry_search_started_at = 0.0
-                    self.roundabout_entry_fork_last_seen = 0.0
-                    self.roundabout_entry_backup_count = 0
                     self.roundabout_marker_clear_hits = self.roundabout_dash_hits = 0
                     # This is the course's exit marker, not an entry branch.
-                    # Reset the curve tracker and hold a straight command for
-                    # the full cooldown so its short dashes cannot pull us left.
+                    # Reset the curve tracker and use the dedicated slight-left
+                    # command for the fixed cooldown search interval.
                     self.detector._reset_to_centre()
                     self.get_logger().info(
-                        "确认首次左侧黑色虚线：按环岛出口标记直行 %.2fm（%.2fm/s，%.1fs）；最多等待 %.1fs 后重新检测入口"
+                        "确认首次左侧黑色虚线：按环岛出口标记向左搜寻 %.2fm（%.2fm/s，%.1fs）；随后重新检测入口"
                         % (pass_distance, pass_speed, pass_seconds,
-                           float(self.roundabout_marker_max_hold_seconds))
+                           )
                     )
             elif self.roundabout_marker_wait_clear:
                 self.roundabout_marker_clear_hits = (
@@ -1967,8 +1929,6 @@ class RaceController(OutdoorLineFollower):
                     self.roundabout_entry_candidate_start_y = None
                     self.roundabout_entry_candidate_last_x = None
                     self.roundabout_entry_candidate_last_y = None
-                    self.roundabout_entry_search_started_at = now
-                    self.roundabout_entry_fork_last_seen = now
                     if clear_timed_out and not clear_confirmed:
                         self.get_logger().warn(
                             "出口左侧虚线仍在画面：达到 %.1fs 上限，解除直行等待并开始独立入口检测"
@@ -1989,8 +1949,6 @@ class RaceController(OutdoorLineFollower):
                          or bool(ring_marker.fork_diverging))
                 )
                 entry_marker = side_matches and curved_marker and fork_matches
-                if side_matches and curved_marker and ring_marker is not None and ring_marker.fork_diverging:
-                    self.roundabout_entry_fork_last_seen = now
                 if ring_marker is not None and not entry_marker:
                     if now - self.roundabout_debug_last_time >= .25:
                         self.roundabout_debug_last_time = now
@@ -2062,50 +2020,18 @@ class RaceController(OutdoorLineFollower):
                 if (self.roundabout_dash_hits >= int(self.roundabout_entry_confirm_frames)
                         and entered_toward_vehicle):
                     self._begin_roundabout_entry(now, "确认后续同侧黑色虚线为环岛入口，低速逆时针切入")
-                else:
-                    if self.roundabout_entry_search_started_at <= 0.0:
-                        self.roundabout_entry_search_started_at = now
-                        self.roundabout_entry_fork_last_seen = now
-                    no_fork_for = now - self.roundabout_entry_fork_last_seen
-                    if no_fork_for >= float(self.roundabout_entry_fork_search_seconds):
-                        if self.roundabout_entry_backup_count < int(self.roundabout_entry_backup_max_attempts):
-                            self.roundabout_entry_backup_count += 1
-                            self.phase = self.ROUNDABOUT_ENTRY_BACKUP
-                            self.deadline = now + float(self.roundabout_entry_backup_seconds)
-                            self.roundabout_dash_hits = 0
-                            self.roundabout_entry_candidate_start_y = None
-                            self.roundabout_entry_candidate_last_x = None
-                            self.roundabout_entry_candidate_last_y = None
-                            self.get_logger().warn(
-                                "RING_ENTRY_NO_DIVERGING_FORK：冷却后 %.1fs 未确认向车头发散的双虚线；"
-                                "倒车 %.2fs 后复查（%d/%d）"
-                                % (no_fork_for, float(self.roundabout_entry_backup_seconds),
-                                   self.roundabout_entry_backup_count,
-                                   int(self.roundabout_entry_backup_max_attempts))
-                            )
-                            linear, angular = self._publish_smooth(
-                                -float(self.roundabout_entry_backup_speed_m_s), 0.0,
-                                1 / CONTROL_RATE_HZ,
-                            )
-                            return linear, angular, 0.0, "ROUNDABOUT_ENTRY_BACKUP"
-                        self.stop_now()
-                        self.get_logger().error(
-                            "RING_ENTRY_NO_DIVERGING_FORK_STOP：倒车复查后仍找不到真正入口，已安全停车"
-                        )
-                        return 0.0, 0.0, 0.0, "ROUNDABOUT_ENTRY_NO_FORK_STOP"
         # The first left dashed group is explicitly the exit marker.  Do not
         # feed it to the normal curve tracker during its short pass-over.
-        # Keep the exit-mark pass command active until the first cluster has
-        # actually disappeared, not merely until its nominal clearance time
-        # has elapsed. This prevents a late visible dash from reaching the
-        # normal curve tracker for a few unsafe frames.
+        # Keep the fixed one-second exit-mark search isolated from the normal
+        # curve tracker.  It intentionally has a small CCW command so that a
+        # rightward drift cannot hide the left-side entrance dashes.
         if self.roundabout_marker_wait_clear:
             pass_speed, _pass_seconds, _pass_distance = self._roundabout_marker_pass_profile()
             linear, angular = self._publish_smooth(
-                pass_speed, 0.0,
+                pass_speed, float(self.roundabout_marker_search_ccw_bias_rad_s),
                 1 / CONTROL_RATE_HZ,
             )
-            return linear, angular, 0.0, "ROUNDABOUT_EXIT_MARKER_STRAIGHT"
+            return linear, angular, 0.0, "ROUNDABOUT_EXIT_MARKER_CCW_SEARCH"
         # Between the exit marker and the confirmed entry, black dashes can
         # briefly displace the solid-line target. Use the dedicated low-speed
         # guard instead of the inherited SEARCH_* / history-reacquire turn.
