@@ -429,7 +429,7 @@ class RaceController(OutdoorLineFollower):
             # camera aimed toward the nearby centre line while racing.
             "track_height_m": 0.22, "track_pitching_deg": 8.0,
             "roundabout_enabled": True, "roundabout_arm_after_step_s": 5.0,
-            "roundabout_ccw_seconds": 5.0,
+            "roundabout_ccw_seconds": 5.0, "roundabout_ccw_bias_rad_s": 0.12,
             "start_line_confirm_frames": 4, "start_line_min_band_height_px": 5,
             "line_black_value_max": 105, "line_black_saturation_max": 150,
             "roundabout_dash_close_kernel_height": 17,
@@ -542,10 +542,8 @@ class RaceController(OutdoorLineFollower):
             # it never commands a reverse or a ring-entry stop here.
             # The close dashed circle needs its own profile: much lower
             # forward speed and more yaw authority than the entry approach.
-            # Tight ring only: reduce forward speed before increasing yaw so
-            # the camera retains the dashed arc through the top of the loop.
-            "roundabout_track_speed_m_s": 0.05,
-            "roundabout_track_min_speed_m_s": 0.04,
+            "roundabout_track_speed_m_s": 0.08,
+            "roundabout_track_min_speed_m_s": 0.05,
             "roundabout_track_max_angular_rad_s": 0.95,
             "roundabout_time_mode": False,
             "roundabout_min_start_seconds": 5.0,
@@ -565,22 +563,25 @@ class RaceController(OutdoorLineFollower):
             "roundabout_min_complete_seconds": 8.0,
             "roundabout_heading_timeout_s": 35.0,
             "roundabout_ccw_imu_sign": 1.0,
-            "roundabout_ccw_bias_rad_s": 0.27,
+            "roundabout_ccw_bias_rad_s": 0.30,
             # Never let a noisy dashed segment command the robot back in the
             # clockwise direction after it has committed to the island.
-            "roundabout_min_ccw_angular_rad_s": 0.42,
+            "roundabout_min_ccw_angular_rad_s": 0.45,
             # Smooth the ring-specific angular command.  This is deliberately
             # not applied to the ordinary solid-line follower.
-            "roundabout_angular_filter_alpha": 0.70,
+            "roundabout_angular_filter_alpha": 0.75,
             # Once the true entrance is confirmed, ignore every remote solid
             # target and apply the normal left-turn angular speed for this
             # short forced CCW commit before dashed-line tracking starts.
             "roundabout_entry_turn_seconds": 0.50,
-            "roundabout_entry_speed_m_s": 0.06,
-            "roundabout_entry_angular_rad_s": 0.70,
+            "roundabout_entry_speed_m_s": 0.08,
+            "roundabout_entry_angular_rad_s": 0.60,
             "roundabout_lost_continue_seconds": 1.60,
-            "roundabout_lost_speed_m_s": 0.04,
-            "roundabout_lost_angular_rad_s": 0.75,
+            # A sustained dashed-line loss must keep moving along the circle,
+            # not pivot in place.  This is only the post-entry recovery
+            # profile; normal ring tracking and entry recognition are unchanged.
+            "roundabout_lost_speed_m_s": 0.10,
+            "roundabout_lost_angular_rad_s": 0.20,
             # After a heading-confirmed 360-degree island lap, do not hand a
             # remaining dash straight back to normal line following.  Move
             # straight at low speed until a long solid line is stable.
@@ -686,9 +687,6 @@ class RaceController(OutdoorLineFollower):
         self.roundabout_progress_last_time = 0.0
         self.roundabout_angular_filtered = None
         self.roundabout_lost_since = None
-        # Ring dashes are intermittent. Keep recent visual directions so a
-        # sustained gap can turn toward the guide instead of blindly spinning.
-        self.roundabout_dash_history = deque(maxlen=5)
         self.roundabout_exit_search_started_at = 0.0
         self.dash_approach_started_at = 0.0
         self.lap, self.waiting_for_start_line = 1, False
@@ -1146,7 +1144,6 @@ class RaceController(OutdoorLineFollower):
         self.roundabout_odom_travel_m = 0.0
         self.roundabout_progress_last_time = 0.0
         self.roundabout_angular_filtered = None
-        self.roundabout_dash_history.clear()
         if bool(self.roundabout_use_imu_heading) and self.latest_heading_yaw is not None:
             self.get_logger().warn("%s；已记录环岛入口相对航向 0°（%s）" % (reason, self.heading_source))
         else:
@@ -1673,7 +1670,6 @@ class RaceController(OutdoorLineFollower):
         self.test_turn_count = 0
         self.roundabout_turn_ready = False
         self.roundabout_lost_since = None
-        self.roundabout_dash_history.clear()
         self.dash_approach_started_at = 0.0
         self.step_seen = False
         self.solid_line_history.clear()
@@ -1692,8 +1688,6 @@ class RaceController(OutdoorLineFollower):
         if detection.valid:
             self.last_line_detection = detection
             self.last_line_seen_time = now
-            if self.phase == self.ROUNDABOUT and np.isfinite(float(detection.error)):
-                self.roundabout_dash_history.append((now, float(detection.error)))
             return detection
         previous = self.last_line_detection
         if previous is None or now - self.last_line_seen_time > float(self.dashed_line_hold_seconds):
@@ -1704,19 +1698,6 @@ class RaceController(OutdoorLineFollower):
             confidence=min(float(previous.confidence), float(self.dashed_line_hold_confidence)),
             reason="dashed_gap_hold",
         )
-
-    def _roundabout_reacquire_angular(self, now: float) -> tuple[float, str]:
-        """Use recent real dashed-line direction after a sustained visual gap."""
-        max_age = max(float(self.dashed_line_hold_seconds), 0.80)
-        recent = [error for seen_at, error in self.roundabout_dash_history
-                  if now - seen_at <= max_age]
-        minimum = float(self.roundabout_min_ccw_angular_rad_s)
-        maximum = float(self.roundabout_lost_angular_rad_s)
-        if not recent:
-            return minimum, "no_recent_dash"
-        error = float(np.median(recent))
-        guided = float(np.clip(float(self.steering_kp) * error, -maximum, maximum))
-        return float(np.clip(max(minimum, guided), minimum, maximum)), "history_err=%+.2f" % error
 
     def _track_posture(self):
         """Keep the camera-facing race stance while following the line."""
@@ -1857,17 +1838,16 @@ class RaceController(OutdoorLineFollower):
             if not detection.valid:
                 if self.roundabout_lost_since is None:
                     self.roundabout_lost_since = now
-                    reacquire_angular, reacquire_source = self._roundabout_reacquire_angular(now)
                     self.get_logger().warn(
-                        "环岛黑色虚线暂时丢失：按最近虚线方向受限找回（%s，v=%.2f, w<=%.2f，最长 %.1fs）"
-                        % (reacquire_source, float(self.roundabout_lost_speed_m_s), reacquire_angular,
+                        "环岛黑色虚线暂时丢失：保持前进并温和左偏找回（v=%.2f, base_w=%.2f，最长 %.1fs）"
+                        % (float(self.roundabout_lost_speed_m_s),
+                           float(self.roundabout_lost_angular_rad_s),
                            float(self.roundabout_lost_continue_seconds))
                     )
                 if now - self.roundabout_lost_since <= float(self.roundabout_lost_continue_seconds):
-                    reacquire_angular, _ = self._roundabout_reacquire_angular(now)
                     linear, angular = self._publish_smooth(
                         float(self.roundabout_lost_speed_m_s),
-                        reacquire_angular,
+                        float(self.roundabout_lost_angular_rad_s),
                         1 / CONTROL_RATE_HZ,
                     )
                     return linear, angular, 0.0, "ROUNDABOUT_REACQUIRE_CCW"
@@ -2052,8 +2032,8 @@ class RaceController(OutdoorLineFollower):
                                 self.roundabout_dash_hits += 1
                             else:
                                 # The component selector jumped to another
-                                # dash group or it receded. Restart instead
-                                # of combining the exit and true-entry data.
+                                # dash group or it receded.  Restart instead
+                                # of combining blue-exit and true-entry data.
                                 self.roundabout_entry_candidate_start_y = ring_marker.center_y
                                 self.roundabout_dash_hits = 1
                                 self.get_logger().info(
