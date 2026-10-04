@@ -518,6 +518,10 @@ class RaceController(OutdoorLineFollower):
             # two separate left markers.  The true entry is also on the left,
             # but is a later, independently approaching dashed cluster.
             "roundabout_entry_min_travel_m": 0.30,
+            # The entrance is close behind the first exit marker.  Do not
+            # arm the island from a later, unrelated dashed group after the
+            # vehicle has already passed the physical fork.
+            "roundabout_entry_max_travel_m": 0.90,
             "roundabout_entry_expected_side": "same",
             # Prefer two diverging dashed arms.  If one arm is temporarily
             # outside the close ROI, accept a later curved branch only when
@@ -544,7 +548,7 @@ class RaceController(OutdoorLineFollower):
             # forward speed and more yaw authority than the entry approach.
             "roundabout_track_speed_m_s": 0.08,
             "roundabout_track_min_speed_m_s": 0.05,
-            "roundabout_track_max_angular_rad_s": 0.95,
+            "roundabout_track_max_angular_rad_s": 0.70,
             "roundabout_time_mode": False,
             "roundabout_min_start_seconds": 5.0,
             "roundabout_exit_confirm_frames": 5,
@@ -563,10 +567,10 @@ class RaceController(OutdoorLineFollower):
             "roundabout_min_complete_seconds": 8.0,
             "roundabout_heading_timeout_s": 35.0,
             "roundabout_ccw_imu_sign": 1.0,
-            "roundabout_ccw_bias_rad_s": 0.30,
+            "roundabout_ccw_bias_rad_s": 0.20,
             # Never let a noisy dashed segment command the robot back in the
             # clockwise direction after it has committed to the island.
-            "roundabout_min_ccw_angular_rad_s": 0.45,
+            "roundabout_min_ccw_angular_rad_s": 0.38,
             # Smooth the ring-specific angular command.  This is deliberately
             # not applied to the ordinary solid-line follower.
             "roundabout_angular_filter_alpha": 0.75,
@@ -1824,6 +1828,13 @@ class RaceController(OutdoorLineFollower):
         if self.phase == self.ROUNDABOUT_EXIT_SEARCH:
             return self._roundabout_exit_search_control(detection, frame, now)
         if self.phase == self.ROUNDABOUT:
+            # A held result is useful on a straight dashed route, but in a
+            # compact circle it can carry a stale high-curvature command and
+            # make the chassis spin.  Treat it as a true visual loss here;
+            # the dedicated gentle CCW branch below will search the next dash.
+            if detection.reason == "dashed_gap_hold":
+                detection = replace(detection, valid=False, confidence=0.0,
+                                    reason="roundabout_dash_gap")
             self._log_roundabout_progress(now)
             if self._roundabout_heading_complete(now):
                 self._begin_roundabout_exit_search(
@@ -1984,6 +1995,21 @@ class RaceController(OutdoorLineFollower):
                 outward_fallback = self._roundabout_entry_curves_outward(ring_marker)
                 entry_geometry_matches = fork_matches or outward_fallback
                 entry_marker = side_matches and curved_marker and entry_geometry_matches
+                if self.roundabout_marker_travel_m > float(self.roundabout_entry_max_travel_m):
+                    # The local entrance is behind us.  Never reinterpret a
+                    # distant ring dash while the chassis is already running
+                    # off-course as a valid entry.
+                    self.roundabout_complete = True
+                    self.roundabout_dash_hits = 0
+                    self.roundabout_entry_candidate_start_y = None
+                    self.roundabout_entry_candidate_last_x = None
+                    self.roundabout_entry_candidate_last_y = None
+                    entry_marker = False
+                    self.get_logger().warn(
+                        "RING_ENTRY_WINDOW_MISSED：出口后已行驶 %.2fm（上限 %.2fm），取消本圈环岛判定并回退黑实线巡线"
+                        % (self.roundabout_marker_travel_m,
+                           float(self.roundabout_entry_max_travel_m))
+                    )
                 if ring_marker is not None and not entry_marker:
                     if now - self.roundabout_debug_last_time >= .25:
                         self.roundabout_debug_last_time = now

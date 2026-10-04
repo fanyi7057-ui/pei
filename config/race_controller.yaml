@@ -105,6 +105,8 @@ race_controller:
     # 出口和入口都在左侧。首次“弯曲”左侧簇为出口；后续同侧弯曲虚线
     # 连续朝车头移动后才可作为入口，双分支发散只作日志辅助。
     roundabout_entry_min_travel_m: 0.30
+    # 真正入口紧跟在出口标记之后；超过该距离仍未确认则不允许远处虚线误入环岛。
+    roundabout_entry_max_travel_m: 0.90
     roundabout_entry_expected_side: same
     roundabout_entry_approach_min_y_px: 8.0
     roundabout_entry_confirm_frames: 5
@@ -123,7 +125,7 @@ race_controller:
     # 环岛内是紧凑虚线圆：单独降低线速度并提高角速度，不影响入口前直段。
     roundabout_track_speed_m_s: 0.08
     roundabout_track_min_speed_m_s: 0.05
-    roundabout_track_max_angular_rad_s: 0.95
+    roundabout_track_max_angular_rad_s: 0.70
     # 环岛必须等台阶跳跃完成后再检查，不能用时间提前进入。
     roundabout_time_mode: false
     roundabout_min_start_seconds: 5.0
@@ -143,9 +145,9 @@ race_controller:
     roundabout_min_complete_seconds: 8.0
     roundabout_heading_timeout_s: 35.0
     roundabout_ccw_imu_sign: 1.0
-    roundabout_ccw_bias_rad_s: 0.30
+    roundabout_ccw_bias_rad_s: 0.20
     # 已切入环岛后禁止虚线噪点命令顺时针回转；正 angular-z 为逆时针。
-    roundabout_min_ccw_angular_rad_s: 0.45
+    roundabout_min_ccw_angular_rad_s: 0.38
     # 环岛虚线专用角速度一阶平滑，避免虚线切换时突然打方向。
     roundabout_angular_filter_alpha: 0.75
     # IMU 累计 360°并回到入口 0°后，锁定关闭环岛识别；低速直行，

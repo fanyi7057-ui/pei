@@ -78,6 +78,7 @@ RACE_SETTINGS = {
     "roundabout_entry_allow_outward_curve_fallback": True,
     "roundabout_entry_outward_slope_min": 0.15,
     "roundabout_entry_min_travel_m": 0.30,
+    "roundabout_entry_max_travel_m": 0.90,
     "roundabout_entry_expected_side": "same",
     "roundabout_entry_approach_min_y_px": 8.0,
     "roundabout_entry_confirm_frames": 5,
@@ -91,7 +92,7 @@ RACE_SETTINGS = {
     # Dedicated tight-circle profile: it leaves approach and normal curves unchanged.
     "roundabout_track_speed_m_s": 0.08,
     "roundabout_track_min_speed_m_s": 0.05,
-    "roundabout_track_max_angular_rad_s": 0.95,
+    "roundabout_track_max_angular_rad_s": 0.70,
     "roundabout_entry_turn_seconds": 0.50,
     "roundabout_entry_speed_m_s": 0.08,
     "roundabout_entry_angular_rad_s": 0.60,
@@ -99,8 +100,8 @@ RACE_SETTINGS = {
     # Post-entry dashed loss: move forward at 0.10 m/s with a gentle CCW search.
     "roundabout_lost_speed_m_s": 0.10,
     "roundabout_lost_angular_rad_s": 0.20,
-    "roundabout_ccw_bias_rad_s": 0.30,
-    "roundabout_min_ccw_angular_rad_s": 0.45,
+    "roundabout_ccw_bias_rad_s": 0.20,
+    "roundabout_min_ccw_angular_rad_s": 0.38,
     "roundabout_angular_filter_alpha": 0.75,
     # A 360-degree yaw cycle is insufficient: the chassis must also travel
     # around the island rather than spin in place.
