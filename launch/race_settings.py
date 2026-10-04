@@ -80,8 +80,7 @@ RACE_SETTINGS = {
     "roundabout_entry_min_travel_m": 0.30,
     "roundabout_entry_expected_side": "same",
     "roundabout_entry_approach_min_y_px": 8.0,
-    # Accumulate valid later-entry evidence across short dash-component jumps.
-    "roundabout_entry_confirm_frames": 3,
+    "roundabout_entry_confirm_frames": 5,
     "roundabout_entry_track_max_x_jump_px": 60.0,
     "roundabout_entry_track_max_y_jump_px": 30.0,
     "roundabout_entry_y_jitter_px": 2.5,
@@ -90,7 +89,7 @@ RACE_SETTINGS = {
     "roundabout_pre_entry_max_line_error": 0.35,
     "roundabout_pre_entry_ccw_bias_rad_s": 0.10,
     # Dedicated tight-circle profile: it leaves approach and normal curves unchanged.
-    "roundabout_track_speed_m_s": 0.06,
+    "roundabout_track_speed_m_s": 0.05,
     "roundabout_track_min_speed_m_s": 0.04,
     "roundabout_track_max_angular_rad_s": 0.95,
     "roundabout_entry_turn_seconds": 0.50,
