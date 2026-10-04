@@ -1,0 +1,8 @@
+# Robot programs are launched directly by Linux through their shebang lines.
+# Keep executable scripts in LF format even when edited on Windows.
+*.py text eol=lf
+*.sh text eol=lf
+
+# ROS configuration and launch files are shared with the Orange Pi as text.
+*.yaml text eol=lf
+*.yml text eol=lf
