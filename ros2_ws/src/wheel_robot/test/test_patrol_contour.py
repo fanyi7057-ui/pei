@@ -238,7 +238,7 @@ def test_source_handoff_and_confirmed_return():
 @pytest.mark.parametrize("angle", [-1., -.1, 0., .1, 1.])
 def test_visible_path_always_same_speed_even_with_large_turn(angle):
     # Explicit legacy fixed-speed opt-out; V12 adaptive behavior has separate tests.
-    controller, tuning = FixedSpeedController(), replace(PatrolTuning(), adaptive_speed_enabled=0, fixed_speed_m_s=.65, linear_accel_m_s2=.65)
+    controller, tuning = FixedSpeedController(), replace(PatrolTuning(), adaptive_speed_enabled=0,recovery_turn_guard_enabled=0, fixed_speed_m_s=.65, linear_accel_m_s2=.65)
     for now in np.arange(0, 3., .05):
         linear, angular, mode = controller.command(PathEstimate(True, angle, .9), now, tuning)
     assert linear == pytest.approx(tuning.fixed_speed_m_s)
@@ -250,7 +250,7 @@ def test_visible_path_always_same_speed_even_with_large_turn(angle):
 
 def test_short_loss_keeps_issued_speed_then_final_timeout_stops():
     # Explicit legacy fixed-speed opt-out; V12 adaptive behavior has separate tests.
-    controller, tuning = FixedSpeedController(), replace(PatrolTuning(), adaptive_speed_enabled=0, fixed_speed_m_s=.65, linear_accel_m_s2=.65)
+    controller, tuning = FixedSpeedController(), replace(PatrolTuning(), adaptive_speed_enabled=0,recovery_turn_guard_enabled=0, fixed_speed_m_s=.65, linear_accel_m_s2=.65)
     for now in np.arange(0, 2.01, .05):
         controller.command(PathEstimate(True, -.1, .9), now, tuning)
     v1, w1, mode = controller.command(PathEstimate(False), 2.1, tuning)
@@ -503,7 +503,7 @@ def test_sparse_and_dense_equivalent_paths_have_same_row_weighting():
 
 def test_many_single_frame_dropouts_never_chop_or_restart_speed():
     # Explicit legacy fixed-speed opt-out; V12 adaptive behavior has separate tests.
-    controller, tuning = FixedSpeedController(), replace(replace(PatrolTuning(), adaptive_speed_enabled=0, fixed_speed_m_s=.65, linear_accel_m_s2=.65),reacquire_confirm_frames=1)
+    controller, tuning = FixedSpeedController(), replace(replace(PatrolTuning(), adaptive_speed_enabled=0,recovery_turn_guard_enabled=0, fixed_speed_m_s=.65, linear_accel_m_s2=.65),reacquire_confirm_frames=1)
     for now in np.arange(0, 2., .02):
         controller.command(PathEstimate(True, -.1, 1), now, tuning)
     for index, now in enumerate(np.arange(2., 5., .02)):
@@ -519,7 +519,8 @@ def test_loss_holds_actual_turn_not_unreached_requested_turn():
     before = controller.command(PathEstimate(True, -1, 1), 1.05, tuning)
     lost = controller.command(PathEstimate(False), 1.10, tuning)
     assert before[1] < tuning.max_turn_rad_s
-    assert lost[:2] == pytest.approx(before[:2])  # no blind acceleration, either
+    assert lost[0] == pytest.approx(before[0])  # no blind acceleration
+    assert abs(lost[1])<=min(abs(before[1]),tuning.search_turn_max_rad_s)
 
 
 def test_repeated_invalid_frames_do_not_extend_memory_deadline():
@@ -823,7 +824,7 @@ def test_road_observations_cannot_renew_expired_black_template(monkeypatch):
 
 def cruise_controller(error=-.5, **changes):
     # Explicit legacy controller fixture, not the deployed V13 tuning.
-    legacy=dict(adaptive_speed_enabled=0,fixed_speed_m_s=.65,linear_accel_m_s2=.65)
+    legacy=dict(adaptive_speed_enabled=0,recovery_turn_guard_enabled=0,fixed_speed_m_s=.65,linear_accel_m_s2=.65)
     legacy.update(changes)
     controller, tuning = FixedSpeedController(), replace(PatrolTuning(), **legacy)
     for now in np.arange(0, 2.01, 1/30):
@@ -1506,7 +1507,7 @@ def test_v6_zebra_optional_thirty_second_gates_are_not_task_substitutes():
 def test_v6_task_heading_ignores_zebra_lines_with_same_cruise_target():
     # Explicit legacy fixed-speed opt-out; V12 adaptive behavior has separate tests.
     r=RoundaboutRouter()
-    t=replace(PatrolTuning(), adaptive_speed_enabled=0, fixed_speed_m_s=.65, linear_accel_m_s2=.65)
+    t=replace(PatrolTuning(), adaptive_speed_enabled=0,recovery_turn_guard_enabled=0, fixed_speed_m_s=.65, linear_accel_m_s2=.65)
     r._phase("CW_CLEAR",0.)
     r.heading_target=.5
     v,w,mode=r.motion_override(.1,t,(0.,0.,.7))
@@ -1522,7 +1523,7 @@ def test_v6_task_heading_ignores_zebra_lines_with_same_cruise_target():
 def test_v6_search_can_reach_cruise_not_freeze_low_start_speed():
     # Explicit legacy fixed-speed opt-out; V12 adaptive behavior has separate tests.
     c=FixedSpeedController()
-    t=replace(PatrolTuning(), adaptive_speed_enabled=0, fixed_speed_m_s=.65, linear_accel_m_s2=.65)
+    t=replace(PatrolTuning(), adaptive_speed_enabled=0,recovery_turn_guard_enabled=0, fixed_speed_m_s=.65, linear_accel_m_s2=.65)
     c.command(PathEstimate(True,-.1,.9,source="black"),0.,t)
     for now in np.arange(.03,1.2,.03):
         v,_,_=c.command(PathEstimate(False),now,t)
@@ -1809,13 +1810,13 @@ def test_v13_node_deadline_keeps_bounded_entry_not_fake_handoff(node_module,monk
     assert r.deadline_overdue and not r.crosswalk_armed(30.,node.patrol_tuning)
 
 
-def test_v13_hot_reload_keeps_point_four_and_diagnostic_deadline(tmp_path):
+def test_v14_hot_reload_restores_point_six_five_and_diagnostic_deadline(tmp_path):
     config=tmp_path/"patrol.yaml"
     values=asdict(PatrolTuning())
     config.write_text(yaml.safe_dump({"patrol_test":values}),encoding="utf-8")
     watcher=PatrolFileWatcher(config)
     t,_=watcher.poll()
-    assert t.fixed_speed_m_s==.4 and t.adaptive_speed_enabled==1
+    assert t.fixed_speed_m_s==.65 and t.adaptive_speed_enabled==1
     values["roundabout_first_timeout_seconds"]=20.
     config.write_text(yaml.safe_dump({"patrol_test":values}),encoding="utf-8")
     t,message=watcher.poll()
@@ -2058,7 +2059,7 @@ def test_v9_early_zebra_never_resumes_fault_or_changes_cruise_target():
     r.fault="localization_fault"
     for now in (20.,20.03,20.06):
         assert not r.observe_crosswalk_visual_release(True,now,t)
-    assert r.fault and r.crosswalk_count==0 and t.fixed_speed_m_s==.4
+    assert r.fault and r.crosswalk_count==0 and t.fixed_speed_m_s==.65
 
 
 def test_v9_same_path_outputs_same_commands_before_and_after_first_zebra(node_module,monkeypatch):
@@ -2295,7 +2296,7 @@ def test_v10_complete_live_yaml_has_all_fields_and_preserves_non_ring_values():
     current,message=PatrolFileWatcher(SCRIPTS.parent/"config/patrol_test.yaml").poll()
     assert current is not None,message
     assert current==PatrolTuning()
-    assert current.fixed_speed_m_s==.4
+    assert current.fixed_speed_m_s==.65
     assert (current.crosswalk_stop_seconds,current.crosswalk_clear_seconds)==(3.,3.)
 
 

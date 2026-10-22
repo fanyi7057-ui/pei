@@ -19,16 +19,17 @@ import yaml
 @dataclass(frozen=True)
 class PatrolTuning:
     enabled: int = 1
-    fixed_speed_m_s: float = 0.40
+    fixed_speed_m_s: float = 0.65
     adaptive_speed_enabled: int = 1
-    startup_speed_m_s: float = 0.20
-    bend_speed_m_s: float = 0.28
-    sharp_bend_speed_m_s: float = 0.25
-    lost_speed_m_s: float = 0.10
+    startup_speed_m_s: float = 0.40
+    bend_speed_m_s: float = 0.45
+    sharp_bend_speed_m_s: float = 0.45
+    lost_speed_m_s: float = 0.12
+    roundabout_approach_speed_m_s: float = 0.40
     roundabout_speed_m_s: float = 0.30
     speed_stable_seconds: float = 0.50
-    speed_stable_confidence: float = 0.65
-    bend_preview_error: float = 0.18
+    speed_stable_confidence: float = 0.40
+    bend_preview_error: float = 0.45
     bend_release_seconds: float = 0.50
     linear_decel_m_s2: float = 1.20
     steering_gain: float = 1.08
@@ -36,7 +37,7 @@ class PatrolTuning:
     error_filter_alpha: float = 0.48
     max_error_derivative: float = 3.0
     max_turn_rad_s: float = 2.0
-    linear_accel_m_s2: float = 0.35
+    linear_accel_m_s2: float = 0.65
     angular_accel_rad_s2: float = 3.0
     corner_start_error: float = 0.25
     corner_full_error: float = 0.70
@@ -59,6 +60,10 @@ class PatrolTuning:
     search_max_seconds: float = 3.0
     search_max_distance_m: float = 1.8
     search_turn_rad_s: float = 0.80
+    recovery_turn_guard_enabled: int = 1
+    search_turn_max_rad_s: float = 0.35
+    weak_path_turn_max_rad_s: float = 0.45
+    recovery_angular_accel_rad_s2: float = 1.0
     search_default_direction: int = 1
     reacquire_confirm_frames: int = 3
     maintain_cruise_during_search: int = 1
@@ -140,6 +145,7 @@ class PatrolTuning:
     ring_gyro_rate_limit_rad_s: float = 8.0
     ring_gyro_deadband_rad_s: float = 0.03
     ring_gyro_exit_seek_seconds: float = 1.0
+    ring_gyro_exit_speed_m_s: float = 0.20
     roundabout_fork_change_ratio: float = 0.06
     roundabout_fork_confirm_frames: int = 3
     roundabout_path_agreement: float = 0.30
@@ -197,10 +203,10 @@ class PatrolTuning:
             raise ValueError("通过首次标记需要正的冷却时间和前进距离")
         if int(self.roundabout_fork_confirm_frames) != self.roundabout_fork_confirm_frames or not 2 <= self.roundabout_fork_confirm_frames <= 20:
             raise ValueError("分叉确认帧数必须为2..20整数")
-        for name in ("enabled", "adaptive_speed_enabled", "black_enabled", "contour_enabled", "search_enabled", "roundabout_enabled", "roundabout_timeout_enabled", "roundabout_left_preview_enabled", "maintain_cruise_during_search", "crosswalk_enabled", "crosswalk_visual_release_enabled", "finish_after_second_crosswalk"):
+        for name in ("enabled", "adaptive_speed_enabled", "recovery_turn_guard_enabled", "black_enabled", "contour_enabled", "search_enabled", "roundabout_enabled", "roundabout_timeout_enabled", "roundabout_left_preview_enabled", "maintain_cruise_during_search", "crosswalk_enabled", "crosswalk_visual_release_enabled", "finish_after_second_crosswalk"):
             if getattr(self, name) not in (0, 1):
                 raise ValueError(f"{name} 必须为0或1")
-        for name in ("startup_speed_m_s","bend_speed_m_s","sharp_bend_speed_m_s","lost_speed_m_s","roundabout_speed_m_s"):
+        for name in ("startup_speed_m_s","bend_speed_m_s","sharp_bend_speed_m_s","lost_speed_m_s","roundabout_speed_m_s","roundabout_approach_speed_m_s","ring_gyro_exit_speed_m_s"):
             if getattr(self,name)<0:
                 raise ValueError(f"{name} 必须非负")
         for name in ("speed_stable_seconds","bend_release_seconds","linear_decel_m_s2"):
@@ -211,6 +217,9 @@ class PatrolTuning:
                 raise ValueError(f"{name} 必须在(0,1]")
         if not self.lost_speed_m_s<=self.startup_speed_m_s or not self.sharp_bend_speed_m_s<=self.bend_speed_m_s:
             raise ValueError("找线速度须<=起步速度，急弯速度须<=普通弯速度")
+        for name in ("search_turn_max_rad_s","weak_path_turn_max_rad_s","recovery_angular_accel_rad_s2"):
+            if getattr(self,name)<=0:
+                raise ValueError(f"{name} 必须大于0")
         for name,low,high in (("vv_dash_min_blocks",2,12),("vv_dash_confirm_frames",1,10),("ring_gyro_exit_enabled",0,1)):
             value=getattr(self,name)
             if int(value)!=value or not low<=value<=high:
@@ -1440,7 +1449,7 @@ class RoundaboutRouter:
 
     def motion_override(self,now,tuning,pose=None):
         if self.phase=="EXIT" and self.gyro_exit_requested and now-self.phase_at<tuning.ring_gyro_exit_seek_seconds:
-            return min(tuning.fixed_speed_m_s,tuning.startup_speed_m_s),0.,"gyro_exit_seek"
+            return min(tuning.fixed_speed_m_s,tuning.ring_gyro_exit_speed_m_s),0.,"gyro_exit_seek"
         if self.phase=="ENTRY" and self.left_yaw<tuning.roundabout_entry_min_yaw_rad:
             # Establish the verified LEFT entry before any outside/right line
             # may take over. Bounded by route timeout, not perpetual blind yaw.
@@ -1527,7 +1536,7 @@ class FixedSpeedController:
         self.fault_reason = ""
         self.corner_strength = 0.
         self.raw_angular = 0.
-        self.stable_since=self.speed_observed_at=None
+        self.startup_until=None
         self.bend_until=-math.inf
         self.speed_reason="waiting_for_path"
         self.speed_target=0.
@@ -1541,33 +1550,36 @@ class FixedSpeedController:
     def loss_age(self, now):
         return 0. if self.loss_started_at is None else max(0., now-self.loss_started_at)
 
-    def planned_speed(self,path,now,tuning,ring_tracking=False):
+    def planned_speed(self,path,now,tuning,ring_tracking=False,ring_approach=False,recovering=False):
         """One speed owner for normal/curve/recovery paths; yaw PD unchanged."""
         cruise=tuning.fixed_speed_m_s
         if not tuning.adaptive_speed_enabled:
             self.speed_reason="legacy_fixed_target"
             self.speed_target=cruise
             return cruise
-        continuous=self.speed_observed_at is not None and 0<now-self.speed_observed_at<=tuning.roundabout_path_max_gap_seconds
-        reliable=path.valid and not path.rescue and path.confidence>=tuning.speed_stable_confidence
-        if not reliable or not continuous:
-            self.stable_since=now if reliable else None
-        self.speed_observed_at=now
+        # Startup is a bounded time window, NOT a confidence latch that gets
+        # restarted by normal .45/.63 black-line observations every frame.
+        if path.valid and self.startup_until is None:
+            self.startup_until=now+tuning.speed_stable_seconds
         if not path.valid:
             target,reason=tuning.lost_speed_m_s,"lost_path_limit"
         else:
             shape=max(abs(path.error),.65*abs(path.near_error),abs(path.mid_error-path.near_error),.7*abs(path.far_error-path.mid_error))
             # Immediate braking on a real preview; release requires a quiet
             # interval, so an S-bend sign reversal cannot re-enable cruise.
-            if shape>=tuning.bend_preview_error or path.rescue:
+            if shape>=tuning.bend_preview_error and not path.rescue and path.confidence>=tuning.speed_stable_confidence:
                 self.bend_until=now+tuning.bend_release_seconds
             target,reason=cruise,"stable_cruise"
             if now<self.bend_until:
                 target=tuning.sharp_bend_speed_m_s if shape>=tuning.corner_full_error else tuning.bend_speed_m_s
                 reason="bend_preview_limit"
-            if self.stable_since is None or now-self.stable_since<tuning.speed_stable_seconds:
+            if (now<(self.startup_until if self.startup_until is not None else now)
+                    or recovering or path.rescue or path.confidence<tuning.speed_stable_confidence):
                 target=min(target,tuning.startup_speed_m_s)
-                reason="startup_or_reacquire_limit"
+                reason="brief_start_or_weak_reacquire"
+            if ring_approach:
+                target=min(target,tuning.roundabout_approach_speed_m_s)
+                reason="ring_detected_approach_limit"
             if ring_tracking:
                 target=min(target,tuning.roundabout_speed_m_s)
                 reason="ring_route_limit"
@@ -1635,7 +1647,7 @@ class FixedSpeedController:
         self.reset_error()
         return linear,angular
 
-    def command(self, path, now, tuning, search_direction=None, ring_tracking=False):
+    def command(self, path, now, tuning, search_direction=None, ring_tracking=False,ring_approach=False):
         if not tuning.enabled:
             self.reset()
             return 0., 0., "disabled"
@@ -1650,7 +1662,8 @@ class FixedSpeedController:
             self.loss_distance += abs(self.last_command[0])*elapsed
 
         if path.valid:
-            self.reacquire_streak = self.reacquire_streak+1 if recovering else 0
+            reliable=not path.rescue and path.confidence>=tuning.speed_stable_confidence
+            self.reacquire_streak = self.reacquire_streak+1 if recovering and (reliable or not tuning.recovery_turn_guard_enabled) else 0
             confirmed = not recovering or self.reacquire_streak >= tuning.reacquire_confirm_frames
             if confirmed:
                 self.last_valid_at = now
@@ -1663,8 +1676,9 @@ class FixedSpeedController:
             angular = self._steer(path, now, tuning, elapsed, recovering)
             # A real new observation may correct the search DIRECTION at
             # once; only confirmed consecutive observations renew budgets.
-            self.last_good_turn = angular
-            if abs(path.error) >= tuning.corner_start_error or path.rescue:
+            if not tuning.recovery_turn_guard_enabled or (reliable and (not recovering or confirmed)):
+                self.last_good_turn = angular
+            if (abs(path.error) >= tuning.corner_start_error or path.rescue) and (not tuning.recovery_turn_guard_enabled or (reliable and (not recovering or confirmed))):
                 self.last_curve_turn, self.last_curve_at = angular, now
                 if recovering:
                     self.search_turn_goal = angular
@@ -1708,27 +1722,34 @@ class FixedSpeedController:
             if self.loss_distance >= tuning.search_max_distance_m:
                 return self._fault("distance_limit", now)
         previous = self.last_command
-        if tuning.adaptive_speed_enabled:
-            linear=min(linear,self.planned_speed(path,now,tuning,ring_tracking))
+        linear=min(linear,self.planned_speed(path,now,tuning,ring_tracking,ring_approach,
+            recovering and self.loss_started_at is not None))
         rate=tuning.linear_decel_m_s2 if linear<previous[0] else tuning.linear_accel_m_s2
         linear = self._approach(previous[0], linear, rate*dt)
         if tuning.adaptive_speed_enabled and not path.valid:
             # A safety output ceiling, not only a slowly approached goal.
             linear=min(linear,tuning.lost_speed_m_s,tuning.fixed_speed_m_s)
         fast_turn = self.corner_strength > 0 or path.rescue or mode == "active_search"
-        rate = tuning.corner_angular_accel_rad_s2 if fast_turn else tuning.angular_accel_rad_s2
+        gentle=tuning.recovery_turn_guard_enabled and (not path.valid or mode=="reacquire_confirm" or path.rescue or path.confidence<tuning.speed_stable_confidence)
+        turn_limit=min(tuning.max_turn_rad_s,tuning.search_turn_max_rad_s if not path.valid else tuning.weak_path_turn_max_rad_s) if gentle else tuning.max_turn_rad_s
+        if gentle:
+            angular=float(np.clip(angular,-turn_limit,turn_limit))
+            self.raw_angular=angular
+        rate = tuning.recovery_angular_accel_rad_s2 if gentle else tuning.corner_angular_accel_rad_s2 if fast_turn else tuning.angular_accel_rad_s2
         # Unwind the OLD turn quickly, independently of how gently a new turn
         # should build. Crossing zero never spends leftover braking authority
         # accelerating into a new direction within the same frame.
         unwinding = abs(previous[1]) > 1e-6 and (previous[1]*angular <= 0 or abs(angular) < abs(previous[1]))
         if unwinding:
-            brake_rate = max(rate, tuning.unwind_angular_accel_rad_s2)
+            brake_rate = rate if gentle else max(rate, tuning.unwind_angular_accel_rad_s2)
             if previous[1]*angular < 0:
                 angular = self._approach(previous[1], 0., brake_rate*dt)
             else:
                 angular = self._approach(previous[1], angular, brake_rate*dt)
         else:
             angular = self._approach(previous[1], angular, rate*dt)
-        angular = float(np.clip(angular, -tuning.max_turn_rad_s, tuning.max_turn_rad_s))
+        # Final output ceiling also cancels a stale +/-2rad/s command on the
+        # FIRST lost/weak frame, rather than waiting for the slew to unwind.
+        angular = float(np.clip(angular, -turn_limit, turn_limit))
         self.last_time, self.last_command = now, (linear, angular)
         return linear, angular, mode

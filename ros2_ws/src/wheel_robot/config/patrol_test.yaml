@@ -1,4 +1,4 @@
-# V13：VV虚线1帧检测；沿底部主路先通过5号出口岔口，从4号入环、5号出环。
+# V14：恢复0.65巡航，检测环岛后减速；搜索/弱救线独立限角速度，VV入口不变。
 # 必须更新两个Python与整套新YAML后重启一次；以后保存参数无需编译/重启。
 # 误差仍为横向偏移/半图宽，不是弧度；不要覆盖回V2/V3旧参数表。
 # 包内robot_menu的4运行本测试；原比赛在5，已调好台阶源文件不变；本测试不执行跳跃。
@@ -10,17 +10,21 @@ patrol_test:
   enabled: 1
   # 普通巡航上限，m/s；起步、弯道、环岛与丢线分别受下方上限约束。
   # 无额外数值上限，必须有限非负；0不前进但仍可转向。增加速度不能保证急弯可过。
-  fixed_speed_m_s: 0.40
+  fixed_speed_m_s: 0.65
   # 分场景限速；均不超过巡航目标，普通 PD 参数不变。0仅供旧控制器对照测试。
   adaptive_speed_enabled: 1
-  startup_speed_m_s: 0.20
-  bend_speed_m_s: 0.28
-  sharp_bend_speed_m_s: 0.25
-  lost_speed_m_s: 0.10
+  # 起步只在首个有效路径后的短时窗口限速，不因普通0.45~0.64置信度反复重置。
+  startup_speed_m_s: 0.40
+  bend_speed_m_s: 0.45
+  sharp_bend_speed_m_s: 0.45
+  lost_speed_m_s: 0.12
+  # 首帧VV虚线触发APPROACH之后的上限，m/s；不是全程环岛预先限速。
+  roundabout_approach_speed_m_s: 0.40
   roundabout_speed_m_s: 0.30
   speed_stable_seconds: 0.50
-  speed_stable_confidence: 0.65
-  bend_preview_error: 0.18
+  # 用于可靠重获/转向证据，不再用于持续锁住所有普通巡线速度。
+  speed_stable_confidence: 0.40
+  bend_preview_error: 0.45
   bend_release_seconds: 0.50
   linear_decel_m_s2: 1.20
   # 目标中心=图宽比例，参考7.25：0.50正中，0.51右移1%图宽，0.49左移1%。
@@ -43,7 +47,7 @@ patrol_test:
   # 最大转向角速度，rad/s，有限非负，无额外上限；0禁止转向。只限制转向，不降线速度。
   max_turn_rad_s: 2.0
   # 加速变化率，m/s²；减速用linear_decel_m_s2，丢线安全上限立即生效。
-  linear_accel_m_s2: 0.35
+  linear_accel_m_s2: 0.65
   # 转向变化率，rad/s²，>0；增大反应快、减小柔和但有延迟。
   angular_accel_rad_s2: 3.0
   # 急弯增强起始误差，归一化0..1；默认0.25。大于此值逐渐启用更强转向。
@@ -105,6 +109,14 @@ patrol_test:
   # 主动找线最小转向强度，rad/s，>=0；默认0.80。沿近期明确弯向，仍受max_turn_rad_s约束。
   # 有明确更强弯向时保留强度；线速度是否继续趋近目标由maintain开关决定。
   search_turn_rad_s: 0.80
+  # 搜索防自转独立开关：保持1。关闭自动线速度规划，不会连带关闭此保护；0只用于旧算法对照。
+  recovery_turn_guard_enabled: 1
+  # V14实际丢线最终输出上限，rad/s。上方旧search_turn为搜索目标，不得突破本硬上限。
+  search_turn_max_rad_s: 0.35
+  # 单带/低置信度/未完成重获确认时的角速度上限，正常可信急弯仍可用max_turn_rad_s。
+  weak_path_turn_max_rad_s: 0.45
+  # 搜索/弱救线转向变化率，rad/s²；旧过大角速度仍在首个丢线帧直接截到安全上限。
+  recovery_angular_accel_rad_s2: 1.0
   # 没有近期明确转向证据时的默认方向：1左、-1右；默认左。
   # 初始完全没看到路径时不会盲起步，这个方向只用于已经开始巡线后的找线。
   search_default_direction: 1
@@ -280,6 +292,8 @@ patrol_test:
   ring_gyro_deadband_rad_s: 0.03
   # 满足保底条件后直行找出口实线的时间，秒；仍需视觉确认才完成出环。
   ring_gyro_exit_seek_seconds: 1.0
+  # 与普通startup速度解耦，恢复普通巡航不能连带提高陀螺仪出环找线速度。
+  ring_gyro_exit_speed_m_s: 0.20
   # 下方fork/chain阈值仅为历史回归工具兼容保留，V13运行入口不读取它们。
   # 旧入口分叉工具的兼容参数，不参与V13实际入口触发。
   roundabout_fork_change_ratio: 0.06

@@ -92,31 +92,31 @@ def test_actual_vision_uses_vv_only_and_seeds_curved_entry(monkeypatch):
     assert v.ring_memory.path is not None and v.ring_memory.path.mid_error<0
 
 
-def test_startup_and_reacquire_require_reliable_stable_path():
+def test_brief_startup_and_reacquire_do_not_block_normal_cruise():
     t,c=PatrolTuning(),FixedSpeedController()
     straight=PathEstimate(True,0.,.9,source="black")
     for i in range(15):
         v,_,_=c.command(straight,i/30,t)
         assert v<=t.startup_speed_m_s
     for i in range(15,100): v,_,_=c.command(straight,i/30,t)
-    assert v==pytest.approx(.4)
+    assert v==pytest.approx(.65)
     v,_,_=c.command(PathEstimate(False),100/30,t)
-    assert 0<v<=.1
+    assert 0<v<=t.lost_speed_m_s
     v,_,_=c.command(straight,101/30,t)
-    assert v<=.2
+    assert v<=t.startup_speed_m_s
 
 
 def test_s_preview_brakes_before_near_error_and_holds_across_reversal():
     t,c=PatrolTuning(),FixedSpeedController()
     p=PathEstimate(True,0.,.9,near_error=0.,mid_error=.5,far_error=.7)
     c.planned_speed(p,0.,t)
-    assert c.planned_speed(p,.6,t)<=.28
+    assert c.planned_speed(p,.6,t)<=.45
     p.mid_error=-.5
-    assert c.planned_speed(p,.63,t)<=.28
+    assert c.planned_speed(p,.63,t)<=.45
     p.mid_error=p.far_error=0.
-    assert c.planned_speed(p,.9,t)<=.28
+    assert c.planned_speed(p,.9,t)<=.45
     c.planned_speed(p,1.,t)
-    assert c.planned_speed(p,1.15,t)<=.4
+    assert c.planned_speed(p,1.15,t)<=.65
 
 
 def test_ring_limit_and_second_lap_same_controller_plan():
@@ -125,7 +125,7 @@ def test_ring_limit_and_second_lap_same_controller_plan():
     path=PathEstimate(True,0.,.9)
     for i in range(100): v,_,_=c.command(path,i/30,t,ring_tracking=True)
     assert v<=.3
-    assert t.fixed_speed_m_s==.4 and t.roundabout_entry_turn_rad_s==1.2
+    assert t.fixed_speed_m_s==.65 and t.roundabout_entry_turn_rad_s==1.2
     assert t.roundabout_search_turn_rad_s==.8
 
 

@@ -333,7 +333,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
         self.create_subscription(base.Bool, "/patrol_test_stop", self._on_patrol_stop, 10)
         self.create_subscription(base.Bool, "/patrol_test_reset_course", self._on_patrol_reset_course, 10)
         self.get_logger().warn(
-            f"巡线/环岛/横道V13：巡航上限={self.patrol_tuning.fixed_speed_m_s:.2f}m/s，VV虚线单帧确认、4进5出；"
+            f"巡线/环岛/横道V14：巡航上限={self.patrol_tuning.fixed_speed_m_s:.2f}m/s，搜索角速度限幅、VV单帧确认、4进5出；"
             f"环岛={self.patrol_tuning.roundabout_enabled}，横道={self.patrol_tuning.crosswalk_enabled}，两次横道冲线结束={self.patrol_tuning.finish_after_second_crosswalk}；台阶不接入。实时文件：{config}"
         )
 
@@ -539,7 +539,8 @@ class PatrolTestNode(base.WheelLegRaceNode):
         else:
             linear, angular, mode = self.patrol_controller.command(path, done, tuning,
                 search_direction=1 if router is not None and router.search_left and tuning.roundabout_enabled else None,
-                ring_tracking=bool(router is not None and router.ring_tracking))
+                ring_tracking=bool(router is not None and router.ring_tracking),
+                ring_approach=bool(router is not None and router.phase=="APPROACH"))
         source = self.vision.source
         previous_source = getattr(self, "_previous_path_source", source)
         self._source_changes_total = getattr(self, "_source_changes_total", 0)+int(source != previous_source)
@@ -574,7 +575,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
             road_path = getattr(self.vision, "road_estimate", PathEstimate(False))
             reason = "_".join(path.reason.split())
             self.get_logger().info(
-                f"PATROL source={self.vision.source} mode={mode} version=13 target={tuning.fixed_speed_m_s:.2f} "
+                f"PATROL source={self.vision.source} mode={mode} version=14 target={tuning.fixed_speed_m_s:.2f} "
                 f"speed_limit={self.patrol_controller.speed_target:.2f} speed_reason={self.patrol_controller.speed_reason} "
                 f"cmd_v={linear:.2f} cmd_w={angular:+.2f} conf={path.confidence:.2f} "
                 f"odom_v={getattr(self,'_patrol_odom_v',float('nan')) if done-getattr(self,'_last_odom_time',0.)<=.35 else float('nan'):.2f} "
@@ -618,7 +619,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
         if draw and self.vision.last_debug is not None and self._debug_window_ready:
             self._last_display_at = done
             labels = [
-                (f"V13阶段 {router.phase if router is not None else 'SEEK'}；横道 {router.crosswalk_count if router is not None else 0}/2", (0, 220, 255)),
+                (f"V14阶段 {router.phase if router is not None else 'SEEK'}；横道 {router.crosswalk_count if router is not None else 0}/2", (0, 220, 255)),
                 (f"横道分数{self.vision.crosswalk_score:.2f}；许可 {router.crosswalk_block_reason(done,tuning)}", (0, 220, 255)),
                 (f"路径：{self.vision.source}  {mode}  可信度{path.confidence:.2f}", (0, 255, 0)),
                 (f"目标{tuning.fixed_speed_m_s:.2f}  输出{linear:.2f}m/s  转向{angular:+.2f}rad/s", (255, 255, 255)),
