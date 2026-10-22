@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""ROS-free helpers for the opt-in fixed-speed patrol experiment.
+"""ROS-free helpers for the opt-in patrol experiment.
 
 7.25 reference sequence: road binary -> contour -> row edges -> short-gap
-repair -> row midpoints. V11 retains near-priority NORMALIZED errors and
+repair -> row midpoints. V13 retains near-priority NORMALIZED errors and
 separates tracking from ordered ring/crosswalk tasks. No servo/PWM copied.
 """
 from dataclasses import dataclass, fields, replace
@@ -19,13 +19,24 @@ import yaml
 @dataclass(frozen=True)
 class PatrolTuning:
     enabled: int = 1
-    fixed_speed_m_s: float = 0.65
+    fixed_speed_m_s: float = 0.40
+    adaptive_speed_enabled: int = 1
+    startup_speed_m_s: float = 0.20
+    bend_speed_m_s: float = 0.28
+    sharp_bend_speed_m_s: float = 0.25
+    lost_speed_m_s: float = 0.10
+    roundabout_speed_m_s: float = 0.30
+    speed_stable_seconds: float = 0.50
+    speed_stable_confidence: float = 0.65
+    bend_preview_error: float = 0.18
+    bend_release_seconds: float = 0.50
+    linear_decel_m_s2: float = 1.20
     steering_gain: float = 1.08
     steering_kd: float = 0.018
     error_filter_alpha: float = 0.48
     max_error_derivative: float = 3.0
     max_turn_rad_s: float = 2.0
-    linear_accel_m_s2: float = 0.65
+    linear_accel_m_s2: float = 0.35
     angular_accel_rad_s2: float = 3.0
     corner_start_error: float = 0.25
     corner_full_error: float = 0.70
@@ -116,6 +127,19 @@ class PatrolTuning:
     roundabout_entry_turn_rad_s: float = 1.2
     roundabout_first_marker_cooldown_seconds: float = 1.0
     roundabout_first_marker_pass_distance_m: float = 0.20
+    vv_dash_min_blocks: int = 4
+    vv_dash_confirm_frames: int = 1
+    vv_dash_roi_top_ratio: float = 0.22
+    vv_dash_roi_bottom_ratio: float = 0.90
+    vv_dash_max_x_spread_px80: float = 18.0
+    vv_dash_min_gap_rows56: float = 3.0
+    ring_gyro_exit_enabled: int = 1
+    ring_gyro_exit_degrees: float = 360.0
+    ring_gyro_min_distance_m: float = 0.80
+    ring_gyro_timeout_seconds: float = 0.20
+    ring_gyro_rate_limit_rad_s: float = 8.0
+    ring_gyro_deadband_rad_s: float = 0.03
+    ring_gyro_exit_seek_seconds: float = 1.0
     roundabout_fork_change_ratio: float = 0.06
     roundabout_fork_confirm_frames: int = 3
     roundabout_path_agreement: float = 0.30
@@ -144,7 +168,7 @@ class PatrolTuning:
     crosswalk_delay_after_roundabout: float = 1.5
     crosswalk_first_min_seconds: float = 0.0
     crosswalk_repeat_min_seconds: float = 0.0
-    crosswalk_visual_release_enabled: int = 1
+    crosswalk_visual_release_enabled: int = 0
     crosswalk_visual_release_seconds: float = 18.0
     crosswalk_visual_release_frames: int = 3
     crosswalk_visual_release_min_stripes: int = 5
@@ -173,9 +197,35 @@ class PatrolTuning:
             raise ValueError("通过首次标记需要正的冷却时间和前进距离")
         if int(self.roundabout_fork_confirm_frames) != self.roundabout_fork_confirm_frames or not 2 <= self.roundabout_fork_confirm_frames <= 20:
             raise ValueError("分叉确认帧数必须为2..20整数")
-        for name in ("enabled", "black_enabled", "contour_enabled", "search_enabled", "roundabout_enabled", "roundabout_timeout_enabled", "roundabout_left_preview_enabled", "maintain_cruise_during_search", "crosswalk_enabled", "crosswalk_visual_release_enabled", "finish_after_second_crosswalk"):
+        for name in ("enabled", "adaptive_speed_enabled", "black_enabled", "contour_enabled", "search_enabled", "roundabout_enabled", "roundabout_timeout_enabled", "roundabout_left_preview_enabled", "maintain_cruise_during_search", "crosswalk_enabled", "crosswalk_visual_release_enabled", "finish_after_second_crosswalk"):
             if getattr(self, name) not in (0, 1):
                 raise ValueError(f"{name} 必须为0或1")
+        for name in ("startup_speed_m_s","bend_speed_m_s","sharp_bend_speed_m_s","lost_speed_m_s","roundabout_speed_m_s"):
+            if getattr(self,name)<0:
+                raise ValueError(f"{name} 必须非负")
+        for name in ("speed_stable_seconds","bend_release_seconds","linear_decel_m_s2"):
+            if getattr(self,name)<=0:
+                raise ValueError(f"{name} 必须大于0")
+        for name in ("speed_stable_confidence","bend_preview_error"):
+            if not 0<getattr(self,name)<=1:
+                raise ValueError(f"{name} 必须在(0,1]")
+        if not self.lost_speed_m_s<=self.startup_speed_m_s or not self.sharp_bend_speed_m_s<=self.bend_speed_m_s:
+            raise ValueError("找线速度须<=起步速度，急弯速度须<=普通弯速度")
+        for name,low,high in (("vv_dash_min_blocks",2,12),("vv_dash_confirm_frames",1,10),("ring_gyro_exit_enabled",0,1)):
+            value=getattr(self,name)
+            if int(value)!=value or not low<=value<=high:
+                raise ValueError(f"{name} 必须为{low}..{high}整数")
+        if not 0<=self.vv_dash_roi_top_ratio<self.vv_dash_roi_bottom_ratio<=1:
+            raise ValueError("VV虚线ROI必须有序且在0..1")
+        if not 0<self.vv_dash_max_x_spread_px80<=40 or not 0<=self.vv_dash_min_gap_rows56<=10:
+            raise ValueError("VV虚线横向范围/白色间隔超出参考像素范围")
+        if not 180<=self.ring_gyro_exit_degrees<=720:
+            raise ValueError("陀螺仪出环角度必须在180..720度")
+        for name in ("ring_gyro_min_distance_m","ring_gyro_timeout_seconds","ring_gyro_rate_limit_rad_s","ring_gyro_exit_seek_seconds"):
+            if getattr(self,name)<=0:
+                raise ValueError(f"{name} 必须大于0")
+        if not 0<=self.ring_gyro_deadband_rad_s<self.ring_gyro_rate_limit_rad_s:
+            raise ValueError("陀螺仪死区须小于角速度有效上限")
         for name in ("roundabout_gate_tracking_enabled", "roundabout_exit_corner_enabled"):
             if getattr(self, name) not in (0, 1):
                 raise ValueError(f"{name} 必须为0或1")
@@ -326,7 +376,7 @@ class PathEstimate:
     exit_boundary: Optional[np.ndarray] = None  # validated virtual RIGHT boundary
 
 
-def classify_gate_fork(components, width, height, tuning):
+def classify_gate_fork(components, width, height, tuning, reference_x_ratio=None, diagnostics=None):
     """Classify a LEFT fork relative to its straight main dash axis.
 
     Forward is image-up. Increasing left separation forward is entry;
@@ -335,12 +385,16 @@ def classify_gate_fork(components, width, height, tuning):
     Returns (kind, separation change / image width, observed main path).
     """
     invalid = PathEstimate(False, reason="fork_no_main")
+    info={} if diagnostics is None else diagnostics
+    info.clear()
+    info.update(reason="few_components", main=None, left=None)
     candidates = sorted(components, key=lambda c: c[4], reverse=True)[:32]
-    if len(candidates) < 6:
+    if len(candidates) < 5:
         return "none", 0., invalid
     points = np.asarray([(c[0], c[1]) for c in candidates], dtype=float)
-    seed = tuning.target_x_ratio * width
-    axis = points[abs(points[:, 0]-seed) <= .18*width]
+    seed = (tuning.target_x_ratio if reference_x_ratio is None else float(np.clip(reference_x_ratio,.25,.75))) * width
+    axis = points[abs(points[:, 0]-seed) <= .24*width]
+    info["reason"]="main_axis_missing"
     if len(axis) < 3:
         return "none", 0., invalid
     a, b = np.triu_indices(len(axis), 1)
@@ -348,6 +402,7 @@ def classify_gate_fork(components, width, height, tuning):
     usable = abs(dy) >= .10*height
     a, b, dy = a[usable], b[usable], dy[usable]
     if not len(a):
+        info["reason"]="main_span_short"
         return "none", 0., invalid
     slopes = (axis[b, 0]-axis[a, 0])/dy
     intercepts = axis[a, 0]-slopes*axis[a, 1]
@@ -356,26 +411,78 @@ def classify_gate_fork(components, width, height, tuning):
     scores = inliers.sum(axis=1)+spans/height-1.5*abs(slopes)-abs(slopes*.85*height+intercepts-seed)/width
     scores[(inliers.sum(axis=1)<3) | (spans<.22*height) | (abs(slopes)>.75)] = -np.inf
     if not np.isfinite(scores).any():
+        info["reason"]="main_consensus_failed"
         return "none", 0., invalid
     main = axis[inliers[int(np.argmax(scores))]]
     fit = np.polyfit(main[:, 1], main[:, 0], 1)
-    if abs(np.polyval(fit, .85*height)-seed) > .15*width:
+    if abs(np.polyval(fit, .85*height)-seed) > .20*width:
+        info["reason"]="main_off_reference"
         return "none", 0., invalid
     main = main[np.argsort(main[:, 1])]
     estimate = PathEstimate(True, confidence=.8, points=main, reason="fork_main_axis")
     estimate.error, estimate.near_error, estimate.mid_error, estimate.far_error = path_errors(main, width, height, tuning)
     gaps = np.polyval(fit, points[:, 1])-points[:, 0]
     left = points[(gaps>=.035*width) & (gaps<=.50*width)]
-    if len(left)<3 or np.ptp(left[:, 1])<.18*height or left[:, 1].max()<tuning.roundabout_entry_gate_near_ratio*height:
+    info.update(main=main, left=left, reason="left_branch_short_or_far")
+    if len(left)<2 or np.ptp(left[:, 1])<.12*height or left[:, 1].max()<tuning.roundabout_entry_gate_near_ratio*height:
         return "none", 0., estimate
     forward = 1-left[:, 1]/height
     gaps = np.polyval(fit, left[:, 1])-left[:, 0]
     separation = np.polyfit(forward, gaps, 1)
     if np.median(abs(gaps-np.polyval(separation, forward))) > .035*width:
+        info["reason"]="left_branch_inconsistent"
         return "none", 0., estimate
     change = float(separation[0]*np.ptp(forward)/width)
     kind = "none" if abs(change)<tuning.roundabout_fork_change_ratio else "diverging" if change>0 else "converging"
+    info["reason"]="parallel_or_small_change" if kind=="none" else "current_fork"
     return kind, change, estimate
+
+
+class ForkTopologyTracker:
+    """Short, geometrically associated evidence; no old-image-only entry.
+
+    Bridge a missing branch block only while BOTH branches are still observed
+    at matching positions in the new frame. Expiry is based on the last FULL
+    classification, never renewed indefinitely by partial detections.
+    """
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.at=None
+        self.kind="none"
+        self.main=self.left=None
+        self.current_left=None
+        self.change=0.
+        self.reason="not_armed"
+
+    def update(self,components,width,height,now,tuning,reference_x_ratio=None):
+        info={}
+        kind,change,main=classify_gate_fork(components,width,height,tuning,reference_x_ratio,info)
+        self.current_left=info.get("left")
+        self.reason=info["reason"]
+        if kind!="none":
+            self.at,self.kind,self.change=now,kind,change
+            self.main,self.left=info["main"].copy(),info["left"].copy()
+            return kind,change,main
+        # Do not carry evidence over a conflicting parallel fork or reset.
+        fresh=self.at is not None and 0<now-self.at<=min(.15,tuning.roundabout_gate_track_max_gap_seconds)
+        current_left=info.get("left")
+        if (not fresh or not main.valid or current_left is None or len(current_left)<1
+                or self.main is None or self.left is None
+                or info["reason"]!="left_branch_short_or_far"):
+            return kind,change,main
+        old_main=np.polyfit(self.main[:,1],self.main[:,0],1)
+        old_left=np.polyfit(self.left[:,1],self.left[:,0],1)
+        current_main=info["main"]
+        near_left=current_left[:,1].max()>=tuning.roundabout_entry_gate_near_ratio*height
+        main_agrees=np.max(abs(current_main[:,0]-np.polyval(old_main,current_main[:,1])))<=.04*width
+        branch_agrees=np.max(abs(current_left[:,0]-np.polyval(old_left,current_left[:,1])))<=.04*width
+        if near_left and main_agrees and branch_agrees:
+            self.reason="associated_partial_fork"
+            return self.kind,self.change,main
+        self.reason="partial_fork_mismatch"
+        return kind,change,main
 
 
 class GateChainTracker:
@@ -436,15 +543,33 @@ class RingRouteMemory:
     def reset(self):
         self.path = self.at = None
 
-    def agrees(self, path, now, tuning):
+    def agrees(self, path, now, tuning, max_delta=None):
         if self.path is None or self.at is None or now-self.at > tuning.roundabout_route_memory_seconds:
             return None
-        return max(abs(path.near_error-self.path.near_error), abs(path.mid_error-self.path.mid_error)) <= tuning.roundabout_route_max_delta
+        limit=tuning.roundabout_route_max_delta if max_delta is None else min(max_delta,tuning.roundabout_route_max_delta)
+        return max(abs(path.near_error-self.path.near_error), abs(path.mid_error-self.path.mid_error)) <= limit
 
     def remember(self, path, now):
         if path.valid and path.route_observed and not path.handoff:
             self.path = replace(path, points=None, mask=None, exit_boundary=None)
             self.at = now
+
+    def seed_entry(self,path,now,width,height,tuning):
+        """Actual partial guide owns entry, but does NOT prove acquisition.
+
+        VV correctly rejects the two merged near-junction blocks when their
+        sides are not white. Retain the observed mid/near branch as a bounded
+        reference; accept_path still requires fully observed near+mid frames.
+        """
+        if not path.valid or path.rescue or path.points is None or len(path.points)<2:
+            return False
+        points=np.asarray(path.points)
+        if (not np.isfinite(points).all() or np.min(points[:,1])>(tuning.road_mid_y_ratio+.04)*height
+                or np.max(points[:,1])<tuning.roundabout_entry_gate_near_ratio*height):
+            return False
+        self.path=replace(path,points=None,mask=None,reason="entry_partial_route_reference")
+        self.at=now
+        return True
 
 
 def observed_route(path, width, height, tuning):
@@ -880,6 +1005,7 @@ class RoundaboutRouter:
         self.phase="SEEK"
         self.started_at=self.last_time=self.phase_at=None
         self.distance=self.phase_distance=self.left_yaw=self.ring_yaw=0.
+        self.phase_measured_distance=0.
         self.evidence=0.
         self.clear_frames=self.path_streak=self.near_frames=self.solid_frames=0
         self.crosswalk_frames=self.crosswalk_count=0
@@ -896,6 +1022,7 @@ class RoundaboutRouter:
         self.release_cycle=-1
         self.ring_release_source="none"
         self.timed_releases=0
+        self.deadline_overdue=False
         self.navigation_reset_serial=0
         self.visual_release_frames=0
         self.visual_release_at=None
@@ -908,6 +1035,12 @@ class RoundaboutRouter:
         self.fork_kind="none"
         self.fork_frames=self.first_marker_clear_frames=0
         self.fork_at=self.fork_since=None
+        self.vv_streak=0
+        self.vv_at=None
+        self.gyro_yaw=0.
+        self.gyro_at=None
+        self.last_motion_linear=0.
+        self.gyro_exit_requested=False
 
     @property
     def left_lock(self):
@@ -979,23 +1112,20 @@ class RoundaboutRouter:
         return True
 
     def apply_time_fallback(self,now,tuning):
-        # A scheduled handoff is not a physical exit and cannot clear faults,
-        # restart a paused robot, consume a zebra, or advance a finished course.
-        if self.fault or self.paused_at is not None or self.release_cycle==self.crosswalk_count:
-            return False
-        if self.phase not in ("SEEK","APPROACH","ENTRY","FOLLOW","EXIT","RING_WAIT_DEADLINE"):
-            return False
+        # Compatibility name: the old method released the task on a timer.
+        # A deadline is diagnostic ONLY, never proof of a physical ring exit.
         deadline=self.ring_deadline(tuning)
-        if deadline is None or now<deadline:
-            return False
-        self._release_ring(now,tuning,"time_fallback")
-        return True
+        self.deadline_overdue=bool(not self.fault and self.paused_at is None
+            and self.phase in ("SEEK","APPROACH","ENTRY","FOLLOW","EXIT","RING_WAIT_DEADLINE")
+            and self.release_cycle!=self.crosswalk_count and deadline is not None and now>=deadline)
+        return False
 
     def _phase(self,name,now):
         preserve = self.phase in ("ENTRY", "FOLLOW") and name in ("FOLLOW", "EXIT")
         acquired, cleared = self.branch_acquired, self.gate_cleared
         self.phase,self.phase_at=name,now
         self.phase_distance=self.left_yaw=self.evidence=0.
+        self.phase_measured_distance=0.
         self.path_streak=self.clear_frames=self.near_frames=self.solid_frames=0
         self.gate_cleared=self.branch_acquired=False
         if preserve:
@@ -1008,6 +1138,11 @@ class RoundaboutRouter:
         self.visual_release_at=None
         if name=="ENTRY":
             self.ring_yaw=0.
+        if name=="FOLLOW":
+            self.gyro_yaw=0.
+            self.gyro_at=None
+        if name not in ("FOLLOW","EXIT"):
+            self.gyro_exit_requested=False
 
     def pause(self,now):
         if self.paused_at is None:
@@ -1021,6 +1156,8 @@ class RoundaboutRouter:
         self.visual_release_at=None
         self.fork_frames=0
         self.fork_at=self.fork_since=None
+        self.vv_streak=0
+        self.vv_at=self.gyro_at=None
 
     def gate_detection_allowed(self,now,tuning):
         if not tuning.roundabout_enabled:
@@ -1063,8 +1200,43 @@ class RoundaboutRouter:
     def crosswalk_armed(self,now,tuning):
         return self.crosswalk_block_reason(now,tuning)=="armed"
 
+    def observe_gyro(self,rate,now,tuning):
+        """Signed measured gyro, FOLLOW only; entry spins cannot fill a lap."""
+        if (not tuning.ring_gyro_exit_enabled or self.phase!="FOLLOW" or self.paused_at is not None
+                or self.fault or self.last_motion_linear<=.03 or not math.isfinite(rate)
+                or abs(rate)>tuning.ring_gyro_rate_limit_rad_s):
+            self.gyro_at=None
+            return
+        dt=0. if self.gyro_at is None else now-self.gyro_at
+        self.gyro_at=now
+        if 0<dt<=min(.15,tuning.ring_gyro_timeout_seconds):
+            self.gyro_yaw+=(rate if abs(rate)>=tuning.ring_gyro_deadband_rad_s else 0.)*dt
+
+    def _observe_vv_entry(self,cue,now,tuning,command):
+        fresh=self.vv_at is not None and 0<now-self.vv_at<=tuning.roundabout_path_max_gap_seconds
+        self.vv_streak=(self.vv_streak+1 if fresh else 1) if cue.valid and command[0]>1e-4 else 0
+        self.vv_at=now
+        confirmed=self.vv_streak>=tuning.vv_dash_confirm_frames
+        if self.phase=="SEEK" and self.gate_detection_allowed(now,tuning) and confirmed:
+            self.first_marker_at=now
+            self.first_marker_distance=self.distance
+            self._phase("APPROACH",now)
+        if self.phase!="APPROACH":
+            return
+        passed=(self.first_marker_at is not None
+                and now-self.first_marker_at>=tuning.roundabout_first_marker_cooldown_seconds
+                and self.distance-self.first_marker_distance>=tuning.roundabout_first_marker_pass_distance_m)
+        self.route_status="vv_pass_exit_5_on_main" if not passed else "vv_wait_left_entrance_4"
+        if passed and confirmed and cue.near_ratio>=tuning.roundabout_entry_gate_near_ratio and cue.branch.valid:
+            self._phase("ENTRY",now)
+        elif now-self.phase_at>=tuning.roundabout_approach_max_seconds:
+            self.entry_block_until=now+1.
+            self._phase("SEEK",now)
+            self.first_marker_at=None
+            self.vv_streak=0
+
     def observe(self,gate,score,now,tuning,command=(0.,0.),pose=None,
-                gate_near=0.,exit_solid=False,crosswalk=False,gate_tracked=False,gate_kind=None):
+                gate_near=0.,exit_solid=False,crosswalk=False,gate_tracked=False,gate_kind=None,dash_cue=None):
         self.resume(now)
         if self.started_at is None:
             self.started_at=now
@@ -1073,6 +1245,7 @@ class RoundaboutRouter:
         elapsed=0. if self.last_time is None else max(0.,now-self.last_time)
         dt=min(.1,elapsed)
         travel,yaw=abs(command[0])*dt,command[1]*dt
+        measured_travel=0.
         self.progress_source="command_estimate"
         if pose is not None:
             self.progress_source="odom"
@@ -1082,12 +1255,16 @@ class RoundaboutRouter:
                 turn=(pose[2]-self.last_pose[2]+math.pi)%(2*math.pi)-math.pi
                 if step<=max(.2,2*abs(command[0])*dt) and abs(turn)<=.5:
                     travel,yaw=step,turn
+                    measured_travel=step
         # Odom drift or manually moving a stopped car cannot arm a task.
         if abs(command[0])+abs(command[1])<1e-4:
             travel=yaw=0.
+            measured_travel=0.
         self.last_pose,self.last_time=pose,now
+        self.last_motion_linear=command[0]
         self.distance+=travel
         self.phase_distance+=travel
+        self.phase_measured_distance+=measured_travel
         self.left_yaw+=yaw
         if self.phase in ("ENTRY","FOLLOW","EXIT"):
             self.ring_yaw+=yaw
@@ -1097,22 +1274,19 @@ class RoundaboutRouter:
         age=now-self.phase_at
         if ((self.left_lock and age>=tuning.roundabout_route_max_seconds) or
                 (self.phase=="FOLLOW" and age>=tuning.roundabout_follow_max_seconds)):
-            if self.ring_deadline(tuning) is not None and self.release_cycle!=self.crosswalk_count:
-                # Do not keep forcing left while waiting for the global handoff.
-                # Ordinary tracking/search and its data/localization safeguards
-                # still apply; no fake exit or early zebra permission is issued.
-                self.navigation_reset_serial+=1
-                self._phase("RING_WAIT_DEADLINE",now)
-            else:
-                self.fault="roundabout_route_timeout"
+            self.fault="roundabout_route_timeout"
             return
         if self.phase in ("CW_APPROACH","FINISH_RUN") and age>=tuning.crosswalk_task_max_seconds:
             self.fault="crosswalk_motion_timeout"
             return
+        if dash_cue is not None and self.phase in ("SEEK","APPROACH"):
+            self._observe_vv_entry(dash_cue,now,tuning,command)
+            return  # exclusive live entry path; old topology is NOT consulted
         # Temporal association is ENTRY-only evidence, never an exit shortcut.
         tracked = bool(gate_tracked and self.phase in ("SEEK", "APPROACH"))
-        strong=gate and (score>=tuning.roundabout_gate_strong_score or tracked)
-        weak=score>=tuning.roundabout_gate_weak_score or tracked
+        topology_candidate=gate_kind in ("converging","diverging") and self.phase in ("SEEK","APPROACH")
+        strong=gate and (score>=tuning.roundabout_gate_strong_score or tracked or topology_candidate)
+        weak=score>=tuning.roundabout_gate_weak_score or tracked or topology_candidate
         self.clear_frames=self.clear_frames+1 if not gate and not weak else 0
         self.gate_cleared|=self.clear_frames>=tuning.roundabout_path_confirm_frames
 
@@ -1173,6 +1347,17 @@ class RoundaboutRouter:
                 self.entry_block_distance=self.distance+tuning.roundabout_arm_distance_m
                 self._phase("SEEK",now)
         elif self.phase=="FOLLOW":
+            measured_turn=(tuning.ring_gyro_exit_enabled and self.gyro_at is not None
+                and 0<=now-self.gyro_at<=tuning.ring_gyro_timeout_seconds
+                and self.progress_source=="odom"
+                and age>=tuning.roundabout_follow_min_seconds
+                and self.phase_measured_distance>=tuning.ring_gyro_min_distance_m
+                and self.gyro_yaw>=math.radians(tuning.ring_gyro_exit_degrees))
+            if measured_turn:
+                self.gyro_exit_requested=True
+                self._phase("EXIT",now)
+                self.route_status="gyro_exit_seek_not_complete"
+                return
             ready=(age>=tuning.roundabout_follow_min_seconds
                    and self.phase_distance>=tuning.roundabout_follow_min_distance_m
                    and self.ring_yaw>=tuning.roundabout_exit_min_yaw_rad
@@ -1206,6 +1391,8 @@ class RoundaboutRouter:
                 self.first_marker_at=None
                 self.fork_frames=self.first_marker_clear_frames=0
                 self.fork_at=self.fork_since=None
+                self.vv_at=None
+                self.vv_streak=0
                 self._phase("SEEK",now)
         elif self.phase=="FINISH_RUN":
             if self.phase_distance>=tuning.second_crosswalk_finish_distance_m:
@@ -1252,10 +1439,12 @@ class RoundaboutRouter:
             self._release_ring(now,tuning,"visual_exit")
 
     def motion_override(self,now,tuning,pose=None):
+        if self.phase=="EXIT" and self.gyro_exit_requested and now-self.phase_at<tuning.ring_gyro_exit_seek_seconds:
+            return min(tuning.fixed_speed_m_s,tuning.startup_speed_m_s),0.,"gyro_exit_seek"
         if self.phase=="ENTRY" and self.left_yaw<tuning.roundabout_entry_min_yaw_rad:
             # Establish the verified LEFT entry before any outside/right line
             # may take over. Bounded by route timeout, not perpetual blind yaw.
-            return tuning.fixed_speed_m_s,min(tuning.roundabout_entry_turn_rad_s,tuning.max_turn_rad_s),"roundabout_left_acquire"
+            return min(tuning.fixed_speed_m_s,tuning.roundabout_speed_m_s),min(tuning.roundabout_entry_turn_rad_s,tuning.max_turn_rad_s),"roundabout_left_acquire"
         if self.phase in ("CW_STOP","FINISHED"):
             return 0.,0.,"crosswalk_stop" if self.phase=="CW_STOP" else "finished"
         if self.phase not in ("CW_APPROACH","CW_CLEAR","FINISH_RUN"):
@@ -1317,7 +1506,7 @@ class PathSelector:
 
 
 class FixedSpeedController:
-    """Fixed cruise, explicit bounded active recovery, no automatic stop/go."""
+    """Cruise ceiling, debounced preview limits and bounded active recovery."""
 
     def __init__(self):
         self.reset()
@@ -1338,6 +1527,10 @@ class FixedSpeedController:
         self.fault_reason = ""
         self.corner_strength = 0.
         self.raw_angular = 0.
+        self.stable_since=self.speed_observed_at=None
+        self.bend_until=-math.inf
+        self.speed_reason="waiting_for_path"
+        self.speed_target=0.
         self.reset_error()
 
     def reset_error(self):
@@ -1347,6 +1540,40 @@ class FixedSpeedController:
 
     def loss_age(self, now):
         return 0. if self.loss_started_at is None else max(0., now-self.loss_started_at)
+
+    def planned_speed(self,path,now,tuning,ring_tracking=False):
+        """One speed owner for normal/curve/recovery paths; yaw PD unchanged."""
+        cruise=tuning.fixed_speed_m_s
+        if not tuning.adaptive_speed_enabled:
+            self.speed_reason="legacy_fixed_target"
+            self.speed_target=cruise
+            return cruise
+        continuous=self.speed_observed_at is not None and 0<now-self.speed_observed_at<=tuning.roundabout_path_max_gap_seconds
+        reliable=path.valid and not path.rescue and path.confidence>=tuning.speed_stable_confidence
+        if not reliable or not continuous:
+            self.stable_since=now if reliable else None
+        self.speed_observed_at=now
+        if not path.valid:
+            target,reason=tuning.lost_speed_m_s,"lost_path_limit"
+        else:
+            shape=max(abs(path.error),.65*abs(path.near_error),abs(path.mid_error-path.near_error),.7*abs(path.far_error-path.mid_error))
+            # Immediate braking on a real preview; release requires a quiet
+            # interval, so an S-bend sign reversal cannot re-enable cruise.
+            if shape>=tuning.bend_preview_error or path.rescue:
+                self.bend_until=now+tuning.bend_release_seconds
+            target,reason=cruise,"stable_cruise"
+            if now<self.bend_until:
+                target=tuning.sharp_bend_speed_m_s if shape>=tuning.corner_full_error else tuning.bend_speed_m_s
+                reason="bend_preview_limit"
+            if self.stable_since is None or now-self.stable_since<tuning.speed_stable_seconds:
+                target=min(target,tuning.startup_speed_m_s)
+                reason="startup_or_reacquire_limit"
+            if ring_tracking:
+                target=min(target,tuning.roundabout_speed_m_s)
+                reason="ring_route_limit"
+        self.speed_target=min(cruise,target)
+        self.speed_reason=reason
+        return self.speed_target
 
     @staticmethod
     def _approach(previous, target, delta):
@@ -1386,9 +1613,12 @@ class FixedSpeedController:
         if immediate_stop:
             linear=angular=0.
         else:
-            linear=self._approach(self.last_command[0],linear,tuning.linear_accel_m_s2*dt)
+            target_v=min(linear,tuning.fixed_speed_m_s)
+            rate=tuning.linear_decel_m_s2 if target_v<self.last_command[0] else tuning.linear_accel_m_s2
+            linear=self._approach(self.last_command[0],target_v,rate*dt)
             angular=self._approach(self.last_command[1],angular,tuning.unwind_angular_accel_rad_s2*dt)
             if left_only:
+                linear=min(linear,target_v)
                 angular=max(0.,angular)  # cancel stale RIGHT output at entry
         self.last_command,self.last_time=(linear,angular),now
         # A task heading is current navigation evidence, NOT a black-line
@@ -1399,11 +1629,13 @@ class FixedSpeedController:
         self.last_good_turn=angular
         self.last_curve_at=-math.inf
         self.raw_angular=angular
+        self.speed_target=min(tuning.fixed_speed_m_s,tuning.roundabout_speed_m_s) if left_only else linear
+        self.speed_reason="verified_ring_entry" if left_only else "task_heading"
         self.corner_strength=0.
         self.reset_error()
         return linear,angular
 
-    def command(self, path, now, tuning, search_direction=None):
+    def command(self, path, now, tuning, search_direction=None, ring_tracking=False):
         if not tuning.enabled:
             self.reset()
             return 0., 0., "disabled"
@@ -1476,7 +1708,13 @@ class FixedSpeedController:
             if self.loss_distance >= tuning.search_max_distance_m:
                 return self._fault("distance_limit", now)
         previous = self.last_command
-        linear = self._approach(previous[0], linear, tuning.linear_accel_m_s2*dt)
+        if tuning.adaptive_speed_enabled:
+            linear=min(linear,self.planned_speed(path,now,tuning,ring_tracking))
+        rate=tuning.linear_decel_m_s2 if linear<previous[0] else tuning.linear_accel_m_s2
+        linear = self._approach(previous[0], linear, rate*dt)
+        if tuning.adaptive_speed_enabled and not path.valid:
+            # A safety output ceiling, not only a slowly approached goal.
+            linear=min(linear,tuning.lost_speed_m_s,tuning.fixed_speed_m_s)
         fast_turn = self.corner_strength > 0 or path.rescue or mode == "active_search"
         rate = tuning.corner_angular_accel_rad_s2 if fast_turn else tuning.angular_accel_rad_s2
         # Unwind the OLD turn quickly, independently of how gently a new turn

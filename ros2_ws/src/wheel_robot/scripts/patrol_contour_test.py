@@ -12,9 +12,10 @@ import numpy as np
 import icn as base
 from patrol_contour_runtime import (
     FixedSpeedController, PathEstimate, PathSelector, PatrolFileWatcher,
-    PatrolTuning, RoundaboutRouter, GateChainTracker, RingRouteMemory, observed_route, classify_gate_fork,
+    PatrolTuning, RoundaboutRouter, RingRouteMemory, observed_route,
     black_usable, road_centerline, road_masks, path_errors, detect_crosswalk,
 )
+from patrol_dash_entry import DashObservation, detect_vv_dashes
 
 
 class PatrolVision(base.CourseVision):
@@ -35,12 +36,9 @@ class PatrolVision(base.CourseVision):
         self.road_estimate = PathEstimate(False, reason="not_processed")
         self.preview_kind = "black"
         self.router = RoundaboutRouter()
-        self.gate_tracker = GateChainTracker()
+        self.dash_observation = DashObservation()
         self.ring_memory = RingRouteMemory()
         self.ring_phase = "SEEK"
-        self.gate_tracked = False
-        self.gate_kind = "none"
-        self.gate_separation = 0.
         self.navigation_serial_seen = 0
         self.motion_command = (0., 0.)
         self.motion_pose = None
@@ -51,14 +49,13 @@ class PatrolVision(base.CourseVision):
     def reset_course(self):
         self.reset_path()
         self.router = RoundaboutRouter()
-        self.gate_tracker.reset()
         self.ring_memory.reset()
         self.ring_phase = "SEEK"
         self.motion_command, self.motion_pose = (0., 0.), None
         self.navigation_serial_seen = 0
 
     def reset_path(self):
-        self.gate_tracker.reset()
+        self.dash_observation=DashObservation()
         self.reset_tracking()
         self._last_good_band_x = [None for _ in base.LOOKAHEAD_Y_RATIOS]
         self.selector = PathSelector()
@@ -84,7 +81,6 @@ class PatrolVision(base.CourseVision):
         if navigation_serial!=self.router.navigation_reset_serial:
             self.reset_path()  # discard the old left-locked contour/template
             self.ring_memory.reset()
-            self.gate_tracker.reset()
         navigation_serial=self.router.navigation_reset_serial
         if self.last_path_at is not None and now-self.last_path_at >= tuning.loss_hold_seconds:
             self.reset_path()
@@ -103,25 +99,20 @@ class PatrolVision(base.CourseVision):
         dark[guard > 0] = 0
         events[guard > 0] = 0
         gate, self.gate_score = False, 0.
-        self.gate_tracked=False
-        self.gate_kind="none"
-        self.gate_separation=0.
         gate_main=PathEstimate(False)
         self.gate_chain_count=0
         self.gate_near=self.crosswalk_score=self.exit_solid_score=0.
+        self.dash_observation=DashObservation()
         if self.router.gate_detection_allowed(now,tuning):
-            gate, self.gate_score, _components = self._detect_roundabout_gate(events, hsv)
-            if self.router.phase in ("SEEK", "APPROACH"):
-                all_components=self._small_neutral_components(events,hsv,.22,.90)
-                self.gate_kind,self.gate_separation,gate_main=classify_gate_fork(all_components,width,height,tuning)
-            self.gate_chain_count=len(_components)
-            if _components:
-                self.gate_near=max((cy+.5*ch)/height for _cx,cy,_cw,ch,_area in _components)
-            if self.router.phase in ("SEEK", "APPROACH"):
-                self.gate_tracked=self.gate_tracker.update(_components,self.gate_score,width,height,now,tuning)
-                gate=gate or self.gate_tracked
-        else:
-            self.gate_tracker.reset()
+            reference_x=self.seed_x_ratio if self.last_path_at is not None and now-self.last_path_at<tuning.loss_hold_seconds else None
+            self.dash_observation=detect_vv_dashes(events,_white,tuning,reference_x)
+            gate_main=self.dash_observation.main
+            self.gate_chain_count=self.dash_observation.blocks
+            self.gate_near=self.dash_observation.near_ratio
+            gate=self.dash_observation.valid
+            if self.router.phase=="FOLLOW":
+                gate=gate and self.dash_observation.branch.valid
+            self.gate_score=1. if gate else 0.
         exit_solid=False
         if tuning.roundabout_enabled and self.router.phase=="FOLLOW" and not gate:
             solid,self.exit_solid_score,box=self._detect_roundabout_exit_solid(events)
@@ -143,7 +134,8 @@ class PatrolVision(base.CourseVision):
                 self.router.observe_crosswalk_visual_release(detected,now,tuning)
                 crosswalk=detected and self.router.crosswalk_armed(now,tuning)
         self.router.observe(gate,self.gate_score,now,tuning,self.motion_command,self.motion_pose,
-                            gate_near=self.gate_near,exit_solid=exit_solid,crosswalk=crosswalk,gate_tracked=self.gate_tracked,gate_kind=self.gate_kind)
+                            gate_near=self.gate_near,exit_solid=exit_solid,crosswalk=crosswalk,
+                            dash_cue=self.dash_observation)
         if navigation_serial!=self.router.navigation_reset_serial:
             self.reset_path()
             self.ring_memory.reset()
@@ -151,8 +143,17 @@ class PatrolVision(base.CourseVision):
         if self.router.phase=="ENTRY" and self.ring_phase!="ENTRY":
             # Discard the pre-entry straight/right template, not the route
             # acquired DURING entry. FOLLOW must keep this new ownership.
+            entry_points=self.dash_observation.branch.points
             self.reset_path()
             self.ring_memory.reset()
+            if entry_points is not None and len(entry_points)>=2:
+                entry=PathEstimate(True,confidence=.8,points=entry_points.copy(),reason="verified_entry_branch",route_locked=True)
+                entry.error,entry.near_error,entry.mid_error,entry.far_error=path_errors(entry.points,width,height,tuning)
+                entry.route_observed=observed_route(entry,width,height,tuning)
+                if self.ring_memory.seed_entry(entry,now,width,height,tuning):
+                    self.previous_points=entry.points.copy()
+                    self.last_path_at=now
+                    self.seed_x_ratio=float(entry.points[np.argmax(entry.points[:,1]),0]/width)
         if not self.router.ring_tracking:
             self.ring_memory.reset()
         self.ring_phase=self.router.phase
@@ -210,8 +211,9 @@ class PatrolVision(base.CourseVision):
         if routing:
             # Select a ROUTE before choosing a sensor. Ordinary black priority
             # must not pull us back onto the straight/right fork.
-            if self.router.phase=="FOLLOW" and road.valid:
-                agrees=self.ring_memory.agrees(road,now,tuning)
+            if self.router.phase in ("ENTRY","FOLLOW") and road.valid:
+                agrees=self.ring_memory.agrees(road,now,tuning,
+                    tuning.roundabout_entry_path_delta if self.router.phase=="ENTRY" else None)
                 left_recovery=road.route_observed and road.error<-.10 and road.mid_error<=.10
                 if agrees is False or (agrees is None and self.ring_memory.path is not None and not left_recovery):
                     road.valid,road.reason=False,"road_outside_owned_ring_route"
@@ -238,6 +240,10 @@ class PatrolVision(base.CourseVision):
                     allowed = agrees
                 else:
                     allowed = left_shape if self.router.left_lock else False
+                if self.router.phase=="ENTRY" and self.ring_memory.path is not None:
+                    owned=self.ring_memory.agrees(black,now,tuning,tuning.roundabout_entry_path_delta)
+                    if owned is False:
+                        allowed=False
                 if self.router.phase=="EXIT" and road.valid and road.exit_boundary is not None:
                     # A validated virtual RIGHT edge defines this task's
                     # center; even a nearby straight black must not undo it.
@@ -327,9 +333,14 @@ class PatrolTestNode(base.WheelLegRaceNode):
         self.create_subscription(base.Bool, "/patrol_test_stop", self._on_patrol_stop, 10)
         self.create_subscription(base.Bool, "/patrol_test_reset_course", self._on_patrol_reset_course, 10)
         self.get_logger().warn(
-            f"巡线/环岛/横道V11：统一目标速度={self.patrol_tuning.fixed_speed_m_s:.2f}m/s，无第二圈限速；"
+            f"巡线/环岛/横道V13：巡航上限={self.patrol_tuning.fixed_speed_m_s:.2f}m/s，VV虚线单帧确认、4进5出；"
             f"环岛={self.patrol_tuning.roundabout_enabled}，横道={self.patrol_tuning.crosswalk_enabled}，两次横道冲线结束={self.patrol_tuning.finish_after_second_crosswalk}；台阶不接入。实时文件：{config}"
         )
+
+    def _on_imu(self,msg):
+        super()._on_imu(msg)
+        if getattr(self,"_patrol_ready",False) and base.ENABLE_MOTION and self.patrol_tuning.enabled:
+            self.vision.router.observe_gyro(self._imu_yaw_rate,self._last_imu_time,self.patrol_tuning)
 
     def _poll_live_tuning_file(self):
         # The parent's timer calls this override. Never watch race_tuning.yaml
@@ -359,6 +370,13 @@ class PatrolTestNode(base.WheelLegRaceNode):
             if posture_changed or any(getattr(old, key) != getattr(updated, key) for key in geometry):
                 self.vision.reset_path()
                 self.patrol_controller.reset_error()
+            dash_geometry=("vv_dash_min_blocks","vv_dash_confirm_frames","vv_dash_roi_top_ratio",
+                           "vv_dash_roi_bottom_ratio","vv_dash_max_x_spread_px80","vv_dash_min_gap_rows56")
+            if any(getattr(old,key)!=getattr(updated,key) for key in dash_geometry):
+                self.vision.reset_path()
+                if router is not None:
+                    router.vv_streak=0
+                    router.vv_at=None
             if not updated.enabled:
                 self._publish_zero()
                 self.patrol_controller.reset()
@@ -520,7 +538,8 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 left_only=mode=="roundabout_left_acquire")
         else:
             linear, angular, mode = self.patrol_controller.command(path, done, tuning,
-                search_direction=1 if router is not None and router.search_left and tuning.roundabout_enabled else None)
+                search_direction=1 if router is not None and router.search_left and tuning.roundabout_enabled else None,
+                ring_tracking=bool(router is not None and router.ring_tracking))
         source = self.vision.source
         previous_source = getattr(self, "_previous_path_source", source)
         self._source_changes_total = getattr(self, "_source_changes_total", 0)+int(source != previous_source)
@@ -534,6 +553,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
             linear, angular = 0., 0.
         self._publish_command(linear, angular)
         self._last_command = (linear, angular)
+        self.patrol_controller.last_command=self._last_command
         if mode == "localization_fault_latched":
             self.get_logger().error(
                 f"PATROL_LOCALIZATION_FAULT reason={self.patrol_controller.fault_reason} "
@@ -554,7 +574,8 @@ class PatrolTestNode(base.WheelLegRaceNode):
             road_path = getattr(self.vision, "road_estimate", PathEstimate(False))
             reason = "_".join(path.reason.split())
             self.get_logger().info(
-                f"PATROL source={self.vision.source} mode={mode} version=11 target={tuning.fixed_speed_m_s:.2f} "
+                f"PATROL source={self.vision.source} mode={mode} version=13 target={tuning.fixed_speed_m_s:.2f} "
+                f"speed_limit={self.patrol_controller.speed_target:.2f} speed_reason={self.patrol_controller.speed_reason} "
                 f"cmd_v={linear:.2f} cmd_w={angular:+.2f} conf={path.confidence:.2f} "
                 f"odom_v={getattr(self,'_patrol_odom_v',float('nan')) if done-getattr(self,'_last_odom_time',0.)<=.35 else float('nan'):.2f} "
                 f"capture={self._capture_fps:.1f} process={self._process_fps:.1f}fps "
@@ -569,9 +590,10 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 f"switches={self._source_changes_total} reversals={self._yaw_reversals_total} "
                 f"route={router.phase if router is not None else 'SEEK'} gate={getattr(self.vision, 'gate_score', 0.):.2f} "
                 f"gate_chain={getattr(self.vision,'gate_chain_count',0)} "
-                f"gate_tracked={int(getattr(self.vision,'gate_tracked',False))} "
-                f"fork={getattr(self.vision,'gate_kind','none')} fork_delta={getattr(self.vision,'gate_separation',0.):+.3f} "
-                f"fork_frames={router.fork_frames if router is not None else 0} first_marker={int(router.first_marker_at is not None) if router is not None else 0} "
+                f"entry_detector=vv first_exit_pass_mark={int(router.first_marker_at is not None) if router is not None else 0} "
+                f"dash_reason={self.vision.dash_observation.reason} vv_frames={router.vv_streak if router is not None else 0} "
+                f"gyro_deg={np.degrees(router.gyro_yaw) if router is not None else 0.:+.1f} gyro_exit={int(router.gyro_exit_requested) if router is not None else 0} "
+                f"deadline_overdue={int(router.deadline_overdue) if router is not None else 0} "
                 f"route_status={router.route_status if router is not None else 'none'} "
                 f"route_owned={int(router.branch_acquired) if router is not None else 0} "
                 f"exit_corner={int(path.exit_boundary is not None)} "
@@ -596,7 +618,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
         if draw and self.vision.last_debug is not None and self._debug_window_ready:
             self._last_display_at = done
             labels = [
-                (f"V11阶段 {router.phase if router is not None else 'SEEK'}；横道 {router.crosswalk_count if router is not None else 0}/2", (0, 220, 255)),
+                (f"V13阶段 {router.phase if router is not None else 'SEEK'}；横道 {router.crosswalk_count if router is not None else 0}/2", (0, 220, 255)),
                 (f"横道分数{self.vision.crosswalk_score:.2f}；许可 {router.crosswalk_block_reason(done,tuning)}", (0, 220, 255)),
                 (f"路径：{self.vision.source}  {mode}  可信度{path.confidence:.2f}", (0, 255, 0)),
                 (f"目标{tuning.fixed_speed_m_s:.2f}  输出{linear:.2f}m/s  转向{angular:+.2f}rad/s", (255, 255, 255)),

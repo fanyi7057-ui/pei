@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# V11测试子菜单；加载本包编译环境，不借用其它工程。
+# V13测试子菜单；加载本包编译环境，不借用其它工程。
 set -u
 PATROL_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)" || exit 1
 PATROL_WS="$PATROL_ROOT/ros2_ws"
@@ -53,8 +53,8 @@ if [[ "$patrol_nodes" == *"/wheelleg_vision_race"* || "$patrol_nodes" == *"/wl_b
   printf '已有比赛或底盘节点在运行，请先在原终端Ctrl+C退出；禁止两个程序抢/cmd_vel。\n'
   exit 1
 fi
-printf '\n===== V11巡线＋环岛＋横道/终点（不执行台阶）=====\n'
-printf '环岛：先过汇聚出口标记，冷却至少1秒且前进至少0.20m，再确认左侧发散入口；仅入环角速度1.2rad/s，巡航仍0.65m/s。\n'
+printf '\n===== V13巡线＋VV虚线环岛＋横道/终点（不执行台阶）=====\n'
+printf '正确路线：沿底部主路先通过5号出口岔口，再从4号进入、5号出环。VV虚线确认1帧；参数在config/patrol_test.yaml。\n'
 case "${1:-}" in
   --dry) patrol_option=1 ;;
   --real) patrol_option=2 ;;
@@ -64,7 +64,7 @@ esac
 case "$patrol_option" in
   1) patrol_motion=false; patrol_base=false ;;
   2)
-    printf '按patrol_test.yaml运行：默认0.65m/s，正常出环或30/45秒兜底；18秒后严格横道证据可提前放行。第一次停车3秒、清线3秒，第二次横道后走1m结束；不跳台阶、不录像。完成调零/使能、清场并保持遥控急停可用。\n'
+    printf '默认巡航上限0.40、起步/重新咬线0.20、弯道0.25~0.28、环岛最高0.30、丢线最高0.10m/s。30/45秒只报警不算完成环岛；陀螺仪保底需真实转角+实测前进行程，出环仍需视觉确认。第一次横道停车3秒，第二次横道后走1m结束；不跳台阶、不录像。请调零/使能、清场并保留遥控急停。\n'
     read -r -p '确认在安全普通赛道测试：1继续，其他取消：' patrol_confirm
     [[ "$patrol_confirm" == 1 ]] || exit 0
     patrol_motion=true; patrol_base=true ;;

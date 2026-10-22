@@ -66,7 +66,7 @@ def test_v11_first_exit_passes_then_second_diverging_fork_enters():
     for i in range(45,53): v11_observe(r,t,"diverging",i*.04)
     assert r.phase=="ENTRY"
     v,w,_=r.motion_override(2.08,t)
-    assert v==.65 and w==1.2 and t.roundabout_search_turn_rad_s==.8
+    assert v==min(t.fixed_speed_m_s,t.roundabout_speed_m_s) and w==1.2 and t.roundabout_search_turn_rad_s==.8
 
 
 @pytest.mark.parametrize("case",["no_first_marker","still_first","stopped","short_cooldown","stale","alternating"])
@@ -100,27 +100,20 @@ def test_v11_new_parameters_validated(change):
     with pytest.raises(ValueError): replace(PatrolTuning(),**change).validate()
 
 
-def test_v11_live_vision_always_supplies_topology_and_passes_main(monkeypatch):
+def test_v13_live_vision_runs_vv_only_and_passes_exit_on_main(monkeypatch):
     module=load_actual_vision_module(monkeypatch)
     v=module.PatrolVision()
     t=replace(PatrolTuning(),roundabout_arm_seconds=0.,roundabout_arm_distance_m=0.)
+    v._detect_roundabout_gate=lambda *_:pytest.fail("old gate detector must not execute")
     frame=np.full((240,320,3),245,np.uint8)
-    calls=[]
-    actual=v.router.observe
-    def capture(*args,**kwargs):
-        calls.append(kwargs.get("gate_kind"))
-        return actual(*args,**kwargs)
-    v.router.observe=capture
-    components=v11_fork_components("converging")
-    v._detect_roundabout_gate=lambda *_:(True,.95,components[::2])
-    v._small_neutral_components=lambda *_:components
-    v.motion_command=(.65,0.)
-    for i in range(12): chosen=v.estimate(frame,t,i*.04)
-    assert set(calls)=={"converging"} and v.router.phase=="APPROACH"
-    assert chosen.valid and chosen.reason=="fork_main_axis" and chosen.error>0
-    components[:]=v11_fork_components("diverging")
-    for i in range(12,50): v.estimate(frame,t,i*.04)
-    assert v.router.phase=="ENTRY" and "diverging" in calls
+    for y in (85,110,135,160,185,210):
+        cv2.rectangle(frame,(171,y-5),(179,y+5),(0,0,0),-1)
+    v.motion_command=(.4,0.)
+    chosen=v.estimate(frame,t,0.)
+    assert v.dash_observation.valid and v.router.phase=="APPROACH"
+    chosen=v.estimate(frame,t,.04)
+    assert chosen.valid and chosen.reason=="vv_main_dashes"
+    assert v.router.first_marker_at is not None and not v.router.left_lock
 
 
 def test_v11_exit_invalidates_navigation_cache_even_across_next_frame(monkeypatch):
@@ -134,7 +127,7 @@ def test_v11_exit_invalidates_navigation_cache_even_across_next_frame(monkeypatc
     assert v.navigation_serial_seen==1
 
 
-def test_v11_real_masks_extract_and_classify_both_forks(monkeypatch):
+def test_v13_real_fork_images_are_vv_dash_cues_not_automatic_entry(monkeypatch):
     module=load_actual_vision_module(monkeypatch)
     t=replace(PatrolTuning(),roundabout_arm_seconds=0.,roundabout_arm_distance_m=0.)
     for kind in ("converging","diverging"):
@@ -142,8 +135,8 @@ def test_v11_real_masks_extract_and_classify_both_forks(monkeypatch):
         frame=np.full((240,320,3),245,np.uint8)
         for x,y,w,h,_ in v11_fork_components(kind):
             cv2.rectangle(frame,(int(x-w/2),int(y-h/2)),(int(x+w/2),int(y+h/2)),(0,0,0),-1)
-        for i in range(5): v.estimate(frame,t,i*.04)
-        assert v.gate_kind==kind and v.router.phase!="ENTRY"
+        v.estimate(frame,t,0.)
+        assert v.dash_observation.valid and v.router.phase!="ENTRY"
 
 
 def test_v11_next_lap_and_manual_reset_do_not_reuse_exit_marker():
@@ -244,7 +237,8 @@ def test_source_handoff_and_confirmed_return():
 
 @pytest.mark.parametrize("angle", [-1., -.1, 0., .1, 1.])
 def test_visible_path_always_same_speed_even_with_large_turn(angle):
-    controller, tuning = FixedSpeedController(), PatrolTuning()
+    # Explicit legacy fixed-speed opt-out; V12 adaptive behavior has separate tests.
+    controller, tuning = FixedSpeedController(), replace(PatrolTuning(), adaptive_speed_enabled=0, fixed_speed_m_s=.65, linear_accel_m_s2=.65)
     for now in np.arange(0, 3., .05):
         linear, angular, mode = controller.command(PathEstimate(True, angle, .9), now, tuning)
     assert linear == pytest.approx(tuning.fixed_speed_m_s)
@@ -255,7 +249,8 @@ def test_visible_path_always_same_speed_even_with_large_turn(angle):
 
 
 def test_short_loss_keeps_issued_speed_then_final_timeout_stops():
-    controller, tuning = FixedSpeedController(), PatrolTuning()
+    # Explicit legacy fixed-speed opt-out; V12 adaptive behavior has separate tests.
+    controller, tuning = FixedSpeedController(), replace(PatrolTuning(), adaptive_speed_enabled=0, fixed_speed_m_s=.65, linear_accel_m_s2=.65)
     for now in np.arange(0, 2.01, .05):
         controller.command(PathEstimate(True, -.1, .9), now, tuning)
     v1, w1, mode = controller.command(PathEstimate(False), 2.1, tuning)
@@ -507,7 +502,8 @@ def test_sparse_and_dense_equivalent_paths_have_same_row_weighting():
 
 
 def test_many_single_frame_dropouts_never_chop_or_restart_speed():
-    controller, tuning = FixedSpeedController(), replace(PatrolTuning(),reacquire_confirm_frames=1)
+    # Explicit legacy fixed-speed opt-out; V12 adaptive behavior has separate tests.
+    controller, tuning = FixedSpeedController(), replace(replace(PatrolTuning(), adaptive_speed_enabled=0, fixed_speed_m_s=.65, linear_accel_m_s2=.65),reacquire_confirm_frames=1)
     for now in np.arange(0, 2., .02):
         controller.command(PathEstimate(True, -.1, 1), now, tuning)
     for index, now in enumerate(np.arange(2., 5., .02)):
@@ -826,13 +822,17 @@ def test_road_observations_cannot_renew_expired_black_template(monkeypatch):
 
 
 def cruise_controller(error=-.5, **changes):
-    controller, tuning = FixedSpeedController(), replace(PatrolTuning(), **changes)
+    # Explicit legacy controller fixture, not the deployed V13 tuning.
+    legacy=dict(adaptive_speed_enabled=0,fixed_speed_m_s=.65,linear_accel_m_s2=.65)
+    legacy.update(changes)
+    controller, tuning = FixedSpeedController(), replace(PatrolTuning(), **legacy)
     for now in np.arange(0, 2.01, 1/30):
         controller.command(PathEstimate(True,error,1,source="black"),now,tuning)
     return controller, tuning
 
 
 def test_v4_no_stop_at_old_point_eight_second_deadline():
+    # Explicit legacy fixed-speed opt-out; V12 adaptive behavior has separate tests.
     c,t = cruise_controller()
     for now in np.arange(2.03,3.2,.03):
         v,w,mode=c.command(PathEstimate(False),now,t)
@@ -841,6 +841,7 @@ def test_v4_no_stop_at_old_point_eight_second_deadline():
 
 
 def test_v4_single_reacquired_frame_never_memorizes_zero_speed():
+    # Explicit legacy fixed-speed opt-out; V12 adaptive behavior has separate tests.
     c,t=cruise_controller()
     c.command(PathEstimate(False),2.03,t)
     regained=c.command(PathEstimate(True,-.7,1,source="black"),2.86,t)
@@ -852,6 +853,7 @@ def test_v4_single_reacquired_frame_never_memorizes_zero_speed():
 
 
 def test_v4_flickers_cannot_reset_time_budget():
+    # Explicit legacy fixed-speed opt-out; V12 adaptive behavior has separate tests.
     c,t=cruise_controller(search_max_seconds=1.2,search_max_distance_m=10)
     for i,now in enumerate(np.arange(2.03,3.15,.03)):
         path=PathEstimate(i%3!=0,-.5,1,source="black")
@@ -861,6 +863,7 @@ def test_v4_flickers_cannot_reset_time_budget():
 
 
 def test_v4_distance_budget_and_fault_do_not_auto_restart():
+    # Explicit legacy fixed-speed opt-out; V12 adaptive behavior has separate tests.
     c,t=cruise_controller(search_max_distance_m=.20,search_max_seconds=10)
     for now in [2.1,2.2,2.3]:
         assert c.command(PathEstimate(False),now,t)[0] == pytest.approx(t.fixed_speed_m_s)
@@ -873,6 +876,7 @@ def test_v4_distance_budget_and_fault_do_not_auto_restart():
 
 
 def test_v4_consecutive_new_observations_restore_tracking_without_ramp_restart():
+    # Explicit legacy fixed-speed opt-out; V12 adaptive behavior has separate tests.
     c,t=cruise_controller()
     c.command(PathEstimate(False),2.1,t)
     for i,now in enumerate([2.2,2.23,2.26]):
@@ -884,6 +888,7 @@ def test_v4_consecutive_new_observations_restore_tracking_without_ramp_restart()
 
 @pytest.mark.parametrize("error,sign", [(-.875,1),(.875,-1)])
 def test_v4_large_error_can_use_configured_turn_not_just_one_point_one(error,sign):
+    # Explicit legacy fixed-speed opt-out; V12 adaptive behavior has separate tests.
     c,t=cruise_controller(error)
     assert c.raw_angular == pytest.approx(sign*t.max_turn_rad_s)
     assert c.last_command[1] == pytest.approx(sign*t.max_turn_rad_s)
@@ -891,6 +896,7 @@ def test_v4_large_error_can_use_configured_turn_not_just_one_point_one(error,sig
 
 
 def test_v4_sharp_reversal_does_not_wait_for_normal_slow_slew():
+    # Explicit legacy fixed-speed opt-out; V12 adaptive behavior has separate tests.
     c,t=cruise_controller(-.9)
     for now in np.arange(2.03,2.28,.03):
         c.command(PathEstimate(True,.9,1,source="black",rescue=True),now,t)
@@ -943,6 +949,7 @@ def test_v4_parameters_are_finite_and_consistent(changes):
 
 
 def test_v4_search_direction_does_not_flip_when_curve_timestamp_ages():
+    # Explicit legacy fixed-speed opt-out; V12 adaptive behavior has separate tests.
     c,t=cruise_controller(.5,search_max_seconds=3.,search_max_distance_m=10.)
     for now in np.arange(2.03,2.81,.03):
         c.command(PathEstimate(True,0,1,source="black"),now,t)
@@ -959,6 +966,7 @@ def test_v4_partial_near_gap_never_crosses_known_blue_foreground():
 
 
 def test_v5_unwinds_old_corner_without_chopping_forward_speed():
+    # Explicit legacy fixed-speed opt-out; V12 adaptive behavior has separate tests.
     c, t = cruise_controller(-.8)
     for now in np.arange(2.033333, 2.234, 1/30):
         v, w, _ = c.command(PathEstimate(True, 0., .9, source="black"), now, t)
@@ -975,6 +983,7 @@ def test_v5_unwind_never_spends_braking_budget_on_reverse_acceleration():
 
 
 def test_v5_low_confidence_rescue_retains_tracking_not_full_corner():
+    # Explicit legacy fixed-speed opt-out; V12 adaptive behavior has separate tests.
     c, t = cruise_controller(0.)
     for now in np.arange(2.03, 2.8, .03):
         v, w, _ = c.command(PathEstimate(True, -.85, .31, source="black", rescue=True), now, t)
@@ -1141,6 +1150,7 @@ def test_v5_fresh_stationary_odom_does_not_gain_command_distance():
 
 
 def test_v5_locked_lost_path_searches_left_not_old_right():
+    # Explicit legacy fixed-speed opt-out; V12 adaptive behavior has separate tests.
     c,t = cruise_controller(.6)
     _,w,mode=c.command(PathEstimate(False),2.03,t,search_direction=1)
     assert mode == "active_search" and c.raw_angular > 0
@@ -1173,17 +1183,16 @@ def test_v5_exit_lock_is_not_released_while_fork_is_visible():
     assert r.phase == "EXIT" and r.completed == 0
 
 
-def test_v5_real_gate_extractor_is_reused_for_entry(monkeypatch):
+def test_v13_vv_detector_can_arm_on_one_real_image(monkeypatch):
     module=load_actual_vision_module(monkeypatch)
     vision=module.PatrolVision()
-    frame=np.full((240,320,3),(255,0,0),np.uint8)
-    frame[:,50:271]=245
-    for y in range(60,181,20):
-        cv2.rectangle(frame,(135,y),(145,y+7),(0,0,0),-1)
+    frame=np.full((240,320,3),245,np.uint8)
+    for y in (85,110,135,160,185,210):
+        cv2.rectangle(frame,(171,y-5),(179,y+5),(0,0,0),-1)
     tuning=replace(PatrolTuning(),roundabout_arm_seconds=0.,roundabout_arm_distance_m=0.)
-    for now in (0.,.03,.06):
-        vision.estimate(frame,tuning,now)
-    assert vision.gate_score > .82 and vision.router.phase == "APPROACH"
+    vision.motion_command=(.4,0.)
+    vision.estimate(frame,tuning,0.)
+    assert vision.dash_observation.blocks>=4 and vision.router.phase=="APPROACH"
 
 
 def test_v5_node_route_fault_stops_and_rearms_operator_gate(node_module,monkeypatch):
@@ -1246,19 +1255,18 @@ def test_v6_far_gate_only_approaches_does_not_turn_early():
     assert r.phase=="ENTRY" and r.left_lock
 
 
-def test_v7_first_six_seconds_skip_actual_gate_extractor(monkeypatch):
+def test_v13_first_six_seconds_skip_vv_extraction(monkeypatch):
     module=load_actual_vision_module(monkeypatch)
     v=module.PatrolVision()
-    t=PatrolTuning()
-    v.router.started_at=10.
-    v.router.distance=2.
+    t=replace(PatrolTuning(),roundabout_arm_distance_m=0.)
     calls=[]
-    v._detect_roundabout_gate=lambda *_: (calls.append(1) or (True,.95,[(140,170,10,10,80)]))
-    frame=cv2.cvtColor(scene(),cv2.COLOR_HSV2BGR)
-    for now in (10.,12.,15.99):
-        v.estimate(frame,t,now)
-    assert not calls and v.router.evidence==0 and v.router.phase=="SEEK"
-    v.estimate(frame,t,16.)
+    from patrol_dash_entry import DashObservation
+    monkeypatch.setattr(module,"detect_vv_dashes",lambda *_:(calls.append(1) or DashObservation()))
+    v.router.started_at=0.
+    for now in (1.,3.,5.99):
+        v.estimate(scene(),t,now)
+    assert not calls
+    v.estimate(scene(),t,6.01)
     assert len(calls)==1
 
 
@@ -1295,10 +1303,10 @@ def test_v7_left_entry_cancels_stale_right_command_without_dropping_cruise():
     c.last_command=(t.fixed_speed_m_s,-1.8)
     c.last_time=1.
     v,w,mode=r.motion_override(1.03,t)
-    assert v==t.fixed_speed_m_s and w>0 and mode=="roundabout_left_acquire"
+    assert v==min(t.fixed_speed_m_s,t.roundabout_speed_m_s) and w>0 and mode=="roundabout_left_acquire"
     for i in range(1,6):
         output=c.task_command(v,w,1.+i*.03,t,left_only=True)
-        assert output[0]==t.fixed_speed_m_s and output[1]>=0
+        assert 0<output[0]<=t.roundabout_speed_m_s and output[1]>=0
     assert output[1]>0
     r.left_yaw=t.roundabout_entry_min_yaw_rad
     assert r.motion_override(1.2,t) is None  # real route may correct right
@@ -1315,7 +1323,7 @@ def test_v7_actual_node_entry_overrides_right_path_not_normal_patrol(node_module
     node.patrol_controller.last_time=9.97
     node.vision.estimate=lambda *_args,**_kwargs: PathEstimate(True,.6,.9)
     node._run_control_cycle()
-    assert commands[-1]==(node.patrol_tuning.fixed_speed_m_s,0.)  # cancel stale right
+    assert 0<commands[-1][0]<=node.patrol_tuning.roundabout_speed_m_s and commands[-1][1]==0.  # cancel stale right
     assert node.patrol_controller.last_command==commands[-1]
     r._phase("SEEK",10.)
     monkeypatch.setattr(node_module.time,"monotonic",lambda:10.03)
@@ -1496,8 +1504,9 @@ def test_v6_zebra_optional_thirty_second_gates_are_not_task_substitutes():
 
 
 def test_v6_task_heading_ignores_zebra_lines_with_same_cruise_target():
+    # Explicit legacy fixed-speed opt-out; V12 adaptive behavior has separate tests.
     r=RoundaboutRouter()
-    t=PatrolTuning()
+    t=replace(PatrolTuning(), adaptive_speed_enabled=0, fixed_speed_m_s=.65, linear_accel_m_s2=.65)
     r._phase("CW_CLEAR",0.)
     r.heading_target=.5
     v,w,mode=r.motion_override(.1,t,(0.,0.,.7))
@@ -1505,14 +1514,15 @@ def test_v6_task_heading_ignores_zebra_lines_with_same_cruise_target():
     assert r.motion_override(.1,t)[1]==0  # no stale heading without fresh odom
     c,_=cruise_controller(-.8)
     for now in np.arange(2.03,2.4,.03):
-        v,w=c.task_command(v,0.,now,t)
+        v,w=c.task_command(t.fixed_speed_m_s,0.,now,t)
     assert v==t.fixed_speed_m_s and abs(w)<.1
     assert c.task_command(.5,1.,2.5,t,immediate_stop=True)==(0.,0.)
 
 
 def test_v6_search_can_reach_cruise_not_freeze_low_start_speed():
+    # Explicit legacy fixed-speed opt-out; V12 adaptive behavior has separate tests.
     c=FixedSpeedController()
-    t=PatrolTuning()
+    t=replace(PatrolTuning(), adaptive_speed_enabled=0, fixed_speed_m_s=.65, linear_accel_m_s2=.65)
     c.command(PathEstimate(True,-.1,.9,source="black"),0.,t)
     for now in np.arange(.03,1.2,.03):
         v,_,_=c.command(PathEstimate(False),now,t)
@@ -1657,35 +1667,28 @@ def test_v6_fresh_camera_does_not_silently_clear_task_fault():
 
 
 @pytest.mark.parametrize("phase",["SEEK","APPROACH","ENTRY","FOLLOW","EXIT","RING_WAIT_DEADLINE"])
-def test_v8_first_deadline_releases_any_unfinished_ring_at_thirty_not_before(phase):
+def test_v13_first_deadline_only_reports_without_releasing_phase(phase):
     r,t=RoundaboutRouter(),PatrolTuning()
     r.started_at=100.
     r._phase(phase,129.)
-    assert not r.apply_time_fallback(129.999,t)
-    assert r.apply_time_fallback(130.,t)
-    assert r.phase=="SEEK_CROSSWALK" and not r.left_lock
-    assert r.crosswalk_armed(130.,t)  # no extra 1.5s normal-exit delay
-    assert r.completed==0 and r.timed_releases==1
-    assert r.crosswalk_count==0 and r.release_cycle==0
-    assert not r.apply_time_fallback(131.,t) and r.timed_releases==1
-    assert r.motion_override(130.,t) is None  # ordinary patrol, not an auto-stop
+    assert not r.apply_time_fallback(129.999,t) and not r.deadline_overdue
+    assert not r.apply_time_fallback(130.,t) and r.deadline_overdue
+    assert r.phase==phase and not r.crosswalk_armed(130.,t)
+    assert r.completed==r.timed_releases==r.crosswalk_count==0
+    assert r.release_cycle==-1 and r.navigation_reset_serial==0
 
 
-def test_v8_second_deadline_is_first_zebra_plus_forty_five_not_ring_entry():
+def test_v13_second_deadline_reports_without_granting_zebra():
     r,t=RoundaboutRouter(),PatrolTuning()
     r.started_at=0.
-    r.last_crosswalk_at=40.
     r.crosswalk_count=1
+    r.last_crosswalk_at=40.
     r.release_cycle=0
     r._phase("ENTRY",80.)
-    assert not r.apply_time_fallback(84.999,t)
-    assert r.apply_time_fallback(85.,t)
-    assert r.phase=="SEEK_CROSSWALK" and r.release_cycle==1
-    assert r.crosswalk_count==1 and r.crosswalk_armed(85.,t)
-    for now in (85.03,85.06):
-        r.observe(False,0.,now,t,(.65,0.),crosswalk=True)
-    assert r.crosswalk_count==2 and r.phase=="FINISH_RUN"
-    assert r.motion_override(85.1,t)[0]==.65
+    assert not r.apply_time_fallback(84.999,t) and not r.deadline_overdue
+    assert not r.apply_time_fallback(85.,t) and r.deadline_overdue
+    assert r.phase=="ENTRY" and not r.crosswalk_armed(85.,t)
+    assert r.crosswalk_count==1 and r.completed==0
 
 
 @pytest.mark.parametrize("count",[0,1])
@@ -1704,7 +1707,7 @@ def test_v8_real_exit_cancels_only_current_cycle_deadline(count):
     assert not r.crosswalk_armed(21.1,t) and r.crosswalk_armed(23.,t)
 
 
-def test_v8_second_deadline_cannot_interrupt_first_stop_or_clear():
+def test_v13_deadline_does_not_interrupt_stop_clear_or_release_next_ring():
     r,t=RoundaboutRouter(),PatrolTuning()
     r.started_at=0.
     r.last_crosswalk_at=20.
@@ -1713,21 +1716,20 @@ def test_v8_second_deadline_cannot_interrupt_first_stop_or_clear():
     for phase in ("CW_APPROACH","CW_STOP","CW_CLEAR"):
         r._phase(phase,21.)
         assert not r.apply_time_fallback(100.,t)
-        assert r.phase==phase
-    r._phase("SEEK",101.)  # only after the first stop/clear sequence completes
-    assert r.apply_time_fallback(101.,t)
+        assert r.phase==phase and not r.deadline_overdue
+    r._phase("SEEK",101.)
+    assert not r.apply_time_fallback(101.,t) and r.deadline_overdue
 
 
-def test_v8_route_budget_releases_left_lock_but_waits_for_global_deadline():
+def test_v13_route_budget_fault_waits_without_faking_exit():
     r,t=RoundaboutRouter(),PatrolTuning()
     r.started_at=0.
     r._phase("ENTRY",6.)
-    r.observe(False,0.,16.1,t,(.65,.8))
-    assert r.phase=="RING_WAIT_DEADLINE" and not r.fault
-    assert not r.left_lock and not r.crosswalk_armed(16.1,t)
-    assert not r.gate_detection_allowed(20.,t)
-    assert r.motion_override(20.,t) is None
-    assert r.apply_time_fallback(30.,t) and r.phase=="SEEK_CROSSWALK"
+    r.observe(False,0.,16.1,t,(.3,.8))
+    assert r.phase=="ENTRY" and r.fault=="roundabout_route_timeout"
+    assert not r.crosswalk_armed(16.1,t)
+    assert not r.apply_time_fallback(30.,t)
+    assert r.completed==0 and r.release_cycle==-1
 
 
 def test_v8_fallback_never_restarts_faults_and_manual_pause_extends_deadline():
@@ -1751,8 +1753,9 @@ def test_v8_second_deadline_pause_uses_shifted_first_zebra_time():
     r.pause(30.)
     r.resume(40.)
     assert r.ring_deadline(t)==80.
-    assert not r.apply_time_fallback(79.99,t)
-    assert r.apply_time_fallback(80.,t)
+    assert not r.apply_time_fallback(79.99,t) and not r.deadline_overdue
+    assert not r.apply_time_fallback(80.,t) and r.deadline_overdue
+    assert r.phase=="SEEK"
 
 
 def test_v8_disabled_fallback_does_not_fake_exit_or_stop_clock():
@@ -1765,90 +1768,84 @@ def test_v8_disabled_fallback_does_not_fake_exit_or_stop_clock():
     assert r.fault=="roundabout_route_timeout"
 
 
-def test_v8_actual_vision_at_deadline_drops_left_route_and_confirms_zebra(monkeypatch):
+def test_v13_actual_vision_deadline_preserves_task_and_blocks_zebra(monkeypatch):
     module=load_actual_vision_module(monkeypatch)
     v=module.PatrolVision()
     r=v.router
     r.started_at=0.
     r._phase("ENTRY",29.)
-    v.previous_points=np.array([[30.,100.],[20.,230.]])
-    v._detect_roundabout_gate=lambda *_: pytest.fail("entry detection after deadline")
     frame,_,_=zebra_frame()
     v.estimate(frame,PatrolTuning(),30.)
-    assert r.phase=="SEEK_CROSSWALK" and r.crosswalk_frames==1
-    assert r.completed==0 and r.timed_releases==1 and not r.left_lock
     v.estimate(frame,PatrolTuning(),30.03)
-    assert r.phase=="CW_APPROACH" and r.crosswalk_count==1
+    assert r.phase=="ENTRY" and r.deadline_overdue
+    assert r.crosswalk_count==r.completed==r.timed_releases==0
+    assert not r.crosswalk_armed(30.03,PatrolTuning())
 
 
-def test_v8_timeout_without_stripes_never_counts_zebra_or_finishes():
+def test_v13_deadline_without_exit_never_grants_finish():
     r,t=RoundaboutRouter(),PatrolTuning()
     r.started_at=0.
     for now in (30.,30.03,40.,80.):
-        r.observe(False,0.,now,t,(.65,0.))
-    assert r.phase=="SEEK_CROSSWALK" and r.crosswalk_count==0
-    assert r.timed_releases==1 and r.completed==0
+        r.observe(False,0.,now,t,(.4,0.))
+    assert r.phase=="SEEK" and r.crosswalk_count==0
+    assert r.timed_releases==r.completed==0 and r.deadline_overdue
 
 
-def test_v8_node_deadline_handoff_keeps_cruise_and_clears_old_route_pd(node_module,monkeypatch):
+def test_v13_node_deadline_keeps_bounded_entry_not_fake_handoff(node_module,monkeypatch):
     node,commands=make_node(node_module,monkeypatch,now=30.)
     r=RoundaboutRouter()
     r.started_at=0.
     r._phase("ENTRY",29.)
     node.vision.router=r
-    node.patrol_controller.last_command=(.65,.8)
+    node.patrol_controller.last_command=(.4,.8)
     node.patrol_controller.last_time=29.97
-    node.patrol_controller.last_good_turn=.8
     def estimate(*_args,**_kwargs):
         r.apply_time_fallback(30.,node.patrol_tuning)
         return PathEstimate(True,0.,.9,source="black")
     node.vision.estimate=estimate
     node._run_control_cycle()
-    assert r.phase=="SEEK_CROSSWALK" and r.ring_release_source=="time_fallback"
-    assert commands[-1][0]==.65 and 0<=commands[-1][1]<.8
-    assert node._navigation_reset_seen==r.navigation_reset_serial
+    assert r.phase=="ENTRY" and r.ring_release_source=="none"
+    assert 0<commands[-1][0]<=.3 and commands[-1][1]>0
+    assert r.deadline_overdue and not r.crosswalk_armed(30.,node.patrol_tuning)
 
 
-def test_v8_hot_reload_applies_deadline_and_point_six_five_speed(tmp_path):
+def test_v13_hot_reload_keeps_point_four_and_diagnostic_deadline(tmp_path):
     config=tmp_path/"patrol.yaml"
     values=asdict(PatrolTuning())
     config.write_text(yaml.safe_dump({"patrol_test":values}),encoding="utf-8")
     watcher=PatrolFileWatcher(config)
     t,_=watcher.poll()
-    assert t.fixed_speed_m_s==.65
+    assert t.fixed_speed_m_s==.4 and t.adaptive_speed_enabled==1
     values["roundabout_first_timeout_seconds"]=20.
     config.write_text(yaml.safe_dump({"patrol_test":values}),encoding="utf-8")
     t,message=watcher.poll()
     r=RoundaboutRouter()
     r.started_at=0.
     assert t is not None,message
-    assert r.apply_time_fallback(20.,t)
+    assert not r.apply_time_fallback(20.,t) and r.deadline_overdue
 
 
-def test_v8_two_timed_handoffs_preserve_stop_clear_then_distance_finish():
+def test_v13_two_visual_exits_preserve_stop_clear_and_distance_finish():
     r,t=RoundaboutRouter(),PatrolTuning()
     r.started_at=0.
-    for now in (30.,30.03):
-        r.observe(False,0.,now,t,(.65,0.),crosswalk=True,pose=(0.,0.,0.))
+    r._release_ring(30.,t,"visual_exit")
+    for now in (31.6,31.64):
+        r.observe(False,0.,now,t,(.4,0.),crosswalk=True,pose=(0.,0.,0.))
     assert r.phase=="CW_APPROACH" and r.crosswalk_count==1
-    first_confirm=r.last_crosswalk_at
-    r.observe(False,0.,30.13,t,(.65,0.),pose=(.15,0.,0.))
-    r.observe(False,0.,30.23,t,(.65,0.),pose=(.30,0.,0.))
-    assert r.phase=="CW_STOP" and r.motion_override(30.23,t)==(0.,0.,"crosswalk_stop")
-    r.observe(False,0.,33.24,t,(0.,0.),pose=(.30,0.,0.))
+    r.observe(False,0.,31.74,t,(.4,0.),pose=(.15,0.,0.))
+    r.observe(False,0.,31.84,t,(.4,0.),pose=(.30,0.,0.))
+    assert r.phase=="CW_STOP" and r.motion_override(31.84,t)==(0.,0.,"crosswalk_stop")
+    r.observe(False,0.,34.85,t,(0.,0.),pose=(.30,0.,0.))
     assert r.phase=="CW_CLEAR"
-    assert r.motion_override(33.24,t)[0]==.65
-    r.observe(False,0.,36.25,t,(.65,0.))
+    r.observe(False,0.,37.86,t,(.4,0.))
     assert r.phase=="SEEK" and r.crosswalk_count==1
-    r._phase("FOLLOW",70.)
-    r.observe(False,0.,first_confirm+45.,t,(.65,0.))
-    assert r.phase=="SEEK_CROSSWALK" and r.timed_releases==2
-    for now in (first_confirm+45.03,first_confirm+45.06):
-        r.observe(False,0.,now,t,(.65,0.),crosswalk=True)
+    r._release_ring(80.,t,"visual_exit")
+    for now in (81.6,81.64):
+        r.observe(False,0.,now,t,(.4,0.),crosswalk=True)
     assert r.phase=="FINISH_RUN" and r.crosswalk_count==2
-    for i in range(1,18):
-        r.observe(False,0.,first_confirm+45.06+i*.1,t,(.65,0.))
-    assert r.phase=="FINISHED" and r.completed==0
+    for i in range(1,27):
+        r.observe(False,0.,81.64+i*.1,t,(.4,0.))
+    assert r.phase=="FINISHED" and r.completed==2
     assert r.motion_override(100.,t)==(0.,0.,"finished")
 
 
@@ -1926,6 +1923,7 @@ def test_v9_width_probe_is_low_rate_and_cannot_override_valid_black(monkeypatch)
 
 
 def test_v9_bounded_search_continues_past_old_one_meter_then_safely_waits():
+    # Explicit legacy fixed-speed opt-out; V12 adaptive behavior has separate tests.
     c,t=cruise_controller()
     for now in np.arange(2.03,4.6,.03):
         v,w,mode=c.command(PathEstimate(False),now,t)
@@ -1946,10 +1944,10 @@ def test_v9_zebra_evidence_after_eighteen_seconds_can_release_missing_ring(monke
     v.router.release_cycle=0
     frame,_,_=zebra_frame(6)
     for now in (27.90,27.93,27.96):
-        v.estimate(frame,PatrolTuning(),now)
+        v.estimate(frame,replace(PatrolTuning(),crosswalk_visual_release_enabled=1),now)
     assert v.router.phase=="SEEK" and v.router.visual_releases==0
     for now in (28.,28.03,28.06):
-        v.estimate(frame,PatrolTuning(),now)
+        v.estimate(frame,replace(PatrolTuning(),crosswalk_visual_release_enabled=1),now)
     assert v.router.phase=="FINISH_RUN" and v.router.crosswalk_count==2
     assert v.router.ring_release_source=="zebra_evidence_fallback"
     assert v.router.completed==0 and v.router.visual_releases==1
@@ -1967,7 +1965,7 @@ def test_v9_early_zebra_cannot_steal_active_ring_or_clear_task(phase):
 
 
 def test_v9_early_zebra_flicker_and_pause_do_not_accumulate():
-    r,t=RoundaboutRouter(),PatrolTuning()
+    r,t=RoundaboutRouter(),replace(PatrolTuning(),crosswalk_visual_release_enabled=1)
     r.started_at=0.
     for detected,now in ((True,20.),(False,20.03),(True,20.06),(True,20.4)):
         assert not r.observe_crosswalk_visual_release(detected,now,t)
@@ -2060,7 +2058,7 @@ def test_v9_early_zebra_never_resumes_fault_or_changes_cruise_target():
     r.fault="localization_fault"
     for now in (20.,20.03,20.06):
         assert not r.observe_crosswalk_visual_release(True,now,t)
-    assert r.fault and r.crosswalk_count==0 and t.fixed_speed_m_s==.65
+    assert r.fault and r.crosswalk_count==0 and t.fixed_speed_m_s==.4
 
 
 def test_v9_same_path_outputs_same_commands_before_and_after_first_zebra(node_module,monkeypatch):
@@ -2072,12 +2070,12 @@ def test_v9_same_path_outputs_same_commands_before_and_after_first_zebra(node_mo
         r.started_at=0.
         r.last_crosswalk_at=2. if count else None
         node.vision.router=r
-        node.patrol_controller.last_command=(.65,0.)
+        node.patrol_controller.last_command=(.4,0.)
         node.patrol_controller.last_time=9.97
         node.vision.estimate=lambda *_a,**_kw:PathEstimate(True,-.5,.9)
         node._run_control_cycle()
         outputs.append(commands[-1])
-    assert outputs[0]==outputs[1] and outputs[0][0]==.65
+    assert outputs[0]==outputs[1] and outputs[0][0]<=.4
 
 
 def tracked_gate_chain(x=145., shift=0.):
@@ -2217,7 +2215,7 @@ def test_v10_follow_search_uses_left_not_stale_right_command(node_module,monkeyp
     node.patrol_controller.last_good_turn=-.8
     node._run_control_cycle()
     assert node.patrol_controller.raw_angular>0
-    assert commands[-1][0]==.65
+    assert commands[-1][0]<=node.patrol_tuning.lost_speed_m_s
     assert not node.patrol_controller.fault_latched
 
 
@@ -2297,7 +2295,7 @@ def test_v10_complete_live_yaml_has_all_fields_and_preserves_non_ring_values():
     current,message=PatrolFileWatcher(SCRIPTS.parent/"config/patrol_test.yaml").poll()
     assert current is not None,message
     assert current==PatrolTuning()
-    assert current.fixed_speed_m_s==.65
+    assert current.fixed_speed_m_s==.4
     assert (current.crosswalk_stop_seconds,current.crosswalk_clear_seconds)==(3.,3.)
 
 
@@ -2324,9 +2322,9 @@ def test_v10_ordinary_vision_does_not_run_exit_connector(monkeypatch):
 
 def test_v10_reset_course_clears_both_temporal_and_route_memory(monkeypatch):
     v,t=enter_actual_black_without_blue(monkeypatch)
-    v.gate_tracker.update(tracked_gate_chain(),.74,320,240,2.,t)
+    v.router.vv_streak=5
     v.reset_course()
-    assert v.ring_memory.path is None and v.gate_tracker.frames==0
+    assert v.ring_memory.path is None and v.router.vv_streak==0
     assert v.router.phase=="SEEK" and v.ring_phase=="SEEK"
 
 
