@@ -1,0 +1,6 @@
+Baseline ZIP SHA256: 7259bb5319197825f64fea39ec56932e1b5718c35bf781ce82418341e3506ec4
+Original files byte-identical: 180/181
+Original competition/step/recovery sources and config unchanged.
+Approved replacement: tools/robot_menu.sh (package-local build/load menu).
+Replaced baseline SHA256: 667977ba52a50c733e14858d1f162cb99412405c75e04398c081f429faa27d64  tools/robot_menu.sh
+New test is source-launched; original CMake unchanged.

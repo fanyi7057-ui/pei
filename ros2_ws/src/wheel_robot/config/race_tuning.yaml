@@ -1,0 +1,278 @@
+# 两轮轮足机器人：日常调车只打开本文件。
+# 只改 live_tuning: 下每一行冒号后的数值，保留字段名和缩进。
+# 保存后约 0.5 秒自动生效：不重新编译、不重启菜单、不输入 ROS 指令。
+# 本表包含巡线、环岛和新台阶策略实时参数；相机/深度检测阈值、旧台阶动作仍在 icn.yaml。
+# 所有改动前保证小车安全停放、遥控急停可用；台阶接管中改姿态或台阶开关会被拒绝。
+
+wheelleg_vision_race:
+  ros__parameters:
+    live_tuning:
+      # ===== A. 功能开关 =====
+      # 台阶总开关：0=关闭、1=开启；调巡线/横道先用 0，正式单测台阶再用 1；台阶接管时禁止改。
+      step_enabled: 1
+      # 横道总开关：0=跳过横道直接找黄线、1=识别并停车；建议停车后才改。
+      crosswalk_enabled: 1
+
+      # ===== B. 普通巡线速度与丝滑程度 =====
+      # 直道目标速度：m/s，无软件上限；实际仍受底盘/电机/地面限制。加大更快，首个弯过不去就先减小。
+      drive_forward_speed: 0.50
+      # 第一圈起跑软启动：1=启用；仅比赛刚开始的第一圈生效，第二圈不使用。
+      drive_start_soft_enabled: 1
+      # 第一圈软启动持续时间：s；当前 1.50s，只限制起跑阶段最大速度。
+      drive_start_soft_seconds: 3.00
+      # 第一圈软启动速度上限：m/s；时间到后继续用原加速度限制平滑升到 0.50m/s。
+      drive_start_soft_speed: 0.25
+      # 弯道最低前进速度：m/s，无软件上限且不能大于直道速度。加大弯道更快，过大更易压线。
+      drive_min_forward_speed: 0.26
+      # 最大转向角速度：rad/s，无软件上限。加大急弯能力，过大会左右摆动。
+      drive_max_turn_speed: 0.80
+      # 线速度平滑加/减速度：m/s²，无软件上限。减小起停和入弯更丝滑，过小会来不及减速。
+      drive_linear_accel: 0.52
+      # 角速度平滑加/减速度：rad/s²，无软件上限。减小转向更丝滑，过小会转弯迟钝。
+      drive_angular_accel: 3.00
+      # 弯道降速强度：0~1；增大弯道更慢更稳，减小弯道更快；建议一次只改 0.05。
+      drive_curve_slowdown: 0.64
+      # 普通弯道速度封顶：m/s，无软件上限；加大弯道更快，压线则减小。
+      drive_curve_speed_cap: 55.00
+      # 强弯/急弯速度封顶：m/s，无软件上限；必须通常不大于普通弯道封顶。
+      drive_curve_strong_speed_cap: 8.00
+      # 线贴近画面边缘时的救线速度封顶：m/s；加大更快，过大容易直接冲出赛道。
+      drive_edge_rescue_speed_cap: 2.0
+      # 边缘救线最大转向：rad/s；加大救线更猛，过大可能摆动或压线。
+      drive_edge_rescue_max_turn_speed: 0.66
+      # 硬急弯速度封顶：m/s；good2后提高到0.18，避免急弯瞬间近似停车造成“卡一下”。
+      drive_hard_turn_speed_cap: 0.20
+      # 硬急弯最大转向：rad/s；加大转得更快，过大可能左右抽动。
+      drive_hard_turn_max_turn_speed: 0.56
+
+      # ===== C. 预测弯道预转向（确认后短时接管） =====
+      # 总开关：0=关闭、1=开启；只有中远场连续同向且近场仍接近中心时才触发，不会单帧盲转。
+      drive_preturn_enabled: 0
+      # 连续确认帧：1~10 帧；增大更抗抖但转得更晚，减小更早但更易误触发；建议先用 2。
+      drive_preturn_confirm_frames: 2
+      # 远场弯曲阈值：归一化误差 0.01~1.00；减小更早预转，增大更保守；建议每次只改 0.02。
+      drive_preturn_far_error_threshold: 0.07
+      # 预转向角速度：rad/s，正负由视觉自动决定；增大转得更早更猛，过大可能切内弯。
+      drive_preturn_turn_speed: 0.80
+      # 预转向接管时长：s；增大左/右偏保持更久，过大可能持续压线；到时自动恢复普通巡线。
+      drive_preturn_seconds: 0.8
+      # 预转向阶段前进速度：m/s；增大更快，减小更容易在高速前及时转入弯道；仍走底盘平滑限幅。
+      drive_preturn_speed: 0.25
+
+      # ===== D. 起跑后第一个左弯：整段逐帧连续跟随 =====
+      # 总开关：0=不用首弯专用算法、1=启用；只在比赛起跑后第一个左弯有效，完成出弯自动永久退出，环岛不使用。
+      first_turn_enabled: 1
+      # 入口连续确认帧：1~10；每张新画面都看近/中/远误差；增大更抗抖，减小更早进入首弯。
+      first_turn_confirm_frames: 2
+      # 远场左弯阈值：归一化误差 0.01~1.00；减小更早识别，增大更保守。按本车视觉坐标，负中远场表示第一个物理左弯。
+      first_turn_far_error_threshold: 0.07
+      # 逐帧左转增益：有限非负数；每张新帧都据当前弯曲程度更新转向，增大入弯更积极。
+      first_turn_turn_kp: 1.20
+      # 首弯最大左转角速度：rad/s，有限非负数；增大左弧更紧，过大可能切内弯；0=只检测不转。
+      first_turn_max_left_turn_speed: 0.80
+      # 首弯专用前进速度：m/s，有限非负数；进入首弯后使用，出弯后恢复普通巡线速度。
+      first_turn_forward_speed: 0.25
+      # 出弯连续确认帧：1~10；近中远场连续变直后才退出；增大更不易过早退出。
+      first_turn_exit_confirm_frames: 2
+      # 首弯最长保护时间：s，有限非负数；到时强制退出回普通巡线，防止视觉异常一直占用。
+      first_turn_max_seconds: 4.0
+
+      # ===== E. 普通巡线短暂丢线：保持速度向左找线 =====
+      # 总开关：0=使用旧大弯/短时丢线逻辑、1=普通巡线优先保持最近可信速度向左找线；环岛不使用。
+      line_loss_left_enabled: 1
+      # 保持速度比例：有限非负数；1.0=丢线前实际速度，0.5=减半，0=原地左转；不设软件上限。
+      line_loss_left_speed_ratio: 1.0
+      # 固定左找线角速度：rad/s，有限非负数；正数为本车左转；增大找线更快，过大可能切内侧。
+      line_loss_left_turn_speed: 0.60
+      # 左找线最长时间：s，有限非负数；超时后仍按已有安全逻辑停车，不会无限盲走。
+      line_loss_left_timeout_seconds: 1.5
+
+      # ===== F. 旧短时丢线/大弯续行（关闭上段开关时使用） =====
+      # 大弯丢线后按上一方向继续找线的时长：s；太早停/掉头则加大，盲走太久则减小。
+      drive_big_turn_loss_seconds: 1.8
+      # 大弯丢线续行前进速度：m/s；加大更快，冲出赛道则减小。
+      drive_big_turn_loss_speed: 0.075
+      # 大弯丢线续行转向：rad/s；正负方向沿用当前底盘坐标，绝对值增大转得更快。
+      drive_big_turn_loss_turn: 0.34
+
+      # ===== G. 视觉环岛入口：连续暗块 + 虚线链形状 → 渐进左切 → 环内逐帧循迹 =====
+      # 总开关：1=本段视觉入口为唯一进环路径；联合证据连续确认后停止普通巡线。
+      # 0=仅用于必要时回退旧入口，才会启用下方旧的“沿线接近→固定左转”字段；正常保持 1。
+      roundabout_fast_entry_enabled: 1
+      # 高速入口最早允许时间：s，有限非负数；0=第一张有效画面就允许；增大可跳过起跑处纹理。
+      roundabout_fast_entry_arm_delay_seconds: 0.0
+      # 高速入口最早允许本圈里程：m，有限非负数；0=不按里程等待；增大可避开起跑区误触发。
+      # 该值依赖 /odom；若里程不可信请保持 0。
+      roundabout_fast_entry_min_seek_distance_m: 0.0
+      # 入口 ROI 内总深色小连通块基础下限：1~20；还需满足虚线链分，或至少5块且左侧3块。
+      # ROI 是画面 y=22%~80%、x=5%~95%；屏幕上的青框就是这些候选块。
+      roundabout_fast_entry_min_components: 3
+      # 上述候选中位于屏幕左半边的块数下限：0~20 且不大于总块数；当前 2；减小更容易进环。
+      roundabout_fast_entry_min_left_components: 2
+      # 入口连续确认的新相机帧：1~10；当前 2，过滤单帧杂点又不会明显拖晚入口。
+      # 重复控制周期不会重复计数，只有新相机画面才算一帧。
+      roundabout_fast_entry_confirm_frames: 2
+      # 触发后最少进环搜索时间：s。期间采用渐进左切，避免入口刚出现就猛打方向。
+      roundabout_fast_entry_min_search_seconds: 0.50
+      # 进环搜索前进速度：m/s。降低到0.20，为入口形状复核和内线重捕留出时间。
+      roundabout_fast_entry_forward_speed: 0.20
+      # 进环最大左转角速度：rad/s。程序从0.34渐进到该值，并允许视觉提前接管。
+      roundabout_fast_entry_left_turn_speed: 0.82
+      # 环岛内线连续确认的新相机帧：1~10；当前 3；达到后切入 ROUNDABOUT_FOLLOW，每帧正常循迹。
+      # 增大抗误把外侧线当内线，减小更早开始环内跟线；这不是退出机制。
+      roundabout_fast_entry_reacquire_frames: 3
+
+      # ----- G1. 环内跟随/出口（高速入口找到内线后继续使用） -----
+      # 环岛内有线巡线速度上限：m/s；现在由自适应入口真正执行。弧度大时建议 0.22~0.30，当前 0.26。
+      roundabout_forward_speed: 0.26
+      # ----- G2. 旧入口备用值（仅 roundabout_fast_entry_enabled=0 时有效） -----
+      # 确认入口后沿线接近速度：m/s；这段使用原巡线纠偏，不再固定左偏；增大更快，过大易错过入口。
+      roundabout_approach_speed: 0.40
+      # 沿线接近距离：m，实际是相对阶段起点的位移；增大更晚进环，减小更早；两圈共用，可实时改。
+      roundabout_approach_distance_m: 0.40
+      # 左转进环角速度：rad/s，正数向左；原始固定进环直接使用此值；增大左弧更紧。
+      roundabout_entry_turn_speed: 0.98
+      # 进环段退出位移：m，不是累计弧长；加大进环更久，绕过头减小；原时间兜底仍保留。
+      roundabout_entry_turn_distance: 0.66
+
+      # ----- E2. 原始短时丢线/边界保护与出口（不是用直道速度盲冲） -----
+      # 环岛内看不见线时固定恢复速度：m/s；丢线后保持低速明显找线，当前 0.08。
+      roundabout_blind_recovery_speed: 0.12
+      # 环岛内丢线最小物理左找角速度：rad/s；自适应趋势可继续加大，但不会低于它。当前 0.38。
+      roundabout_blind_recovery_left_turn: 0.10
+      # 蓝色护栏/背景保护触发时前进速度：m/s；加大更快，过大可能撞向边界。
+      roundabout_blue_guard_speed: 0.045
+      # 蓝色护栏/背景保护触发时转向：rad/s；加大躲避更快，过大可能抽动。
+      roundabout_blue_guard_turn_speed: 0.30
+      # 出环保护前进速度：m/s；加大离环快，过大可能错过出口线。
+      roundabout_exit_speed: 0.20
+      # 出环分叉最小左转：rad/s；本车正左负右。分叉出口必须选左支，默认至少 +0.10。
+      # 可实时调大增强左拉；设为 0 可允许直行，但 adaptive 出口段不会再允许负值右转。
+      roundabout_exit_min_turn_speed: 0.10
+      # 出环最大转向：rad/s，无软件上限；加大更容易完成出口弯，过大易摆动。
+      roundabout_exit_max_turn_speed: 0.22
+      # 环岛跟随的最小转向：rad/s，可正可负；本车正左负右，用于保留轻微出环方向。
+      roundabout_follow_min_turn_speed: -0.04
+
+      # ===== H. 人行横道：原始连续确认 → 接近 → 停车 → 找黄线 =====
+      # 横道连续确认帧：1~10 帧；增大减少误检，减小减少漏检。
+      crosswalk_confirm_frames: 2
+      # 出环后开始找横道延迟：s，0~10；增大可避开环岛纹理误检，过大可能漏检。
+      crosswalk_delay_after_roundabout: 1.5
+      # 横道确认后继续循迹的距离：m；太早停则加大，压到黑条太多则减小。
+      crosswalk_approach_distance_m: 0.30
+      # 反向制动开关：1=到达人行横道停车点后先立即倒车制动，再进入正式停车；0=直接停车。
+      crosswalk_brake_reverse_enabled: 1
+      # 反向制动持续时间：s，0~2；默认 0.50s。
+      crosswalk_brake_reverse_seconds: 0.50
+      # 反向制动速度：m/s，0~0.30；程序内部自动取负值，默认 0.06m/s。
+      crosswalk_brake_reverse_speed: 0.06
+      # 反向制动结束后的正式停车时长：s，0~15；当前按 3 秒。
+      crosswalk_stop_seconds: 3.0
+
+      # ===== I. 正常等待/巡线姿态 =====
+      # 腿高：m，范围 0.14~0.36；减小下蹲、相机更贴地；0.5 秒平滑，台阶接管禁改。
+      posture_height_m: 0.15
+      # 横滚：度，范围 -15~15；正负方向须实车确认；0.5 秒平滑，台阶接管禁改。
+      posture_roll_deg: 0.0
+      # 俯仰：度，范围 -35~35；本车正数低头，增大看近端更多；0.5 秒平滑，台阶接管禁改。
+      posture_pitch_deg: 25.0
+      # 滑步：m，范围 -0.08~0.08；正负方向须实车确认；0.5 秒平滑，台阶接管禁改。
+      posture_slide_m: 0.0
+
+      # ===== J. 台阶：后退对线 → 保存偏航 → 冲刺丢线起跳 → 原偏航找线 =====
+      # 使用条件：A 段 step_enabled=1；下面策略开关=1。仍由深度相机确认台阶，普通丢线不会跳。
+      # 新策略开关：0=原深度/固定距离半自动流程（icn.yaml），1=本段新策略；接管期间禁止切换。
+      step_visual_jump_enabled: 1
+
+      # ----- H1. 后退与摆正（真正画面中心，不使用普通弯道目标偏移） -----
+      # 后退开关：0=原地对线，1=边后退边对线；可实时改；对线超时仍有效。
+      step_reverse_align_enabled: 1
+      # 后退速度：m/s，有限非负数；程序自动取负值倒车；增大退得快，0=只转向。
+      step_reverse_speed: 0.06
+      # 强制结束对线时间：s，正数；默认 3 秒；有黑线时记录当前偏航并冲刺，无线时停车。
+      # 达到时间但线未居中仍按当前方向退出，日志会明确提示；加大可留更多摆正时间。
+      step_reverse_align_timeout_seconds: 3.0
+      # 居中容差：归一化误差 0~1；近/中场均值的绝对值；640 宽图像 0.06 约为中心 ±19 像素。
+      # 减小对得更正但耗时更多，增大更容易进入冲刺；需同时满足下一项。
+      step_align_center_tolerance: 0.06
+      # 方向容差：近中场误差差值 0~2；减小要求黑线更竖直，增大容许斜线；避免只居中但车头斜。
+      step_align_heading_tolerance: 0.12
+      # 对线连续确认：1~10 个不同有效画面；增大更抗抖但退出晚，减小更快。
+      step_align_confirm_frames: 2
+      # 对线转向增益：有限非负数；增大纠偏快，过大来回摆；后退时横向纠偏方向自动反转。
+      step_align_turn_kp: 1.0
+      # 对线最大角速度：rad/s，有限非负数；增大摆正更快，0=不转向。
+      step_align_max_turn_speed: 0.35
+
+      # ----- H2. 保存偏航后平滑加速冲刺 -----
+      # 冲刺目标速度：m/s，有限非负数，无软件最大值；增大前冲更快，实际受电机/地面限制。
+      step_sprint_speed: 0.70
+      # 冲刺加速度：m/s²，有限非负数；减小起步柔和，增大更快达到目标；0=不加速。
+      step_sprint_accel: 0.65
+      # 最短冲刺时间：s，非负且小于最长时间；在此之前丢线不会起跳；避免切换阶段瞬间误跳。
+      step_sprint_min_seconds: 0.15
+      # 最短冲刺距离：m，非负且小于最长距离；同时满足时间和里程才允许丢线起跳。
+      step_sprint_min_distance_m: 0.05
+      # 冲刺最长时间：s，正数；到时仍不满足起跳就停车，增大可等待更久；不会超时盲跳。
+      step_sprint_max_seconds: 3.0
+      # 冲刺最长距离：m，正数；从记录偏航处计量；时间或距离任一达到就停车。
+      step_sprint_max_distance_m: 1.20
+      # 丢线确认：1~10 个不同有效画面；增大抗短暂线洞，减小更早起跳；断帧不计作丢线。
+      step_line_loss_confirm_frames: 2
+      # 偏航保持开关：0=固定角速度 0，1=冲刺/跳跃/落地后按保存的 odom 偏航纠偏。
+      step_heading_hold_enabled: 1
+      # 偏航纠偏增益：rad/s 每 rad，有限非负数；增大方向恢复快，过大摆动；自动处理 ±180° 环绕。
+      step_heading_kp: 1.20
+      # 偏航纠偏最大角速度：rad/s，有限非负数；增大抵抗落地偏转更强，0=不纠偏。
+      step_heading_max_turn_speed: 0.40
+
+      # ----- H3. 有效画面丢线时触发跳跃（新策略不等待回车） -----
+      # 起跳开关：0=满足丢线条件后只停车（调试），1=发送现有跳跃指令；可实时改。
+      step_jump_on_loss_enabled: 1
+      # 跳跃脉冲前进速度：m/s，有限非负数；增大更向前，过大落地偏远；仅脉冲阶段使用。
+      step_jump_forward_speed: 0.60
+      # 跳跃低位腿高：m，0.14~0.36 且不高于高位；减小压缩更多；发送 /cmd_jump_profile。
+      step_jump_min_height: 0.15
+      # 跳跃高位腿高：m，0.14~0.36；增大伸展更多；不能仅凭参数保证跳过台阶。
+      step_jump_max_height: 0.33
+      # 跳跃临时姿态腿高：m，0.14~0.36；跳跃时横滚/俯仰/滑步设 0，脉冲后恢复 G 段正常姿态。
+      step_jump_stand_height_m: 0.25
+      # 跳跃 true 脉冲时长：s，正数；增大保持更久；脉冲后发送 false，不重复自动跳。
+      step_jump_pulse_seconds: 0.20
+
+      # ----- H4. 落地后保持原偏航，重新看到黑线才恢复巡线 -----
+      # 落地保护时间：s，非负；从脉冲结束计时；期间前行但不把黑线当作找线完成；增大避开落地模糊。
+      step_landing_seconds: 0.50
+      # 落地找线前进速度：m/s，有限非负数；角速度由原偏航纠偏给出；增大找线快但可能越界。
+      step_post_forward_speed: 0.12
+      # 落地找线连续确认：1~10 个不同有效画面；增大抗抖，达到后结束本圈台阶并恢复普通巡线。
+      step_post_line_confirm_frames: 2
+      # 落地找线最长时间：s，正数且大于落地保护时间；仍无线就停车；从脉冲结束计时。
+      step_post_timeout_seconds: 3.8
+      # 落地找线最长距离：m，正数；从脉冲结束位置计量；时间/距离任一达到就停车。
+      step_post_max_distance_m: 0.38
+      # 上述 H 段数值保存后实时生效；已运行阶段按“进入该阶段的时刻”计算时间，改值不重置计时。
+      # 关闭总开关、切换新旧策略、改正常姿态仍须先结束台阶接管；其余 H 段参数可以实时调整。
+
+      # ===== K. 软件蜂鸣提示（当前没有接物理蜂鸣器） =====
+      # 总开关：0=跳过、1=仅记录/显示软件事件；当前未接物理蜂鸣器，改它不会发声。
+      buzzer_enabled: 0
+      # 开始提示次数：次，1~5；仅下一次开始事件生效。
+      buzzer_start_count: 2
+      # 开始每次提示时长：s，0.05~2；仅软件事件。
+      buzzer_start_on_seconds: 0.10
+      # 开始提示间隔：s，0~3；仅软件事件。
+      buzzer_start_off_seconds: 1.00
+      # 横道提示次数：次，1~5；仅软件事件，不改变停车时间。
+      buzzer_crosswalk_count: 1
+      # 横道每次提示时长：s，0.05~2；仅软件事件。
+      buzzer_crosswalk_on_seconds: 1.00
+      # 横道提示间隔：s，0~3；仅软件事件。
+      buzzer_crosswalk_off_seconds: 0.00
+      # 终点提示次数：次，1~5；仅软件事件。
+      buzzer_finish_count: 1
+      # 终点每次提示时长：s，0.05~2；仅软件事件。
+      buzzer_finish_on_seconds: 1.00
+      # 终点提示间隔：s，0~3；仅软件事件。
+      buzzer_finish_off_seconds: 0.00

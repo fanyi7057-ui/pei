@@ -1,0 +1,280 @@
+# 两轮轮足机器人：逐帧趋势巡线 + 左分支两次计数环岛 + 交错块出口 + 远距人行横道
+# 本文件由 icn_adaptive.py 每 0.5 秒读取一次，保存即可生效，不需要重新编译。
+# 调参前保证遥控急停可用；第一次上车先 enable_motion:=false 看调试画面。
+
+adaptive_logic:
+  # ===== A. 普通巡线/环岛内：线消失时按最近几帧趋势找回 =====
+  line_history_frames: 5
+  line_near_weight: 0.55
+  line_mid_weight: 0.30
+  line_far_weight: 0.15
+  line_trend_gain: 1.80
+  line_recovery_kp: 0.95
+  line_recovery_max_turn_speed: 0.68
+  line_recovery_speed_ratio: 0.78
+  # 0~bridge_seconds：认为只是短暂闪断，基本保持原速度。
+  line_recovery_timeout_seconds: 0.85
+  line_recovery_min_speed: 0.035
+  line_recovery_bridge_seconds: 0.12
+  line_recovery_bridge_speed_ratio: 0.92
+  # 超过0.85s不再保持较高前冲速度，改为低速沿最后可信方向持续搜索。
+  line_recovery_persistent_enabled: true
+  line_recovery_persistent_speed: 0.07
+  line_recovery_persistent_turn_start: 0.18
+  line_recovery_persistent_turn_max: 0.42
+  line_recovery_persistent_turn_ramp_seconds: 1.50
+  line_recovery_direction_deadband: 0.04
+
+  # ===== B. 环岛入口：中央间断主线可持续，左侧分支“有→无→再有”才算两次 =====
+  # 中央连续间断块区域。比上一版略放宽，减少第二处入口漏检。
+  roundabout_dual_center_x_min: 0.30
+  roundabout_dual_center_x_max: 0.70
+  # 左侧分支间断块区域。
+  roundabout_dual_left_x_min: 0.02
+  roundabout_dual_left_x_max: 0.46
+  # 中央/左侧形成连续纵向链所需最少块数。
+  roundabout_dual_center_min_components: 2
+  roundabout_dual_left_min_components: 2
+  # 最小纵向跨度；第二次入口不明显时优先观察 HDMI 的 c/l/span，而不是盲目加转向。
+  roundabout_dual_center_min_span_ratio: 0.07
+  roundabout_dual_left_min_span_ratio: 0.03
+  # 中央链和左分支纵向可错开多少；透视角下允许一定错位。
+  roundabout_dual_max_vertical_gap_ratio: 0.32
+  # 严格几何继续保留做诊断，但真实入口透视下允许center/left部分重叠。
+  roundabout_dual_min_horizontal_gap_ratio: 0.08
+  # V5：只认“真实出口形态”，弱的单块/单链绝不触发。
+  # 终端中的误触发只有 c=1/l=1；这里要求中央至少2块且有纵向跨度，左支也至少2块。
+  roundabout_exit_marker_center_min_components: 2
+  roundabout_exit_marker_center_min_span_ratio: 0.06
+  roundabout_exit_marker_left_min_components: 2
+  roundabout_exit_marker_left_min_span_ratio: 0.08
+  # 连续两帧确认，避免10秒门刚打开时一帧噪声就被当成出口。
+  roundabout_exit_marker_confirm_frames: 2
+  # 以下字段保留兼容，但V5入环不再依赖“左支消失/中央走廊/新左支”。
+  roundabout_marker1_center_follow_seconds: 1.40
+  roundabout_marker1_raw_confirm_frames: 1
+  roundabout_marker_confirm_frames: 2
+  roundabout_marker_clear_frames: 3
+  roundabout_marker_between_center_frames: 1
+  roundabout_marker_min_separation_seconds: 2.00
+  roundabout_marker_min_separation_distance_m: 0.0
+  roundabout_marker2_raw_min_components: 3
+  roundabout_marker2_raw_min_span_ratio: 0.14
+  # 真实出口确认后：2.0秒只屏蔽“环岛左分叉事件”，但仍逐帧巡主线。
+  # 时间到的同一帧才进入FAST_ENTRY，并在那个时刻把gyro积分清零作为整圈起点。
+  roundabout_marker1_straight_seconds: 2.35
+  # 以下两个旧字段仅兼容旧配置；V7不再固定v=0.25/w=0。
+  roundabout_marker1_straight_speed: 0.25
+  roundabout_marker1_straight_max_turn_speed: 0.00
+  roundabout_marker1_follow_line_enabled: true
+  # 2秒通过窗口允许正常小幅修线，但不允许大幅改车头角度。
+  roundabout_marker1_follow_max_turn_speed: 0.28
+  # 左分叉可见时，正向(左)转向最多到+0.10，避免被左支吸走；右修仍按上面的0.28限幅。
+  roundabout_marker1_branch_left_turn_cap: 0.10
+  # 中央线是连续间断块时，短暂丢线仍保持最近主线趋势和接近原巡线速度。
+  roundabout_marker1_gap_bridge_seconds: 0.45
+  roundabout_marker1_gap_speed_ratio: 0.90
+  # good3_1：2秒主线通过窗口内即使虚线短暂丢失，也保持足够前进速度，不改进环状态机。
+  roundabout_marker1_pass_loss_min_speed: 0.32
+  roundabout_marker1_post_hold_enabled: false
+  roundabout_marker1_post_hold_speed_cap: 0.40
+  roundabout_marker1_post_hold_loss_speed_cap: 0.12
+  roundabout_marker1_post_hold_max_turn_speed: 0.15
+  # 每圈局部屏蔽仍保持0；第一圈使用下面“比赛开始10s后才判断环岛”的全局门。
+  roundabout_ignore_after_lap_start_seconds: 0.0
+  # 比赛真正开始（第一帧有效图像）后的前10秒，只正常巡线，不累计环岛出口事件。
+  roundabout_initial_arm_delay_seconds: 10.0
+
+  # ===== B2. 普通巡线/环岛内输出平滑：同向转弯及时，反向切换更慢 =====
+  motion_smoothing_enabled: true
+  # 出弯恢复稍快，但仍明显慢于减速；避免弯中反复“慢下来—等一下—再提速”。
+  motion_linear_accel_up: 0.38
+  # 减速不再过猛，避免弯道模式切换时有明显“点刹”感；仍快于加速。
+  motion_linear_decel: 0.72
+  # 同方向建立转向可以较快，保证弯道不拖。
+  motion_angular_slew_normal: 3.0
+  motion_angular_slew_roundabout: 2.8
+  # 从左转切到右转(或反之)单独限慢，避免视觉误差跳变造成左右抽动。
+  motion_angular_reverse_slew: 1.30
+  # 转向目标低通系数：1=不滤波；0.60保留响应同时削掉单帧尖峰。
+  motion_angular_target_alpha: 0.48
+  # 很小的转向抖动直接归零，避免直线附近左右点头。
+  motion_angular_deadband: 0.015
+
+  # ===== C. 真实出口后主线巡线2s完成：直接逐帧趋势 + 左侧优先入环 =====
+  # 强左入环至少保持 0.60s：比上一版 0.75s 更短，减少切入后继续左打过头。
+  roundabout_entry_min_search_seconds: 0.60
+  # FAST_ENTRY 最长 1.10s：如果连续5帧内线仍未确认，也停止强左并交给 FOLLOW。
+  # 配合更大的 +0.60rad/s 最小左转，形成“更有力、但更短”的快速切入。
+  roundabout_entry_max_search_seconds: 1.10
+  # 入环前进速度。这里不再使用 race_tuning.yaml 的固定 1.20rad/s 左打逻辑。
+  roundabout_entry_forward_speed: 0.19
+  # 趋势角速度上叠加的物理左偏；趋势每帧都参与，不是固定打死。
+  roundabout_entry_left_bias: 0.20
+  # 快速切入：最低左转保持 +0.45rad/s；时间仍较短，避免切入后继续左打过头。
+  roundabout_entry_min_left_turn_speed: 0.34
+  # 入环最大角速度，防止趋势和左偏叠加后突然打满。
+  roundabout_entry_max_turn_speed: 0.70
+  # 左分支离开后连续看到稳定线多少帧，才转入环内 FOLLOW。
+  roundabout_entry_reacquire_frames: 3
+  # 从FAST_ENTRY刚切到FOLLOW后的短保护：若内线突然闪断，继续向前并保持轻微左弧，绝不瞬间反打右。
+  roundabout_follow_entry_guard_seconds: 1.20
+  roundabout_follow_entry_guard_speed: 0.22
+  roundabout_follow_entry_guard_min_left_turn: 0.12
+  roundabout_follow_entry_guard_max_left_turn: 0.30
+
+  # ===== D. 环内出口：识别“横向虚线主链 + 斜向虚线分支”的分叉形 =====
+  # 入环后至少多久才开始接受出口，避免入口附近纹理被当出口。
+  # 环内有线时的“咬线”增益：1.0=原始转向，>1 更贴线；建议 1.00~1.25。
+  # 环内有线时略微增强咬线，仍复用普通巡线算法，只把转向放大10%。
+  roundabout_follow_steering_gain: 1.10
+
+  # V10：环内即使只剩一个独立黑色方块、还连不成完整线，也把它当作临时目标靠过去。
+  # 仅在ROUNDABOUT_FOLLOW且正常line_valid=false时使用，不影响普通巡线。
+  roundabout_single_block_rescue_enabled: true
+  roundabout_single_block_speed: 0.18
+  roundabout_single_block_kp: 0.78
+  roundabout_single_block_max_turn_speed: 0.45
+
+  # good3_1：累计转角超过200°后进入出口保护区；若此时主线丢失，固定向左找出口，
+  # 不再允许旧的右向趋势把车头拉回环内。
+  roundabout_exit_loss_left_arm_turn_deg: 200.0
+  # 200°以后出口空白区左找维持0.24m/s，保留good3_1出环判定时机。
+  roundabout_exit_loss_speed: 0.24
+  roundabout_exit_loss_left_turn: 0.30
+  # 出环状态切换后仍未看清主线时，低速强制左找线；连续确认后立即交回普通巡线。
+  roundabout_exit_reacquire_confirm_frames: 2
+  roundabout_exit_reacquire_min_confidence: 0.35
+  roundabout_exit_reacquire_min_bands: 2
+
+  # V11：330°以后已经接近真正入环时记录的车头朝向。
+  # 不再让出口左支直接决定车头，而是优先把gyro累计角收敛到360°。
+  roundabout_exit_heading_lock_enabled: true
+  roundabout_exit_heading_lock_arm_deg: 330.0
+  roundabout_exit_heading_target_deg: 360.0
+  roundabout_exit_heading_tolerance_deg: 8.0
+  # 每差1°给0.01rad/s：330°约+0.30，345°约+0.15，360°附近约0。
+  roundabout_exit_heading_kp: 0.010
+  roundabout_exit_heading_lock_speed: 0.24
+  roundabout_exit_heading_max_left_turn: 0.30
+  roundabout_exit_heading_max_right_turn: 0.12
+  # 未回到360°前，视觉只做35%小修，gyro航向为主。
+  roundabout_exit_heading_visual_weight: 0.35
+  # 若视觉突然要求明显左转(>+0.18)，认为可能重新抓到环岛左支：
+  # 一次保持1秒gyro航向，再重新判断当前主线，而不是w=0盲直。
+  roundabout_exit_left_branch_trigger_turn: 0.18
+  roundabout_exit_left_branch_hold_seconds: 1.50
+  # 正式出环后继续保留3秒gyro航向参考；正常巡线仍运行，只有可疑大左转才介入。
+  roundabout_exit_heading_post_exit_seconds: 3.00
+
+  # 环内丢线先严格沿最近几帧趋势继续：最近向左就左、向右就右、居中就保持。
+  # 只有持续丢线且完全没有可靠方向时，才使用下面的小幅左偏作为最终保底。
+  roundabout_blind_recovery_speed: 0.12
+  roundabout_blind_recovery_left_turn: 0.10
+  # 环内丢线时不再把普通趋势恢复压得太弱；允许更有力地咬回内线。
+  roundabout_blind_recovery_max_turn_speed: 0.45
+
+  # ===== D1. IMU gyro_z 积分出环：只判断状态，绝不控制 steering =====
+  # 实车日志显示 /imu/data.orientation 的 yaw 基本不随车体绕环变化，
+  # 因此改成从真正入口开始积分 angular_velocity.z。
+  roundabout_gyro_exit_enabled: true
+  # 至少累计转过270度才允许进入“接近一整圈”的判定区。
+  roundabout_gyro_arm_turn_deg: 270.0
+  # 真正入口时积分角清零；接近360度等价于车头回到入口朝向附近。
+  roundabout_gyro_target_turn_deg: 360.0
+  # 允许目标角误差 ±15度。
+  roundabout_gyro_return_tolerance_deg: 15.0
+  # 连续满足多少帧才作为视觉出口漏检的兜底。
+  roundabout_gyro_return_confirm_frames: 3
+  # V7：360度附近恰好可能是出口分叉、视觉容易短暂丢线；不能再让line_valid挡掉gyro退出。
+  roundabout_gyro_require_line_valid: false
+  # 即使±15度窗口因为任何原因没累计够帧，一旦真正跨过360度也要锁存退出，绝不能绕到500多度。
+  roundabout_gyro_force_exit_after_target_enabled: true
+  roundabout_gyro_force_exit_margin_deg: 5.0
+  roundabout_gyro_force_exit_confirm_frames: 2
+  # 超过该时间没有新IMU数据，本帧不使用gyro判断。
+  roundabout_gyro_imu_timeout_seconds: 0.50
+  # 角速度小于该值视为零，过滤静止噪声。
+  roundabout_gyro_deadband_deg_s: 1.00
+  # gyro比例校准系数，实车若积分偏小/偏大可热调。
+  roundabout_gyro_scale: 1.00
+  # 限制异常角速度毛刺。
+  roundabout_gyro_max_rate_deg_s: 240.0
+  # 单次控制循环最多积分这么长的dt，避免程序卡顿后一次性跳角。
+  roundabout_gyro_max_integration_dt_seconds: 0.10
+  # 视觉fork不再能在角度还没绕够时抢先出环；gyro累计至少到270°后才接受视觉出口。
+  roundabout_exit_require_gyro_arm: true
+
+  roundabout_exit_arm_seconds: 4.00
+  # 连通块中心拟合直线时允许离线多远（归一化图像比例）。
+  roundabout_exit_fork_line_tolerance_ratio: 0.04
+  # 横向主链、斜向分支至少各需要多少个黑块。
+  roundabout_exit_fork_min_main_components: 3
+  roundabout_exit_fork_min_branch_components: 3
+  # 主链必须横向铺开，同时纵向不能漂得太大。
+  roundabout_exit_fork_min_main_x_span_ratio: 0.28
+  roundabout_exit_fork_max_main_y_span_ratio: 0.14
+  # 斜向分支必须向画面下方延伸足够距离。
+  roundabout_exit_fork_min_branch_y_span_ratio: 0.18
+  # 两条链最小夹角。用户提供的实物图是“横向 + 斜向”分叉，不要求左右交替。
+  roundabout_exit_fork_min_angle_deg: 20.0
+  # 拟合线交点允许略落在可见黑块外，适应连接处本身留白。
+  roundabout_exit_fork_junction_margin_ratio: 0.18
+  # 连续新画面确认帧数。达到后直接恢复普通巡线并进入冷却。
+  roundabout_exit_fork_confirm_frames: 2
+
+  # 视觉出口一直漏掉时才使用旧的受限出口兜底。
+  roundabout_exit_commit_seconds: 1.20
+  roundabout_exit_speed: 0.20
+  roundabout_exit_left_bias: 0.10
+  roundabout_exit_max_turn_speed: 0.42
+
+  # gyro确认后近似直出，避免继续强左再次卷回环岛。
+  roundabout_gyro_exit_commit_seconds: 1.00
+  roundabout_gyro_exit_speed: 0.25
+  roundabout_gyro_exit_left_bias: 0.00
+  roundabout_gyro_exit_max_turn_speed: 0.12
+  roundabout_follow_timeout_seconds: 28.0
+  # 真正出环后环岛状态机冷却时间。
+  # 第一次真正出环后25s内完全不允许再次累计环岛marker；第二圈若更晚到达则自动恢复。
+  roundabout_ignore_after_exit_seconds: 25.0
+  # 出环后短暂清空环内趋势历史，并同时限制左右大转向，避免重新被环岛分支吸回。
+  # 出环后不能“2秒一到就放开右转”。至少保护2.5s；主线没稳定回来时最多保护到4s。
+  roundabout_post_exit_guard_seconds: 2.50
+  roundabout_post_exit_guard_max_seconds: 4.00
+  roundabout_post_exit_reacquire_frames: 4
+  roundabout_post_exit_speed_cap: 0.30
+  roundabout_post_exit_min_speed: 0.18
+  # V11.4：正式出环后无线时，不再固定一个左转值，而是0.35→0.55平滑加力。
+  # 旧字段保留兼容；当前作为默认/回退值，不再直接作为固定输出。
+  roundabout_post_exit_loss_left_turn: 0.50
+  roundabout_post_exit_loss_left_turn_start: 0.35
+  roundabout_post_exit_loss_left_turn_max: 0.55
+  roundabout_post_exit_turn_ramp_seconds: 0.40
+  # 重新看到主线后，用0.30s把出环左找角速度平滑交还给视觉巡线。
+  roundabout_post_exit_reacquire_blend_seconds: 0.30
+  roundabout_post_exit_search_speed: 0.24
+  # V9：出环恢复保护期间，不允许视觉重新把车头拉向右侧。
+  # 无论当前帧是否看见线，至少保持一个小的左弧，直到主线稳定重新咬住。
+  roundabout_post_exit_min_left_turn_speed: 0.12
+  roundabout_post_exit_max_left_turn_speed: 0.22
+  roundabout_post_exit_max_right_turn_speed: 0.00
+
+  # 第一次人行横道一旦确认并进入 CROSSWALK_APPROACH，就开始第二次环岛冷却。
+  # 15秒内即使已经进入第二圈，也只正常巡线，不累计任何环岛 marker。
+  second_roundabout_arm_delay_after_first_crosswalk_seconds: 15.0
+
+  # ===== E. 人行横道：远场提前识别 =====
+  crosswalk_far_y_top_ratio: 0.18
+  crosswalk_far_y_bottom_ratio: 0.66
+  crosswalk_far_min_runs: 5
+  crosswalk_far_min_good_rows: 3
+  crosswalk_far_min_span_ratio: 0.30
+  crosswalk_far_min_run_width_px: 3
+  crosswalk_far_max_run_width_ratio: 0.085
+  crosswalk_row_occupancy: 0.32
+  crosswalk_confirm_frames: 2
+  crosswalk_detect_delay_after_roundabout: 0.80
+  crosswalk_approach_distance_m: 0.22
+  crosswalk_approach_min_seconds: 0.30
+  crosswalk_approach_fallback_seconds: 3.20

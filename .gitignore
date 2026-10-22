@@ -1,19 +1,11 @@
-# ROS 2 build products and on-robot runtime output
-build/
-install/
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
 log/
-Log/
 recordings/
-__pycache__/
+**/__pycache__/
 *.py[cod]
-
-# Field-test videos, bags, and camera captures
 *.avi
+*.mp4
 *.bag
 *.db3
-scripts/log/
-scripts/visual_nav_recordings/
-
-# Orbbec third-party source/binaries are supplied separately by the package
-# setup and are too large for this project repository.
-vendor/OrbbecSDK_ROS2/
