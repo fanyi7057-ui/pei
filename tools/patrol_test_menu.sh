@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# V18测试子菜单；普通巡线V11，保留偏航C++修复，加载本包。
+# V19测试子菜单；普通巡线V11，保留偏航C++修复，加载本包。
 set -u
 PATROL_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)" || exit 1
 PATROL_WS="$PATROL_ROOT/ros2_ws"
@@ -53,7 +53,7 @@ if [[ "$patrol_nodes" == *"/wheelleg_vision_race"* || "$patrol_nodes" == *"/wl_b
   printf '已有比赛或底盘节点在运行，请先在原终端Ctrl+C退出；禁止两个程序抢/cmd_vel。\n'
   exit 1
 fi
-printf '\n===== V18巡线＋环岛＋横道/终点（普通巡线V11，不执行台阶）=====\n'
+printf '\n===== V19巡线＋环岛＋横道/终点（普通巡线V11，不执行台阶）=====\n'
 case "${1:-}" in
   --dry) patrol_option=1 ;;
   --real) patrol_option=2 ;;
@@ -63,7 +63,7 @@ esac
 case "$patrol_option" in
   1) patrol_motion=false; patrol_base=false ;;
   2)
-    printf 'V18：普通0.65m/s不变；明确5号后0.5等效运动秒/至少0.12米通过，明确4号接管；环岛上限0.30，55度无路线改0.12/0.35温和左探。360度+实测0.80米仅提名出口；未找到可靠线最多低速找1秒，失败保护等待人工。两圈横道/终点顺序不变，不跳台阶、不录像。请调零/使能、清场并保留遥控急停。\n'
+    printf 'V19：普通0.65m/s不变，环岛上限0.30；5号通过、4号进入。当前虚线引导0.12，有效像素持续时获取最多6秒；旧起点计时不再打断入环。定位故障保持零速预览，输入1继续，不重复赛前站立，不自动起跑。360度+实测0.80米仅提名出口。两圈横道/终点顺序不变，不跳台阶、不录像。请调零/使能、清场并保留遥控急停。\n'
     read -r -p '确认在安全普通赛道测试：1继续，其他取消：' patrol_confirm
     [[ "$patrol_confirm" == 1 ]] || exit 0
     patrol_motion=true; patrol_base=true ;;

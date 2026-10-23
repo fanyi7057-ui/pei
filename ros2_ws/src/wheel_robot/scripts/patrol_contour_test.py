@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 import icn as base
 from patrol_contour_runtime import (
-    FixedSpeedController, PathEstimate, PathSelector, PatrolFileWatcher,
+    FixedSpeedController, CornerExitGuard, PathEstimate, PathSelector, PatrolFileWatcher,
     PatrolTuning, RoundaboutRouter, ExitRouteCommit, RingRouteMemory, observed_route,
     black_usable, road_centerline, road_masks, path_errors, detect_crosswalk,
 )
@@ -468,19 +468,30 @@ class PatrolTestNode(base.WheelLegRaceNode):
         self.patrol_watcher.signature=None
         self.get_logger().warn("任务已重置到起点：环岛/横道次数清零；放回起点后输入1开始，不会自行运动")
 
-    def _wait_for_operator(self, reason):
+    def _wait_for_operator(self, reason, localization=False):
         self._publish_zero()
         self.patrol_controller.reset()
         self.vision.reset_path()
         router=getattr(self.vision,"router",None)
         if router is not None:
             router.pause(time.monotonic())
-        self._stand_gate = base.StandGate(enabled=True, settle_seconds=base.STAND_SETTLE_SECONDS)
+        self._localization_wait=localization
+        if localization:
+            self._recovery_preview=PatrolVision()
+            self._recovery_ready_frames=0
+            self._recovery_preview_at=None
+            self._recovery_ready_announced=False
+            self._recovery_ready_log_at=-math.inf
+        else:
+            self._stand_gate = base.StandGate(enabled=True, settle_seconds=base.STAND_SETTLE_SECONDS)
         self._stand_confirm_prompted = False
         self._start_cue_until = 0.
-        self.get_logger().warn(f"{reason}；已清零并保留任务阶段。1继续当前任务，3从起点重置新场，不会自动重启。")
+        self.get_logger().warn(f"{reason}；已清零并保留任务阶段。{'定位恢复等待（不是退出/重新站立），保持检测；' if localization else ''}1继续当前任务，3从起点重置新场，不会自动重启。")
 
     def _on_race_start_confirm(self, message):
+        if getattr(self,"_localization_wait",False) and not message.data:
+            self.get_logger().warn("未收到有效继续确认，保持定位恢复等待")
+            return
         if self._patrol_ready and not self.patrol_tuning.enabled:
             self.get_logger().warn("enabled=0，先修改实时文件再确认开始")
             return
@@ -488,7 +499,37 @@ class PatrolTestNode(base.WheelLegRaceNode):
             router=getattr(self.vision,"router",None)
             if router is not None:
                 router.resume(time.monotonic(),clear_fault=True)
+            if getattr(self,"_localization_wait",False):
+                self._localization_wait=False
+                self.patrol_controller.reset()
+                self.get_logger().warn("人工确认定位恢复，继续当前任务，不重复赛前站立")
+                return
         super()._on_race_start_confirm(message)
+
+    def _run_localization_preview(self,frame,tuning,now,draw):
+        """Independent perception only: never advance the paused task/router."""
+        self._publish_zero()
+        preview=self._recovery_preview
+        path=preview.estimate(frame,replace(tuning,roundabout_enabled=0,crosswalk_enabled=0),now,draw=draw)
+        fresh=self._recovery_preview_at is not None and 0<now-self._recovery_preview_at<=tuning.roundabout_path_max_gap_seconds
+        reliable=path.valid and path.route_observed and not path.rescue and not path.handoff
+        self._recovery_ready_frames=(self._recovery_ready_frames+1 if fresh else 1) if reliable else 0
+        self._recovery_preview_at=now
+        ready=self._recovery_ready_frames>=tuning.reacquire_confirm_frames
+        if ready and not self._recovery_ready_announced and now-self._recovery_ready_log_at>=1.:
+            self.get_logger().info("定位恢复：连续可靠路线已出现，输入1继续；小车仍保持停车")
+            self._recovery_ready_log_at=now
+        self._recovery_ready_announced=ready
+        if draw and self._debug_window_ready:
+            debug=preview.last_debug if preview.last_debug is not None else frame.copy()
+            cv2.putText(debug,"LOCALIZATION WAIT - press 1 to resume",(8,24),cv2.FONT_HERSHEY_SIMPLEX,.45,(0,180,255),1)
+            self._last_display_at=now
+            try:
+                cv2.imshow("WheelLeg Race Vision",debug)
+                if cv2.waitKey(1)&0xFF in (ord("q"),ord("Q"),27):
+                    self.request_exit()
+            except cv2.error:
+                self._debug_window_ready=False
 
     def _draw_stand_gate_debug(self, now):
         # Keep HDMI previews without drawing/encoding on every control tick.
@@ -552,6 +593,9 @@ class PatrolTestNode(base.WheelLegRaceNode):
             return
         self._last_processed_sequence = sequence
         draw = base.SHOW_DEBUG and now-self._last_display_at >= 1/tuning.display_fps
+        if getattr(self,"_localization_wait",False):
+            self._run_localization_preview(frame,tuning,now,draw)
+            return
         router = getattr(self.vision, "router", None)
         route_before = router.phase if router is not None else "SEEK"
         if router is not None:
@@ -573,10 +617,14 @@ class PatrolTestNode(base.WheelLegRaceNode):
         loss_age = 0. if path.valid else self.patrol_controller.loss_age(done)
         if router is not None and router.fault:
             self.get_logger().error(f"PATROL_ROUTE_FAULT {router.fault}：不靠超时假装出环，回站立等待人工")
-            self._wait_for_operator(router.fault)
+            self._wait_for_operator(router.fault,localization=True)
             return
         override=router.motion_override(done,tuning,getattr(self.vision,"motion_pose",None),path=path) if router is not None else None
         candidate=router is not None and router.candidate_active(done,tuning)
+        if not hasattr(self,"_corner_exit_guard"):
+            self._corner_exit_guard=CornerExitGuard()
+        self._corner_exit_guard.observe(path,self.patrol_controller,done,tuning,
+            allowed=override is None and not candidate and (router is None or router.phase=="SEEK"))
         if override is not None:
             target_v,target_w,mode=override
             planned_target=target_v
@@ -617,7 +665,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 f"PATROL_LOCALIZATION_FAULT reason={self.patrol_controller.fault_reason} "
                 f"loss_age={self.patrol_controller.loss_age(done):.2f}s "
                 f"search_distance={self.patrol_controller.loss_distance:.2f}m；持续无定位，等待人工确认")
-            self._wait_for_operator("定位保护停车，节点未退出；持续无定位达到找线边界")
+            self._wait_for_operator("定位保护停车，节点未退出；持续无定位达到找线边界",localization=True)
             return
         self._processed_count += 1
         elapsed = done-self._stats_at
@@ -633,7 +681,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
             road_path = getattr(self.vision, "road_estimate", PathEstimate(False))
             reason = "_".join(path.reason.split())
             self.get_logger().info(
-                f"PATROL source={self.vision.source} mode={mode} version=18 target={tuning.fixed_speed_m_s:.2f} "
+                f"PATROL source={self.vision.source} mode={mode} version=19 target={tuning.fixed_speed_m_s:.2f} "
                 f"ring_multiplier={tuning.roundabout_follow_speed_multiplier:.2f} "
                 f"ring_cap={tuning.roundabout_speed_m_s:.2f} "
                 f"planned_target={planned_target:.3f} "
@@ -667,6 +715,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 f"marker_travel={router.distance-router.first_marker_distance if router is not None and router.phase=='APPROACH' else 0.:.2f} "
                 f"last_entry_proof={getattr(self.vision,'entry_trigger','none')} "
                 f"route_status={router.route_status if router is not None else 'none'} "
+                f"entry_limit={router.entry_acquire_limit(done,tuning) if router is not None else 0.:.2f} "
                 f"route_owned={int(router.branch_acquired) if router is not None else 0} "
                 f"exit_corner={int(path.exit_boundary is not None)} "
                 f"heading_source={router.measured_turn.source if router is not None else 'none'} "

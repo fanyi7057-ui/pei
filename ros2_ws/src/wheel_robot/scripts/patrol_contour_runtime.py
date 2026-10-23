@@ -227,17 +227,24 @@ class PatrolTuning:
 
     ring_candidate_hold_seconds: float = 0.6
     ring_candidate_turn_limit_rad_s: float = 0.6
+    ring_entry_progress_max_seconds: float = 6.0
+    corner_exit_confirm_frames: int = 3
+    corner_exit_error: float = 0.12
 
     def validate(self):
         """Reject an entire bad save; never silently clip a requested speed."""
-        if not 0 < self.ring_candidate_hold_seconds <= 2 or not 0 < self.ring_candidate_turn_limit_rad_s <= self.max_turn_rad_s:
-            raise ValueError("环岛候选保持时间须在(0,2]秒，候选转向限制须为正且不超过总角速度限制")
         for field in fields(self):
             value = getattr(self, field.name)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError(f"{field.name} 必须是数值（开关用0/1）")
             if not math.isfinite(value):
                 raise ValueError(f"{field.name} 必须是有限数")
+        if not self.roundabout_entry_acquire_max_seconds < self.ring_entry_progress_max_seconds <= self.roundabout_route_max_seconds:
+            raise ValueError("有效虚线延长获取期限必须大于初始获取期限且不超过环岛控制上限")
+        if int(self.corner_exit_confirm_frames)!=self.corner_exit_confirm_frames or not 2<=self.corner_exit_confirm_frames<=10 or not 0<self.corner_exit_error<=.25:
+            raise ValueError("出弯确认须为2..10整数帧，回正误差阈值须在(0,.25]")
+        if not 0 < self.ring_candidate_hold_seconds <= 2 or not 0 < self.ring_candidate_turn_limit_rad_s <= self.max_turn_rad_s:
+            raise ValueError("环岛候选保持时间须在(0,2]秒，候选转向限制须为正且不超过总角速度限制")
         for name in ("roundabout_approach_memory_seconds","roundabout_approach_gap_seconds","roundabout_path_dropout_seconds","roundabout_observed_exit_seconds"):
             if not 0<getattr(self,name)<=2:
                 raise ValueError(f"{name} 必须在(0,2]秒")
@@ -1411,6 +1418,7 @@ class RoundaboutRouter:
         self.vv_last_at=None
         self.vv_kind=None
         self.vv_candidate_at=None
+        self.entry_guide_at=None
         self.entry_detection_reason="vv_wait_first_marker"
         self.ring_recovery_until=None
         self.ring_recovery_streak=0
@@ -1516,9 +1524,15 @@ class RoundaboutRouter:
         # restart a paused robot, consume a zebra, or advance a finished course.
         if self.fault or self.paused_at is not None or self.course.rings[self.course.lap]:
             return False
-        if self.phase not in ("SEEK","APPROACH","ENTRY","FOLLOW","EXIT","RING_WAIT_DEADLINE"):
+        # Only an approach SEARCH budget. Active ring phases have their own
+        # bounded phase/acquisition budgets; never interrupt them with a clock
+        # started on the starting line. SEEK has no ring ownership to release.
+        if self.phase not in ("APPROACH","RING_WAIT_DEADLINE"):
             return False
         deadline=self.ring_deadline(tuning)
+        if deadline is not None and self.phase_at is not None:
+            budget=tuning.roundabout_first_timeout_seconds if self.course.lap==0 else tuning.roundabout_second_timeout_seconds
+            deadline=max(deadline,self.phase_at+budget)
         if deadline is None or now<deadline:
             return False
         self._release_ring(now,tuning,"time_fallback")
@@ -1554,11 +1568,13 @@ class RoundaboutRouter:
             self.vv_kind=None
             self.entry_detection_reason="vv_wait_first_marker"
         if name=="ENTRY":
+            self.entry_guide_at=None
             self.ring_route_acquired=False
             self.ring_yaw=0.
             self.measured_turn.reset()
 
     def pause(self,now):
+        self.entry_guide_at=None
         self.vv_candidate_at=None
         self.vv_streak=0
         self.vv_entry_streak=0
@@ -1648,6 +1664,13 @@ class RoundaboutRouter:
         return (self.phase=="SEEK" and not self.fault and self.ring_recovery_until is None
                 and self.gate_detection_allowed(now,tuning) and self.vv_candidate_at is not None
                 and 0<=now-self.vv_candidate_at<=tuning.ring_candidate_hold_seconds)
+
+    def entry_guide_fresh(self,now,tuning):
+        return (self.entry_guide_at is not None
+                and 0<=now-self.entry_guide_at<=max(tuning.roundabout_path_max_gap_seconds,tuning.roundabout_path_dropout_seconds))
+
+    def entry_acquire_limit(self,now,tuning):
+        return tuning.ring_entry_progress_max_seconds if self.entry_guide_fresh(now,tuning) else tuning.roundabout_entry_acquire_max_seconds
 
     def _observe_vv_entry(self,cue,now,tuning,elapsed,travel,command):
         """Only entrance authorizer: pass first junction, then current left fork.
@@ -1764,12 +1787,12 @@ class RoundaboutRouter:
             if angle_deg>tuning.ring_gyro_exit_degrees+tuning.roundabout_loop_return_tolerance_deg:
                 self._release_ring(now,tuning,"yaw_overturn_release")
                 return
-            if (self.phase=="ENTRY" and age>=tuning.roundabout_entry_check_seconds
+            if (self.phase=="ENTRY" and not self.entry_guide_fresh(now,tuning) and age>=tuning.roundabout_entry_check_seconds
                     and self.measured_turn.observed_seconds>=min(.5,.75*tuning.roundabout_entry_check_seconds)
                     and angle_deg<tuning.roundabout_entry_required_turn_deg):
                 self._release_ring(now,tuning,"entry_no_turn_abort")
                 return
-        if self.phase=="ENTRY" and now-self.phase_at>=tuning.roundabout_entry_acquire_max_seconds:
+        if self.phase=="ENTRY" and now-self.phase_at>=self.entry_acquire_limit(now,tuning):
             if tuning.roundabout_timeout_enabled:
                 self._release_ring(now,tuning,"entry_no_route_abort")
             else:
@@ -1862,6 +1885,8 @@ class RoundaboutRouter:
     def accept_path(self,path,now,tuning):
         if not self.ring_tracking or self.fault:
             return
+        if self.phase=="ENTRY" and path.valid and path.route_locked and not path.rescue and not path.handoff:
+            self.entry_guide_at=now  # current actual pixels, not route completion
         if self.phase=="FOLLOW":
             self.route_status="following_owned_route" if path.valid else "left_route_recovery"
             healthy=(path.valid and path.route_observed and not path.rescue and not path.handoff
@@ -2062,6 +2087,22 @@ class PathSelector:
         error = (1-ratio)*self.transition_from+ratio*estimate.error
         self.last_error = error
         return replace(estimate, error=error, source=source, handoff=ratio < 1.), source
+
+
+class CornerExitGuard:
+    """Three fresh centered near/mid observations clear only stale PD."""
+    def __init__(self):
+        self.streak=0
+        self.last_at=None
+
+    def observe(self,path,controller,now,tuning,allowed=True):
+        fresh=self.last_at is None or 0<now-self.last_at<=tuning.roundabout_path_max_gap_seconds
+        centered=(allowed and path.valid and path.route_observed and not path.rescue and not path.handoff
+                  and max(abs(path.near_error),abs(path.mid_error),abs(path.error))<=tuning.corner_exit_error)
+        self.streak=(self.streak+1 if fresh else 1) if centered else 0
+        self.last_at=now
+        if self.streak==tuning.corner_exit_confirm_frames:
+            controller.reset_error()  # preserve actual previous speed/turn and smooth unwind
 
 
 class FixedSpeedController:
