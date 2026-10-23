@@ -390,7 +390,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
         self.create_subscription(base.Bool, "/patrol_test_stop", self._on_patrol_stop, 10)
         self.create_subscription(base.Bool, "/patrol_test_reset_course", self._on_patrol_reset_course, 10)
         self.get_logger().warn(
-            f"巡线/环岛/横道V23（普通巡线V11基线，丢线限速，VV单帧4进5出）：普通目标速度={self.patrol_tuning.fixed_speed_m_s:.2f}m/s，环岛上限={self.patrol_tuning.roundabout_speed_m_s:.2f}；"
+            f"巡线/环岛/横道V24（5号通过0.73米后寻找4号，丢线限速）：普通目标速度={self.patrol_tuning.fixed_speed_m_s:.2f}m/s，环岛上限={self.patrol_tuning.roundabout_speed_m_s:.2f}；"
             f"环岛={self.patrol_tuning.roundabout_enabled}，横道={self.patrol_tuning.crosswalk_enabled}；台阶1/2仅保留位置、测试跳过；两圈环岛/横道完成凭据齐全才冲线，失败/超时不越级。实时文件：{config}"
         )
 
@@ -734,7 +734,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
             road_path = getattr(self.vision, "road_estimate", PathEstimate(False))
             reason = "_".join(path.reason.split())
             self.get_logger().info(
-                f"PATROL source={self.vision.source} mode={mode} version=23 target={tuning.fixed_speed_m_s:.2f} "
+                f"PATROL source={self.vision.source} mode={mode} version=24 target={tuning.fixed_speed_m_s:.2f} "
                 f"ring_predict={int(getattr(self.vision,'ring_prediction_used',False))} ring_match={getattr(self.vision,'ring_match_reason','inactive')} "
                 f"ring_delta={getattr(self.vision,'ring_route_delta',0.):.3f} ring_ref_age={getattr(self.vision,'ring_reference_age',-1.):.3f} ring_points={getattr(self.vision,'ring_candidate_points',0)} "
                 f"authority={self._remote_state(done)} "
@@ -772,6 +772,8 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 f"vv_entry={int(dash.branch.valid)} vv_exit={int(dash.exit_branch.valid)} "
                 f"cooldown_remaining={max(0.,tuning.roundabout_first_marker_cooldown_seconds-router.marker_moving_seconds) if router is not None and router.phase=='APPROACH' else 0.:.2f} "
                 f"marker_travel={router.distance-router.first_marker_distance if router is not None and router.phase=='APPROACH' else 0.:.2f} "
+                f"entry_pass_target_m={tuning.roundabout_first_marker_pass_distance_m:.2f} "
+                f"entry_pass_remaining_m={max(0.,tuning.roundabout_first_marker_pass_distance_m-(router.distance-router.first_marker_distance)) if router is not None and router.phase=='APPROACH' else 0.:.2f} "
                 f"last_entry_proof={getattr(self.vision,'entry_trigger','none')} "
                 f"route_status={router.route_status if router is not None else 'none'} "
                 f"entry_limit={router.entry_acquire_limit(done,tuning) if router is not None else 0.:.2f} "

@@ -107,7 +107,7 @@ class PatrolTuning:
     vv_dash_min_gap_rows56: float = 3.0
     vv_dash_entry_near_ratio: float = 0.66
     roundabout_first_marker_cooldown_seconds: float = 0.5
-    roundabout_first_marker_pass_distance_m: float = 0.12
+    roundabout_first_marker_pass_distance_m: float = 0.73
     roundabout_speed_m_s: float = 0.30
     ring_gyro_exit_enabled: int = 1
     ring_gyro_exit_degrees: float = 360.0
