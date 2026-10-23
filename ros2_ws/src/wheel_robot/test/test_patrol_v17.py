@@ -18,7 +18,7 @@ def reliable():
 def test_short_pass_defaults_and_no_generic_dash_five_marker():
     r,t=armed()
     assert t.roundabout_first_marker_cooldown_seconds==.5
-    assert t.roundabout_first_marker_pass_distance_m==.73  # V24 user-confirmed entrance pass
+    assert t.roundabout_first_marker_pass_distance_m==.30  # V25 user-confirmed entrance pass
     for i in range(20):r.observe(True,1.,i*.03,t,(.3,0.),dash_cue=DashObservation(valid=True,blocks=5))
     assert r.phase=="SEEK" and r.first_marker_at is None
 

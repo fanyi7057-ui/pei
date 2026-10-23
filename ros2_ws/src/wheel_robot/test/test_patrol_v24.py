@@ -21,7 +21,7 @@ def advance(r,t,distance,kind='diverging'):
 
 def test_defaults_distinguish_entry_distance_from_exit_budget():
     t=PatrolTuning();t.validate()
-    assert t.roundabout_first_marker_pass_distance_m==.73
+    assert t.roundabout_first_marker_pass_distance_m==.30  # V25 default; V24 scenarios explicitly pin .73
     assert t.roundabout_first_marker_cooldown_seconds==.5
     assert (t.ring_gyro_exit_seek_distance_m,t.ring_gyro_exit_seek_seconds,t.roundabout_exit_acquire_max_seconds)==(.73,7.,8.)
     assert .73/.12<t.roundabout_approach_max_seconds

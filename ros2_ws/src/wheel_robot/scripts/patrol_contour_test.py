@@ -390,7 +390,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
         self.create_subscription(base.Bool, "/patrol_test_stop", self._on_patrol_stop, 10)
         self.create_subscription(base.Bool, "/patrol_test_reset_course", self._on_patrol_reset_course, 10)
         self.get_logger().warn(
-            f"巡线/环岛/横道V24（5号通过0.73米后寻找4号，丢线限速）：普通目标速度={self.patrol_tuning.fixed_speed_m_s:.2f}m/s，环岛上限={self.patrol_tuning.roundabout_speed_m_s:.2f}；"
+            f"巡线/环岛/横道V25（5号通过0.30米后寻找4号，丢线限速）：普通目标速度={self.patrol_tuning.fixed_speed_m_s:.2f}m/s，环岛上限={self.patrol_tuning.roundabout_speed_m_s:.2f}；"
             f"环岛={self.patrol_tuning.roundabout_enabled}，横道={self.patrol_tuning.crosswalk_enabled}；台阶1/2仅保留位置、测试跳过；两圈环岛/横道完成凭据齐全才冲线，失败/超时不越级。实时文件：{config}"
         )
 
@@ -734,7 +734,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
             road_path = getattr(self.vision, "road_estimate", PathEstimate(False))
             reason = "_".join(path.reason.split())
             self.get_logger().info(
-                f"PATROL source={self.vision.source} mode={mode} version=24 target={tuning.fixed_speed_m_s:.2f} "
+                f"PATROL source={self.vision.source} mode={mode} version=25 target={tuning.fixed_speed_m_s:.2f} "
                 f"ring_predict={int(getattr(self.vision,'ring_prediction_used',False))} ring_match={getattr(self.vision,'ring_match_reason','inactive')} "
                 f"ring_delta={getattr(self.vision,'ring_route_delta',0.):.3f} ring_ref_age={getattr(self.vision,'ring_reference_age',-1.):.3f} ring_points={getattr(self.vision,'ring_candidate_points',0)} "
                 f"authority={self._remote_state(done)} "
