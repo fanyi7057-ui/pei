@@ -239,7 +239,10 @@ patrol_test:
   ring_gyro_exit_degrees: 360.0
   ring_gyro_min_distance_m: 0.80
   # 达标后仅在没有可靠路线时低速直探出口，可靠视觉优先，超时不假记出环。
-  ring_gyro_exit_seek_seconds: 1.0
+  # V20：0.12m/s出口寻找距离0.22m（较旧1秒名义0.12m多约0.10m），2.3秒为硬期限。
+  # 实际距离优先用出环候选起点的odom前向投影；无odom仍受时间上限，不冒充实测行程。
+  ring_gyro_exit_seek_seconds: 2.3
+  ring_gyro_exit_seek_distance_m: 0.22
   # 入环55度后仍未取线/环岛失败时的有界恢复；超时没真实路线则保护停车。
   ring_recovery_speed_m_s: 0.12
   ring_recovery_turn_rad_s: 0.35
@@ -557,6 +560,18 @@ patrol_test:
   # 连续3帧近/中黑线误差均回到阈值内才清旧PID误差，仍沿用平滑角速度回正。
   corner_exit_confirm_frames: 3
   corner_exit_error: 0.12
+  # 本包firmware SelectTelecontrol=1：SWA用sbus[4]，map(raw,192,1792,0,2)==2才是ROS档。
+  # robot_mode是底盘/关节模式，不是遥控/自动标志。若实际固件不同，先核实映射，不要盲目关闭保护。
+  remote_guard_enabled: 1
+  remote_auto_channel_index: 4
+  remote_auto_channel_min: 1792
+  # 收到遥控档/非法/过期话题数据后零速等待，作废未完成环岛；切回ROS档后仍需输入1。
+  # 这是ROS话题新鲜度，不等价于射频failsafe检测，也不证明底盘已执行ROS指令。
+  remote_signal_timeout_seconds: 0.35
+  # 仅已确认FOLLOW且原窄窗当前匹配失败时，按原曲线形状重定位当前黑块；不参与ENTRY授权。
+  ring_curve_reacquire_enabled: 1
+  # 平移最大偏差占图宽；0.12..0.25，默认0.22；形状/歧义/白色两侧约束仍必须通过。
+  ring_curve_reacquire_max_shift_ratio: 0.22
 
   # ===== H. 显示与正常姿态：本轮不擅自抬高车身 =====
   # 车载屏幕刷新目标fps，>0；降低减少绘图开销，不降低算法处理频率。相机/控制仍用原30Hz配置。

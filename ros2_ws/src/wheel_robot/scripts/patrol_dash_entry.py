@@ -137,7 +137,7 @@ def detect_vv_dashes(events,white,tuning,reference_x_ratio=None):
                 result.reason="vv_exit_converging_left"
     return result
 
-def track_vv_curve(events,white,tuning,reference):
+def track_vv_curve(events,white,tuning,reference,reacquire=False):
     """Track current small blocks near an ALREADY selected curved guide.
 
     Never authorizes entry. Unlike fork detection, no straight main column is
@@ -163,10 +163,51 @@ def track_vv_curve(events,white,tuning,reference):
         else:
             chosen.append((py,px,distance))
     if len(chosen)<2 or chosen[-1][0]-chosen[0][0]<.10*height:
+        if reacquire and tuning.ring_curve_reacquire_enabled:
+            return _reacquire_owned_curve(candidates,ref,width,height,tuning)
         return PathEstimate(False,reason="vv_curve_missing_current_blocks")
     guide=_path([(x,y) for y,x,_ in chosen],width,height,tuning,"vv_owned_curve")
     guide.route_locked=True
     # Local multi-block evidence only; global black/road thresholds unchanged.
     guide.route_observed=(len(chosen)>=3 and chosen[-1][0]-chosen[0][0]>=.12*height
                           and chosen[-1][0]>=tuning.vv_dash_entry_near_ratio*height)
+    return guide
+
+
+def _reacquire_owned_curve(candidates,reference,width,height,tuning):
+    """FOLLOW-only bounded translation consensus of CURRENT white-sided blocks.
+
+    Never an entrance cue or a fabricated connector. Parallel unrelated
+    alternatives with similar support are ambiguous and must not take over.
+    """
+    ref=reference[np.argsort(reference[:,1])]
+    points=[(x*width/80,y*height/56) for x,y,_ in candidates
+            if ref[0,1]-.12*height<=y*height/56<=ref[-1,1]+.12*height]
+    offsets=sorted({round((x-np.interp(y,ref[:,1],ref[:,0]))/(.025*width))*.025*width
+                    for x,y in points if abs(x-np.interp(y,ref[:,1],ref[:,0]))<=tuning.ring_curve_reacquire_max_shift_ratio*width})
+    options=[]
+    for shift in offsets:
+        rows=[]
+        for x,y in sorted(points,key=lambda p:p[1]):
+            residual=abs(x-(np.interp(y,ref[:,1],ref[:,0])+shift))
+            if residual>.04*width:continue
+            point=(y,x,residual)
+            if rows and y-rows[-1][0]<.04*height:
+                if residual<rows[-1][2]:rows[-1]=point
+            else:rows.append(point)
+        if len(rows)<2 or rows[-1][0]-rows[0][0]<.14*height:continue
+        expected=np.interp(rows[-1][0],ref[:,1],ref[:,0])-np.interp(rows[0][0],ref[:,1],ref[:,0])
+        actual=rows[-1][1]-rows[0][1]
+        if abs(expected-actual)>.045*width:continue
+        score=len(rows)+(rows[-1][0]-rows[0][0])/height-sum(p[2] for p in rows)/width-abs(shift)/width
+        options.append((score,shift,rows))
+    if not options:return PathEstimate(False,reason="vv_curve_no_current_consensus")
+    options.sort(key=lambda p:p[0],reverse=True)
+    score,shift,rows=options[0]
+    if any(score-other[0]<.1 and abs(shift-other[1])>.08*width for other in options[1:]):
+        return PathEstimate(False,reason="vv_curve_reacquire_ambiguous")
+    guide=_path([(x,y) for y,x,_ in rows],width,height,tuning,"vv_owned_curve_reacquired")
+    guide.confidence=.65
+    guide.route_locked=True
+    guide.route_observed=(len(rows)>=3 and rows[-1][0]>=tuning.vv_dash_entry_near_ratio*height)
     return guide

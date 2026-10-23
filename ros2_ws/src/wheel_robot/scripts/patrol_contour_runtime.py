@@ -111,7 +111,8 @@ class PatrolTuning:
     ring_gyro_exit_enabled: int = 1
     ring_gyro_exit_degrees: float = 360.0
     ring_gyro_min_distance_m: float = 0.80
-    ring_gyro_exit_seek_seconds: float = 1.0
+    ring_gyro_exit_seek_seconds: float = 2.3
+    ring_gyro_exit_seek_distance_m: float = 0.22
     ring_recovery_speed_m_s: float = 0.12
     ring_recovery_turn_rad_s: float = 0.35
     ring_recovery_seconds: float = 1.0
@@ -230,6 +231,12 @@ class PatrolTuning:
     ring_entry_progress_max_seconds: float = 6.0
     corner_exit_confirm_frames: int = 3
     corner_exit_error: float = 0.12
+    remote_guard_enabled: int = 1
+    remote_auto_channel_index: int = 4
+    remote_auto_channel_min: int = 1792
+    remote_signal_timeout_seconds: float = 0.35
+    ring_curve_reacquire_enabled: int = 1
+    ring_curve_reacquire_max_shift_ratio: float = 0.22
 
     def validate(self):
         """Reject an entire bad save; never silently clip a requested speed."""
@@ -239,6 +246,14 @@ class PatrolTuning:
                 raise ValueError(f"{field.name} 必须是数值（开关用0/1）")
             if not math.isfinite(value):
                 raise ValueError(f"{field.name} 必须是有限数")
+        if self.remote_guard_enabled not in (0,1) or int(self.remote_auto_channel_index)!=self.remote_auto_channel_index or not 0<=self.remote_auto_channel_index<10:
+            raise ValueError("遥控保护须0/1，SBUS通道下标须0..9整数")
+        if int(self.remote_auto_channel_min)!=self.remote_auto_channel_min or not 192<=self.remote_auto_channel_min<=2047 or not .1<=self.remote_signal_timeout_seconds<=1:
+            raise ValueError("自动档门槛须192..2047整数，信号期限须0.1..1秒")
+        if not 0<self.ring_gyro_exit_seek_distance_m<=.35:
+            raise ValueError("环岛出口低速寻找距离须在(0,.35]米")
+        if self.ring_curve_reacquire_enabled not in (0,1) or not .12<=self.ring_curve_reacquire_max_shift_ratio<=.25:
+            raise ValueError("环内虚线重定位开关须0/1，最大平移范围须在0.12..0.25图宽")
         if not self.roundabout_entry_acquire_max_seconds < self.ring_entry_progress_max_seconds <= self.roundabout_route_max_seconds:
             raise ValueError("有效虚线延长获取期限必须大于初始获取期限且不超过环岛控制上限")
         if int(self.corner_exit_confirm_frames)!=self.corner_exit_confirm_frames or not 2<=self.corner_exit_confirm_frames<=10 or not 0<self.corner_exit_error<=.25:
@@ -1398,7 +1413,7 @@ class RoundaboutRouter:
         self.crosswalk_block_until=0.
         self.yaw_exit_recovery_until=0.
         self.yaw_exit_heading=None
-        self.loop_candidate_at=None
+        self._clear_exit_seek()
         self.release_serial=0
         self.follow_stable_since=None
         self.course=CourseProgress()
@@ -1460,6 +1475,12 @@ class RoundaboutRouter:
             return self.last_crosswalk_at+tuning.roundabout_second_timeout_seconds
         return None
 
+    def _clear_exit_seek(self):
+        self.loop_candidate_at=None
+        self.loop_seek_pose=None
+        self.loop_seek_yaw=None
+        self.loop_seek_distance=0.
+
     def _release_ring(self,now,tuning,source):
         if source=="visual_exit":
             if (self.phase!="EXIT" or not self.ring_route_acquired
@@ -1467,7 +1488,7 @@ class RoundaboutRouter:
                 self.route_status="exit_without_ordered_acquisition"
                 return False
         self.release_serial+=1
-        self.loop_candidate_at=None
+        self._clear_exit_seek()
         self.yaw_exit_recovery_until=0.
         self.yaw_exit_heading=None
         if source=="yaw_loop_release" and self.measured_turn.last_yaw is not None:
@@ -1595,7 +1616,7 @@ class RoundaboutRouter:
         self.visual_release_frames=0
         self.visual_release_at=None
         self.measured_turn.reset()  # a manually moved paused car is not loop evidence
-        self.loop_candidate_at=None
+        self._clear_exit_seek()
         self.yaw_exit_recovery_until=0.
 
     def gate_detection_allowed(self,now,tuning):
@@ -1776,6 +1797,9 @@ class RoundaboutRouter:
                     and self.measured_turn.loop_ready(now,tuning) and self.loop_candidate_at is None):
                 if tuning.roundabout_require_exit_route:
                     self.loop_candidate_at=now
+                    self.loop_seek_pose=tuple(pose) if pose is not None else None
+                    self.loop_seek_yaw=self.measured_turn.last_yaw
+                    self.loop_seek_distance=0.
                     if self.phase!="EXIT":
                         self._phase("EXIT",now)
                     self.route_status="loop_progress_seek_real_exit"
@@ -1981,6 +2005,17 @@ class RoundaboutRouter:
             if not self.measured_turn.fresh(now,tuning):
                 self.fault="gyro_exit_heading_stale"
                 return 0.,0.,"ring_recovery_stop"
+            if self.loop_seek_yaw is not None:
+                error=(self.measured_turn.last_yaw-self.loop_seek_yaw+math.pi)%(2*math.pi)-math.pi
+                if abs(error)>math.radians(tuning.roundabout_loop_return_tolerance_deg):
+                    self.fault="gyro_exit_seek_heading_departure"
+                    return 0.,0.,"ring_recovery_stop"
+            if pose is not None and self.loop_seek_pose is not None:
+                x,y,yaw=self.loop_seek_pose
+                self.loop_seek_distance=max(0.,(pose[0]-x)*math.cos(yaw)+(pose[1]-y)*math.sin(yaw))
+                if self.loop_seek_distance>=tuning.ring_gyro_exit_seek_distance_m:
+                    self.fault="gyro_exit_seek_distance_no_reliable_path"
+                    return 0.,0.,"ring_recovery_stop"
             if now-self.loop_candidate_at<tuning.ring_gyro_exit_seek_seconds:
                 return min(tuning.ring_recovery_speed_m_s,tuning.fixed_speed_m_s),0.,"gyro_exit_seek"
             self.fault="gyro_exit_seek_no_reliable_path"
@@ -2087,6 +2122,34 @@ class PathSelector:
         error = (1-ratio)*self.transition_from+ratio*estimate.error
         self.last_error = error
         return replace(estimate, error=error, source=source, handoff=ratio < 1.), source
+
+
+class RemoteAuthorityGuard:
+    """Firmware SelectTelecontrol=1: map(SBUS[4],192,1792,0,2)==2.
+
+    robot_mode is chassis/joint mode, NOT remote/ROS ownership. Raw samples
+    only establish the switch position, never proof that motors executed ROS.
+    """
+    def __init__(self):
+        self.stamp=None
+        self.raw=None
+        self.auto=False
+
+    def update(self,channels,now,tuning):
+        index=int(tuning.remote_auto_channel_index)
+        if len(channels)!=10 or any(not isinstance(v,(int,np.integer)) or not 0<=v<=2047 for v in channels):
+            self.stamp=None
+            self.auto=False
+            return
+        self.stamp=now
+        self.raw=int(channels[index])
+        self.auto=self.raw>=tuning.remote_auto_channel_min
+
+    def state(self,now,tuning):
+        if not tuning.remote_guard_enabled:return "disabled"
+        if self.stamp is None:return "unknown"
+        if not 0<=now-self.stamp<=tuning.remote_signal_timeout_seconds:return "stale"
+        return "auto_switch" if self.auto else "manual_switch"
 
 
 class CornerExitGuard:
