@@ -1,4 +1,4 @@
-# V16：仅将入口切换为VV单帧/先过5后进4；普通巡线、速度、实测出环与两圈顺序保留V15。
+# V17：普通0.65不变；明确5号才冷却0.5秒/0.12m，明确4号接管，环岛上限0.30，持续追虚线。
 # 首次部署新基准且无IMU_QUATERNION_MAPPING_V12标记时，先菜单1编译底盘；本次仅Python/YAML无需重编C++。
 # 此后仅修改本YAML保存，无需反复编译/重启；旧V11表缺字段会被整套拒绝。
 # 误差仍为横向偏移/半图宽，不是弧度；不要覆盖回V2/V3旧参数表。
@@ -226,10 +226,24 @@ patrol_test:
   vv_dash_entry_near_ratio: 0.66
   # 首次标记后持续巡线的等效运动秒数>0，不发停车/固定转向指令。
   # 有odom按实测位移/当前前进指令折算，避免10Hz里程计被30Hz图像拉长冷却；停车不累计。
-  # 0.65m/s时1秒约0.65米；两岔口较近应调小，不能一味加大。
-  roundabout_first_marker_cooldown_seconds: 1.0
+  # 接近阶段上限0.30m/s，默认0.5等效运动秒约0.15米；不是普通0.65m/s盲走1秒。
+  roundabout_first_marker_cooldown_seconds: 0.5
   # 同时至少通过的前进行程m>0；有新鲜odom用实测，无odom沿用命令估计并打印来源。
-  roundabout_first_marker_pass_distance_m: 0.20
+  roundabout_first_marker_pass_distance_m: 0.12
+  # V17接近/入环/环内/出环的线速度硬上限m/s，普通巡线不受影响。
+  # 上限同时约束继承的1.3倍率，默认不再达到0.845m/s。
+  roundabout_speed_m_s: 0.30
+  # 使用现有实测IMU/odom解绕偏航，不再引入另一套gyro_z积分。
+  ring_gyro_exit_enabled: 1
+  # 从入环起净转角；还须已经确认环内路线和下方实测行程，不把自旋当完成。
+  ring_gyro_exit_degrees: 360.0
+  ring_gyro_min_distance_m: 0.80
+  # 达标后仅在没有可靠路线时低速直探出口，可靠视觉优先，超时不假记出环。
+  ring_gyro_exit_seek_seconds: 1.0
+  # 入环55度后仍未取线/环岛失败时的有界恢复；超时没真实路线则保护停车。
+  ring_recovery_speed_m_s: 0.12
+  ring_recovery_turn_rad_s: 0.35
+  ring_recovery_seconds: 1.0
   # 以下V14/V15入口证明/跨帧参数仅兼容旧表、旧离线辅助测试；V16入口不再调用。
   # 真正入口统一调上方vv_*与first_marker_*；ENTRY后的取线/出环参数仍有效。
   # 同一入口候选链最近块下沿的整图高度比例(0,1]，默认0.72；增大更晚转，过大可能来不及。
@@ -421,12 +435,12 @@ patrol_test:
   # 超过则本次偏航证明作废、日志heading_reason=imu_odom_turn_conflict；不拿错误IMU判没转或已转完。
   # 不是自动把odom换成IMU，也不替代C++映射修复；只在odom确实有效时交叉检查。
   roundabout_heading_disagreement_deg: 45.0
-  # 圆周进展至少净左转多少度，180..360，默认300；还须下面回向、实测行程及同向一致性同时满足。
+  # 旧圈角度兼容字段：V17保底改用上方ring_gyro_exit_degrees；不要再用本项调整保底目标。
   roundabout_loop_min_turn_deg: 300.0
   # 相对入环初始方向回到±多少度，0..90不含端点，默认35；±180跳变已解绕，左右摆回0不算一圈。
   # V12默认只进入EXIT候选再确认真实路线；require_exit_route=0兼容时才直接yaw_loop_release，不代表几何驶离。
   roundabout_loop_return_tolerance_deg: 35.0
-  # 至少实测前进多少米才允许圆周进展释放，米>0，默认1；无新鲜odom位移时不凭原地转向宣称完成。
+  # 旧行程兼容字段：V17保底改用上方ring_gyro_min_distance_m；无实测行程仍不能凭自旋出环。
   roundabout_loop_min_distance_m: 1.0
   # 净左转/累计绝对转角至少多少，(0,1]，默认0.65；抑制大幅左右摆动累加成假圈。
   roundabout_loop_min_coherence: 0.65

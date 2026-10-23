@@ -34,14 +34,7 @@ def _path(points,width,height,tuning,reason):
     return result
 
 
-def detect_vv_dashes(events,white,tuning,reference_x_ratio=None):
-    """VV's small dark blocks + white sides + x spread + vertical gaps.
-
-    Unlike the original global x-range check, score separate columns: a
-    second curved branch must not invalidate a legitimate straight dash chain.
-    Thresholds are in the reference grid, never reused as ROS speed units.
-    """
-    result=DashObservation()
+def _white_sided_blocks(events,white,tuning):
     height,width=events.shape
     black=cv2.resize(events,(80,56),interpolation=cv2.INTER_AREA)>=96
     road=cv2.resize(white,(80,56),interpolation=cv2.INTER_AREA)>=160
@@ -60,6 +53,18 @@ def detect_vv_dashes(events,white,tuning,reference_x_ratio=None):
         if left<0 or right>=80 or not road[row,left] or not road[row,right]:
             continue
         candidates.append((float(cx),float(cy),int(bh)))
+    return height,width,candidates
+
+
+def detect_vv_dashes(events,white,tuning,reference_x_ratio=None):
+    """VV's small dark blocks + white sides + x spread + vertical gaps.
+
+    Unlike the original global x-range check, score separate columns: a
+    second curved branch must not invalidate a legitimate straight dash chain.
+    Thresholds are in the reference grid, never reused as ROS speed units.
+    """
+    result=DashObservation()
+    height,width,candidates=_white_sided_blocks(events,white,tuning)
     candidates=sorted(candidates,key=lambda c:c[1],reverse=True)[:40]
     if len(candidates)<tuning.vv_dash_min_blocks:
         result.reason="vv_few_white_sided_blocks"
@@ -122,3 +127,37 @@ def detect_vv_dashes(events,white,tuning,reference_x_ratio=None):
                 result.exit_branch=curve
                 result.reason="vv_exit_converging_left"
     return result
+
+def track_vv_curve(events,white,tuning,reference):
+    """Track current small blocks near an ALREADY selected curved guide.
+
+    Never authorizes entry. Unlike fork detection, no straight main column is
+    required. No observations means invalid, not an extrapolated old route.
+    """
+    height,width,candidates=_white_sided_blocks(events,white,tuning)
+    ref=np.asarray(reference,float).reshape(-1,2)
+    if len(ref)<2:
+        return PathEstimate(False,reason="vv_curve_no_reference")
+    ref=ref[np.argsort(ref[:,1])]
+    nearby=[]
+    for x,y,_ in candidates:
+        px,py=x*width/80,y*height/56
+        if ref[0,1]-.12*height<=py<=ref[-1,1]+.12*height:
+            distance=abs(px-np.interp(py,ref[:,1],ref[:,0]))
+            if distance<=.12*width:
+                nearby.append((py,px,distance))
+    chosen=[]
+    for py,px,distance in sorted(nearby):
+        if chosen and py-chosen[-1][0]<.04*height:
+            if distance<chosen[-1][2]:
+                chosen[-1]=(py,px,distance)
+        else:
+            chosen.append((py,px,distance))
+    if len(chosen)<2 or chosen[-1][0]-chosen[0][0]<.10*height:
+        return PathEstimate(False,reason="vv_curve_missing_current_blocks")
+    guide=_path([(x,y) for y,x,_ in chosen],width,height,tuning,"vv_owned_curve")
+    guide.route_locked=True
+    # Local multi-block evidence only; global black/road thresholds unchanged.
+    guide.route_observed=(len(chosen)>=3 and chosen[-1][0]-chosen[0][0]>=.12*height
+                          and chosen[-1][0]>=.72*height)
+    return guide

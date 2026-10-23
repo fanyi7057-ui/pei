@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# V16测试子菜单；普通巡线V11，保留偏航C++修复，加载本包。
+# V17测试子菜单；普通巡线V11，保留偏航C++修复，加载本包。
 set -u
 PATROL_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)" || exit 1
 PATROL_WS="$PATROL_ROOT/ros2_ws"
@@ -53,7 +53,7 @@ if [[ "$patrol_nodes" == *"/wheelleg_vision_race"* || "$patrol_nodes" == *"/wl_b
   printf '已有比赛或底盘节点在运行，请先在原终端Ctrl+C退出；禁止两个程序抢/cmd_vel。\n'
   exit 1
 fi
-printf '\n===== V16巡线＋环岛＋横道/终点（普通巡线V11，不执行台阶）=====\n'
+printf '\n===== V17巡线＋环岛＋横道/终点（普通巡线V11，不执行台阶）=====\n'
 case "${1:-}" in
   --dry) patrol_option=1 ;;
   --real) patrol_option=2 ;;
@@ -63,7 +63,7 @@ esac
 case "$patrol_option" in
   1) patrol_motion=false; patrol_base=false ;;
   2)
-    printf 'V16入口使用VV单帧：先通过5号标记并持续巡线，默认1秒等效运动/0.20米后从4号发散左支进入；冷却不下发停车。按patrol_test.yaml运行：普通0.65m/s，确认环内1.3倍；台阶1/2仅占位跳过；失败/30或45秒控制预算到期只重找当前环岛，绝不提前授权横道。横道停3秒后恢复巡线、5秒内防重复；两圈环岛与横道凭据齐全后，第二横道后走1m结束。丢线软边界先低速恢复，最终故障保护仍在；不跳台阶、不录像。先将环内倍率设1.0对照检查，再决定是否1.3；完成调零/使能、清场并保持遥控急停可用。\n'
+    printf 'V17：普通0.65m/s不变；明确5号后0.5等效运动秒/至少0.12米通过，明确4号接管；环岛上限0.30，55度无路线改0.12/0.35温和左探。360度+实测0.80米仅提名出口；未找到可靠线最多低速找1秒，失败保护等待人工。两圈横道/终点顺序不变，不跳台阶、不录像。请调零/使能、清场并保留遥控急停。\n'
     read -r -p '确认在安全普通赛道测试：1继续，其他取消：' patrol_confirm
     [[ "$patrol_confirm" == 1 ]] || exit 0
     patrol_motion=true; patrol_base=true ;;

@@ -82,12 +82,12 @@ def test_reject_non_entry_cues(kind):
     assert not got.valid or (kind=="right" and not got.branch.valid)
 
 
-def test_first_marker_never_immediately_turns_even_if_it_looks_like_entry():
+def test_explicit_entry_does_not_get_mistaken_for_first_exit_marker():
     r,t=armed()
     r.observe(False,0.,0.,t,(.65,0.))
     r.observe(True,1.,.1,t,(.65,0.),dash_cue=cue(t=t))
-    assert r.phase=="APPROACH" and r.first_marker_at==.1
-    assert r.motion_override(.1,t) is None
+    assert r.phase=="ENTRY" and r.first_marker_at is None
+    assert r.motion_override(.1,t)[1]>0
 
 
 def test_pass_exit_then_one_current_entry_frame_starts_entry():
