@@ -111,8 +111,8 @@ class PatrolTuning:
     ring_gyro_exit_enabled: int = 1
     ring_gyro_exit_degrees: float = 360.0
     ring_gyro_min_distance_m: float = 0.80
-    ring_gyro_exit_seek_seconds: float = 4.5
-    ring_gyro_exit_seek_distance_m: float = 0.43
+    ring_gyro_exit_seek_seconds: float = 8.0
+    ring_gyro_exit_seek_distance_m: float = 0.83
     ring_recovery_speed_m_s: float = 0.12
     ring_recovery_turn_rad_s: float = 0.35
     ring_recovery_seconds: float = 1.0
@@ -183,7 +183,7 @@ class PatrolTuning:
     roundabout_heading_max_rate_rad_s: float = 6.0
     roundabout_heading_disagreement_deg: float = 45.0
     roundabout_require_exit_route: int = 1
-    roundabout_exit_acquire_max_seconds: float = 5.0
+    roundabout_exit_acquire_max_seconds: float = 9.0
     roundabout_exit_commit_enabled: int = 1
     roundabout_exit_commit_seconds: float = 5.0
     roundabout_exit_commit_distance_m: float = 3.5
@@ -252,8 +252,8 @@ class PatrolTuning:
             raise ValueError("遥控保护须0/1，SBUS通道下标须0..9整数")
         if int(self.remote_auto_channel_min)!=self.remote_auto_channel_min or not 192<=self.remote_auto_channel_min<=2047 or not .1<=self.remote_signal_timeout_seconds<=1:
             raise ValueError("自动档门槛须192..2047整数，信号期限须0.1..1秒")
-        if not 0<self.ring_gyro_exit_seek_distance_m<=.50:
-            raise ValueError("环岛出口低速寻找距离须在(0,.50]米")
+        if not 0<self.ring_gyro_exit_seek_distance_m<=1.0:
+            raise ValueError("环岛出口低速寻找距离须在(0,1.0]米")
         if not 0<self.ring_prediction_seconds<=.5 or not 0<self.ring_prediction_max_shift_ratio<=.15:
             raise ValueError("环内预测期限须在(0,.5]秒，最大位移须在(0,.15]图宽")
         if self.ring_curve_reacquire_enabled not in (0,1) or not .12<=self.ring_curve_reacquire_max_shift_ratio<=.25:

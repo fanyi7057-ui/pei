@@ -48,16 +48,16 @@ def test_prediction_clamps_motion_and_requires_current_pixels():
 
 def test_exit_new_distance_and_time_limits_are_consistent():
     r,t,now=seek()
-    assert t.ring_gyro_exit_seek_distance_m==.43
-    assert .43/t.ring_recovery_speed_m_s<t.ring_gyro_exit_seek_seconds<t.roundabout_exit_acquire_max_seconds
+    assert t.ring_gyro_exit_seek_distance_m==.83
+    assert .83/t.ring_recovery_speed_m_s<t.ring_gyro_exit_seek_seconds<t.roundabout_exit_acquire_max_seconds
     r.measured_turn.stamp=now+3.6
     assert r.motion_override(now+3.6,t,(.42,0.,0.),PathEstimate(False))[2]=="gyro_exit_seek"
     r.measured_turn.stamp=now+3.7
-    assert r.motion_override(now+3.7,t,(.431,0.,0.),PathEstimate(False))[2]=="ring_recovery_stop"
+    assert r.motion_override(now+3.7,t,(.831,0.,0.),PathEstimate(False))[2]=="ring_recovery_stop"
     assert not any(r.course.rings)
 
 
 @pytest.mark.parametrize("changes",[{"ring_prediction_seconds":0},{"ring_prediction_seconds":1},
-    {"ring_prediction_max_shift_ratio":.3},{"ring_gyro_exit_seek_seconds":5.1}])
+    {"ring_prediction_max_shift_ratio":.3},{"ring_gyro_exit_seek_seconds":9.1}])
 def test_invalid_prediction_and_exit_limits_rejected(changes):
     with pytest.raises(ValueError):replace(PatrolTuning(),**changes).validate()
