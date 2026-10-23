@@ -82,7 +82,7 @@ def test_v14_static_partial_chain_without_approach_geometry_cannot_start_entry(m
     for i in range(18):
         v.motion_command=(.65,0.)
         v.estimate(frame,t,i/30)
-    assert v.router.phase=="APPROACH" and v.gate_score<.70
+    assert v.router.phase=="SEEK" and v.gate_score<.70  # three blocks below VV minimum
     assert v.router.completed==0 and not v.entry_ready
 
 
@@ -92,7 +92,7 @@ def test_v12_partial_entry_is_not_used_before_start_delay_or_in_exit(monkeypatch
     frame=np.full((240,320,3),245,np.uint8)
     v._small_neutral_components=lambda *_args:pytest.fail("entry components ran before arming")
     v.estimate(frame,PatrolTuning(),.1)
-    assert v.partial_gate_tracker.frames==0
+    assert not v.dash_observation.valid and v.router.phase=="SEEK"
 
 
 def test_v12_sensor_disagreement_invalidates_no_turn_and_loop_proof():
@@ -1263,11 +1263,21 @@ def test_v5_left_route_still_allows_right_correction(monkeypatch):
     assert c.command(path,.1,PatrolTuning(),search_direction=1)[1] < 0
 
 
+def vv_test_cue(entry=False):
+    """State-only cue; actual image geometry is tested in test_patrol_vv_v16."""
+    from patrol_dash_entry import DashObservation
+    return DashObservation(valid=True,blocks=4,branch=PathEstimate(entry,route_locked=entry))
+
+
 def enter_router():
     t = replace(PatrolTuning(),roundabout_arm_seconds=0.,roundabout_arm_distance_m=0.)
     r = RoundaboutRouter()
+    from patrol_dash_entry import DashObservation
+    # These older tests isolate post-entry acquisition/exit contracts. Enter
+    # APPROACH through the actual VV interface, not retired raw score evidence.
+    cue=DashObservation(valid=True,blocks=4)
     for now in (0.,.03,.06):
-        r.observe(True,.9,now,t)
+        r.observe(True,.9,now,t,(.5,0.),dash_cue=cue)
     assert r.phase == "APPROACH"
     r._phase("ENTRY",.06)  # remaining tests isolate post-approach ring stages
     return r,t
@@ -1280,6 +1290,8 @@ def test_v5_gate_evidence_is_phase_gated_not_any_three_dark_blocks():
     assert r.phase == "SEEK" and r.evidence == 0
     for i in range(20,220):
         r.observe(True,.95,i*.03,t,(.5,0.))
+    assert r.phase=="SEEK"  # retired raw scores cannot bypass VV
+    r.observe(True,1.,6.6,t,(.5,0.),dash_cue=vv_test_cue())
     assert r.phase == "APPROACH"
 
 
@@ -1381,14 +1393,16 @@ def test_v5_exit_lock_is_not_released_while_fork_is_visible():
     assert r.phase == "EXIT" and r.completed == 0
 
 
-def test_v5_real_gate_extractor_is_reused_for_entry(monkeypatch):
+def test_v16_vv_replaces_old_entry_extractor(monkeypatch):
     module=load_actual_vision_module(monkeypatch)
     vision=module.PatrolVision()
     frame=np.full((240,320,3),(255,0,0),np.uint8)
     frame[:,50:271]=245
-    for y in range(60,181,20):
-        cv2.rectangle(frame,(135,y),(145,y+7),(0,0,0),-1)
+    for y in (85,110,135,160,185,210):
+        cv2.rectangle(frame,(171,y-5),(179,y+5),(0,0,0),-1)
     tuning=replace(PatrolTuning(),roundabout_arm_seconds=0.,roundabout_arm_distance_m=0.)
+    vision._detect_roundabout_gate=lambda *_:pytest.fail("retired detector called")
+    vision.motion_command=(.65,0.)
     for now in (0.,.03,.06):
         vision.estimate(frame,tuning,now)
     assert vision.gate_score > .82 and vision.router.phase == "APPROACH"
@@ -1447,10 +1461,10 @@ def test_v6_far_gate_only_approaches_does_not_turn_early():
     r=RoundaboutRouter()
     t=replace(PatrolTuning(),roundabout_arm_seconds=0.,roundabout_arm_distance_m=0.)
     for now in np.arange(0.,1.5,.03):
-        r.observe(True,.95,now,t,(.5,0.),gate_near=.45,entry_ready=True)
+        r.observe(True,.95,now,t,(.5,0.),gate_near=.45,dash_cue=vv_test_cue())
     assert r.phase=="APPROACH" and not r.left_lock
     for now in (1.5,1.53,1.56):
-        r.observe(True,.95,now,t,(.5,0.),gate_near=.75,entry_ready=True)
+        r.observe(True,.95,now,t,(.5,0.),gate_near=.75,dash_cue=vv_test_cue(entry=True))
     assert r.phase=="ENTRY" and r.left_lock
 
 
@@ -1461,7 +1475,8 @@ def test_v7_first_six_seconds_skip_actual_gate_extractor(monkeypatch):
     v.router.started_at=10.
     v.router.distance=2.
     calls=[]
-    v._detect_roundabout_gate=lambda *_: (calls.append(1) or (True,.95,[(140,170,10,10,80)]))
+    from patrol_dash_entry import DashObservation
+    monkeypatch.setattr(module,"detect_vv_dashes",lambda *_:(calls.append(1) or DashObservation()))
     frame=cv2.cvtColor(scene(),cv2.COLOR_HSV2BGR)
     for now in (10.,12.,15.99):
         v.estimate(frame,t,now)
@@ -1470,18 +1485,14 @@ def test_v7_first_six_seconds_skip_actual_gate_extractor(monkeypatch):
     assert len(calls)==1
 
 
-def test_v7_close_chain_can_drop_full_gate_boolean_without_missing_entry():
+def test_v16_missing_vv_cue_cannot_launch_entry_but_new_cue_can():
     r,t=RoundaboutRouter(),replace(PatrolTuning(),roundabout_arm_seconds=0.,roundabout_arm_distance_m=0.)
-    for now in (0.,.03,.06):
-        r.observe(True,.95,now,t,(.5,0.),gate_near=.5,entry_ready=True)
+    for i in range(15):
+        r.observe(False,0.,i*.1,t,(.5,0.),dash_cue=vv_test_cue())
     assert r.phase=="APPROACH"
-    r.observe(False,.80,.09,t,(.5,0.),gate_near=.75,entry_ready=True)
-    r.observe(False,.80,.12,t,(.5,0.),gate_near=.74,entry_ready=True)
-    # V14 disappearance revokes proof; old near evidence cannot launch entry.
-    r.observe(False,0.,.20,t,(.5,0.))
+    r.observe(False,0.,1.5,t,(.5,0.))
     assert r.phase=="APPROACH"
-    for now in (.23,.26):
-        r.observe(False,.80,now,t,(.5,0.),gate_near=.75,entry_ready=True)
+    r.observe(False,0.,1.6,t,(.5,0.),dash_cue=vv_test_cue(entry=True))
     assert r.phase=="ENTRY"
 
 
@@ -1560,8 +1571,8 @@ def test_v6_near_gate_without_approach_travel_cannot_turn():
     r=RoundaboutRouter()
     t=replace(PatrolTuning(),roundabout_arm_seconds=0.,roundabout_arm_distance_m=0.)
     for now in np.arange(0.,2.,.03):
-        r.observe(True,.95,now,t,(0.,0.),gate_near=.95,entry_ready=True)
-    assert r.phase=="APPROACH" and r.phase_distance==0.
+        r.observe(True,.95,now,t,(0.,0.),gate_near=.95,dash_cue=vv_test_cue(entry=True))
+    assert r.phase=="SEEK" and r.phase_distance==0.
 
 
 def test_v6_false_approach_times_out_to_normal_not_blind_left():
@@ -1809,11 +1820,11 @@ def test_v6_two_lap_task_order_without_timer_reentry_or_speed_drop():
               second_crosswalk_finish_distance_m=.2)
     now=0.
     phases=[]
-    for _ in range(300):
+    for _ in range(600):
         phase=r.phase
         gate=phase in ("SEEK","APPROACH")
         cmd=(0.,0.) if phase=="CW_STOP" else (.5,.5)
-        r.observe(gate,.95 if gate else 0.,now,t,cmd,gate_near=.8,entry_ready=True,
+        r.observe(gate,.95 if gate else 0.,now,t,cmd,gate_near=.8,dash_cue=vv_test_cue(entry=phase=="APPROACH") if gate else None,
                   exit_solid=phase=="FOLLOW",crosswalk=phase=="SEEK_CROSSWALK")
         r.accept_path(PathEstimate(True,route_locked=True,route_observed=True),now,t)
         if not phases or phases[-1]!=r.phase:
@@ -2305,7 +2316,7 @@ def test_v10_lower_score_same_chain_can_arm_entry_without_blue():
         seen.append(confirmed)
         router.observe(confirmed,.74,now,t,(.65,0.),gate_near=.82,entry_ready=True,gate_tracked=confirmed)
     assert not any(seen[:3]) and any(seen[3:])
-    assert router.phase=="ENTRY"  # .74 did not silently replace a YAML speed/score
+    assert router.phase=="SEEK"  # retired chain evidence cannot bypass VV
 
 
 @pytest.mark.parametrize("case",["disabled","single","horizontal","irregular","different","stale","duplicate","low_score"])
@@ -2538,9 +2549,10 @@ def test_v10_ordinary_vision_does_not_run_exit_connector(monkeypatch):
 
 def test_v10_reset_course_clears_both_temporal_and_route_memory(monkeypatch):
     v,t=enter_actual_black_without_blue(monkeypatch)
-    v.gate_tracker.update(tracked_gate_chain(),.74,320,240,2.,t)
+    v.router.first_marker_at=2.
+    v.router.vv_streak=4
     v.reset_course()
-    assert v.ring_memory.path is None and v.gate_tracker.frames==0
+    assert v.ring_memory.path is None and v.router.vv_streak==0 and v.router.first_marker_at is None
     assert v.router.phase=="SEEK" and v.ring_phase=="SEEK"
 
 
@@ -2925,7 +2937,7 @@ def test_v14_actual_vision_moving_left_chain_can_enter_with_observed_mainline(mo
         v.estimate(frame,t,i/30)
         phases.append(v.router.phase)
         if v.router.phase=="ENTRY":break
-    assert "APPROACH" in phases and phases[-1]=="ENTRY"
+    assert set(phases)=={"SEEK"}  # old three-block proof cannot bypass VV min four
     assert v.router.course.rings==[False,False]  # acquisition is not completion
 
 
@@ -2958,7 +2970,7 @@ def test_v14_near_gate_without_geometric_permission_never_starts_entry():
     r=RoundaboutRouter();t=replace(PatrolTuning(),roundabout_arm_seconds=0.,roundabout_arm_distance_m=0.)
     for i in range(45):
         r.observe(True,.99,i/30,t,(.65,0.),gate_near=.9)
-    assert r.phase=="APPROACH" and r.near_frames==0 and not r.left_lock
+    assert r.phase=="SEEK" and r.near_frames==0 and not r.left_lock
 
 
 @pytest.mark.parametrize("source",["entry_no_turn_abort","entry_no_route_abort","time_fallback","yaw_exit_unconfirmed","yaw_loop_release","zebra_evidence_fallback","route_budget_retry"])

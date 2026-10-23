@@ -98,6 +98,15 @@ class PatrolTuning:
     roundabout_gate_weak_score: float = 0.78
     roundabout_gate_evidence: float = 2.4
     roundabout_approach_distance_m: float = 0.05
+    vv_dash_min_blocks: int = 4
+    vv_dash_confirm_frames: int = 1
+    vv_dash_roi_top_ratio: float = 0.22
+    vv_dash_roi_bottom_ratio: float = 0.90
+    vv_dash_max_x_spread_px80: float = 18.0
+    vv_dash_min_gap_rows56: float = 3.0
+    vv_dash_entry_near_ratio: float = 0.66
+    roundabout_first_marker_cooldown_seconds: float = 1.0
+    roundabout_first_marker_pass_distance_m: float = 0.20
     roundabout_entry_gate_near_ratio: float = 0.72
     roundabout_entry_confirm_frames: int = 2
     roundabout_entry_near_hold_seconds: float = 0.25
@@ -226,6 +235,20 @@ class PatrolTuning:
                 raise ValueError(f"{name} 必须在(0,1]")
         if self.crosswalk_visual_release_enabled!=0 or self.crosswalk_resume_tracking!=1:
             raise ValueError("V14禁止横道越级放行/盲直行：visual_release_enabled须0，resume_tracking须1")
+        for name,low,high in (("vv_dash_min_blocks",2,12),("vv_dash_confirm_frames",1,10)):
+            value=getattr(self,name)
+            if int(value)!=value or not low<=value<=high:
+                raise ValueError(f"{name} 必须为{low}..{high}整数")
+        if not 0<=self.vv_dash_roi_top_ratio<self.vv_dash_roi_bottom_ratio<=1:
+            raise ValueError("VV虚线ROI上下界必须有序且位于0..1")
+        if not self.vv_dash_roi_top_ratio<self.vv_dash_entry_near_ratio<=self.vv_dash_roi_bottom_ratio:
+            raise ValueError("VV入口近端比例必须位于虚线ROI内")
+        if not 0<self.vv_dash_max_x_spread_px80<=40 or not 0<=self.vv_dash_min_gap_rows56<=10:
+            raise ValueError("VV虚线列宽/间隙超出80x56参考网格范围")
+        if self.roundabout_first_marker_cooldown_seconds<=0 or self.roundabout_first_marker_pass_distance_m<=0:
+            raise ValueError("首次标记冷却时间和通过距离必须为正数")
+        if self.roundabout_first_marker_cooldown_seconds>=self.roundabout_approach_max_seconds:
+            raise ValueError("首次标记冷却必须短于入口搜寻最长时间，避免永远等不到入环")
         for name in ("roundabout_entry_observe_seconds", "roundabout_retry_seconds"):
             if not math.isfinite(getattr(self,name)) or getattr(self,name)<=0:
                 raise ValueError(f"{name} 必须为有限正数")
@@ -1358,6 +1381,14 @@ class RoundaboutRouter:
         self.exit_observed_since=None
         self.last_good_path_at=None
 
+        self.first_marker_at=None
+        self.first_marker_distance=0.
+        self.marker_moving_seconds=0.
+        self.vv_streak=0
+        self.vv_entry_streak=0
+        self.vv_last_at=None
+        self.entry_detection_reason="vv_wait_first_marker"
+
     @property
     def task_name(self):
         if self.phase in ("FINISH_RUN","FINISHED"):
@@ -1483,12 +1514,23 @@ class RoundaboutRouter:
         self.near_seen_at=None
         self.visual_release_frames=0
         self.visual_release_at=None
+        if name=="SEEK":
+            self.first_marker_at=None
+            self.first_marker_distance=self.distance
+            self.marker_moving_seconds=0.
+            self.vv_streak=0
+            self.vv_entry_streak=0
+            self.vv_last_at=None
+            self.entry_detection_reason="vv_wait_first_marker"
         if name=="ENTRY":
             self.ring_route_acquired=False
             self.ring_yaw=0.
             self.measured_turn.reset()
 
     def pause(self,now):
+        self.vv_streak=0
+        self.vv_entry_streak=0
+        self.vv_last_at=None
         self.exit_observed_since=None
         self.last_good_path_at=None
         self.follow_stable_since=None
@@ -1561,8 +1603,53 @@ class RoundaboutRouter:
     def crosswalk_armed(self,now,tuning):
         return self.crosswalk_block_reason(now,tuning)=="armed"
 
+    def _observe_vv_entry(self,cue,now,tuning,elapsed,travel,command):
+        """Only entrance authorizer: pass first junction, then current left fork.
+
+        Cooling is moving-time, not a stop/forced-yaw command. With odometry,
+        actual forward progress is required; command estimation is explicitly
+        the existing fallback, never a measured-distance claim.
+        """
+        if self.vv_last_at is not None and now<=self.vv_last_at:
+            return
+        fresh=self.vv_last_at is None or now-self.vv_last_at<=tuning.roundabout_path_max_gap_seconds
+        self.vv_last_at=now
+        moving=command[0]>1e-4 and travel>1e-6
+        if self.phase=="APPROACH" and moving:
+            # Odom can update more slowly than image processing: using one
+            # image dt per changed pose would stretch a 1s pass into 2..3s.
+            # Accumulate equivalent forward-command time from measured travel.
+            self.marker_moving_seconds+=travel/command[0] if self.progress_source=="odom" else elapsed
+        hit=cue is not None and cue.valid
+        self.vv_streak=(self.vv_streak+1 if fresh else 1) if hit and moving else 0
+        if self.phase=="SEEK":
+            if self.gate_detection_allowed(now,tuning) and self.vv_streak>=tuning.vv_dash_confirm_frames:
+                self.first_marker_at=now
+                self.first_marker_distance=self.distance
+                self.marker_moving_seconds=0.
+                self._phase("APPROACH",now)
+                self.entry_detection_reason="vv_first_marker_pass_5"
+            return
+        passed=(self.marker_moving_seconds>=tuning.roundabout_first_marker_cooldown_seconds
+                and self.distance-self.first_marker_distance>=tuning.roundabout_first_marker_pass_distance_m)
+        entry_hit=passed and hit and cue.branch.valid and moving
+        self.vv_entry_streak=(self.vv_entry_streak+1 if fresh else 1) if entry_hit else 0
+        if not passed:
+            self.entry_detection_reason="vv_cooling_keep_tracking"
+        elif not hit:
+            self.entry_detection_reason="vv_wait_current_dashes"
+        elif not cue.branch.valid:
+            self.entry_detection_reason="vv_reject_return_or_no_left_fork"
+        elif not moving:
+            self.entry_detection_reason="vv_wait_forward_progress"
+        elif self.vv_entry_streak>=tuning.vv_dash_confirm_frames:
+            self._phase("ENTRY",now)
+            self.entry_detection_reason="vv_current_left_diverging_entry_4"
+        if self.phase=="APPROACH" and now-self.phase_at>=tuning.roundabout_approach_max_seconds:
+            self._release_ring(now,tuning,"entry_candidate_expired")
+
     def observe(self,gate,score,now,tuning,command=(0.,0.),pose=None,
-                gate_near=0.,exit_solid=False,crosswalk=False,gate_tracked=False,heading=None,entry_ready=False):
+                gate_near=0.,exit_solid=False,crosswalk=False,gate_tracked=False,heading=None,entry_ready=False,dash_cue=None):
         self.resume(now)
         if self.started_at is None:
             self.started_at=now
@@ -1655,31 +1742,8 @@ class RoundaboutRouter:
         self.clear_frames=self.clear_frames+1 if not gate and not weak else 0
         self.gate_cleared|=self.clear_frames>=tuning.roundabout_path_confirm_frames
 
-        if self.phase=="SEEK" and tuning.roundabout_enabled:
-            allowed=self.gate_detection_allowed(now,tuning)
-            if allowed:
-                self.evidence=max(0.,min(5.,self.evidence+(1. if strong else .35 if weak else -.30)))
-                if self.evidence>=tuning.roundabout_gate_evidence:
-                    self._phase("APPROACH",now)
-        elif self.phase=="APPROACH":
-            # A previously confirmed chain may lose one block at close range.
-            # Keep only recent real near evidence, not an indefinite timer latch.
-            if self.near_seen_at is not None and now-self.near_seen_at>tuning.roundabout_entry_near_hold_seconds:
-                self.near_frames=0
-                self.near_seen_at=None
-            if not entry_ready:
-                self.near_frames=0
-                self.near_seen_at=None
-            if entry_ready and weak and gate_near>=tuning.roundabout_entry_gate_near_ratio and abs(command[0])>1e-4:
-                self.near_frames+=1
-                self.near_seen_at=now
-            if (self.phase_distance>=tuning.roundabout_approach_distance_m
-                    and self.near_seen_at is not None
-                    and self.near_frames>=tuning.roundabout_entry_confirm_frames):
-                self._phase("ENTRY",now)
-            elif age>=tuning.roundabout_approach_max_seconds:
-                # A distant/false candidate is NOT permission to turn blindly.
-                self._release_ring(now,tuning,"entry_candidate_expired")
+        if self.phase in ("SEEK","APPROACH") and tuning.roundabout_enabled:
+            self._observe_vv_entry(dash_cue,now,tuning,dt,travel,command)
         elif self.phase=="FOLLOW":
             actual=self.measured_turn.fresh(now,tuning) and tuning.roundabout_heading_enabled
             turn_progress=self.measured_turn.angle if actual else self.ring_yaw
