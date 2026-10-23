@@ -390,7 +390,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
         self.create_subscription(base.Bool, "/patrol_test_stop", self._on_patrol_stop, 10)
         self.create_subscription(base.Bool, "/patrol_test_reset_course", self._on_patrol_reset_course, 10)
         self.get_logger().warn(
-            f"巡线/环岛/横道V22（普通巡线V11基线，VV单帧4进5出）：普通目标速度={self.patrol_tuning.fixed_speed_m_s:.2f}m/s，环岛上限={self.patrol_tuning.roundabout_speed_m_s:.2f}；"
+            f"巡线/环岛/横道V23（普通巡线V11基线，丢线限速，VV单帧4进5出）：普通目标速度={self.patrol_tuning.fixed_speed_m_s:.2f}m/s，环岛上限={self.patrol_tuning.roundabout_speed_m_s:.2f}；"
             f"环岛={self.patrol_tuning.roundabout_enabled}，横道={self.patrol_tuning.crosswalk_enabled}；台阶1/2仅保留位置、测试跳过；两圈环岛/横道完成凭据齐全才冲线，失败/超时不越级。实时文件：{config}"
         )
 
@@ -693,6 +693,8 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 search_direction=1 if router is not None and router.search_left and tuning.roundabout_enabled else None,
                 search_heading_turn=exit_turn)
             planned_target=min(control_tuning.fixed_speed_m_s,control_tuning.search_degraded_speed_m_s) if self.patrol_controller.degraded else control_tuning.fixed_speed_m_s
+            if self.patrol_controller.loss_started_at is not None and not control_tuning.maintain_cruise_during_search:
+                planned_target=min(planned_target,control_tuning.search_speed_m_s)
         if router is not None and (candidate or router.phase in ("APPROACH","ENTRY","FOLLOW","EXIT")):
             linear=min(linear,tuning.roundabout_speed_m_s)
         if router is not None and (candidate or router.phase=="APPROACH"):
@@ -732,7 +734,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
             road_path = getattr(self.vision, "road_estimate", PathEstimate(False))
             reason = "_".join(path.reason.split())
             self.get_logger().info(
-                f"PATROL source={self.vision.source} mode={mode} version=22 target={tuning.fixed_speed_m_s:.2f} "
+                f"PATROL source={self.vision.source} mode={mode} version=23 target={tuning.fixed_speed_m_s:.2f} "
                 f"ring_predict={int(getattr(self.vision,'ring_prediction_used',False))} ring_match={getattr(self.vision,'ring_match_reason','inactive')} "
                 f"ring_delta={getattr(self.vision,'ring_route_delta',0.):.3f} ring_ref_age={getattr(self.vision,'ring_reference_age',-1.):.3f} ring_points={getattr(self.vision,'ring_candidate_points',0)} "
                 f"authority={self._remote_state(done)} "
@@ -762,6 +764,8 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 f"entry_ready={int(getattr(self.vision,'entry_ready',False))} "
                 f"entry_detector=vv entry_reason={router.entry_detection_reason if router is not None else 'none'} "
                 f"vv_reason={dash.reason} vv_blocks={dash.blocks} "
+                f"fork_gate={router.entry_detection_reason if router is not None else 'inactive'} "
+                f"entry_branch_reason={dash.branch.reason} exit_branch_reason={dash.exit_branch.reason} "
                 f"vv_raw={dash.raw_blocks} vv_white={dash.white_blocks} vv_column={dash.column_blocks} vv_branch={dash.branch_blocks} candidate={int(candidate)} "
                 f"vv_frames={router.vv_streak if router is not None else 0} "
                 f"vv_entry_frames={router.vv_entry_streak if router is not None else 0} "

@@ -7,6 +7,7 @@ from patrol_contour_runtime import PatrolTuning,PathEstimate
 
 def test_exit_083_can_pass_old_043_and_063_without_early_stop():
     r,t,now=seek()
+    t=replace(t,ring_gyro_exit_seek_distance_m=.83,ring_gyro_exit_seek_seconds=8.,roundabout_exit_acquire_max_seconds=9.)  # historical V22 configuration
     assert (t.ring_gyro_exit_seek_distance_m,t.ring_gyro_exit_seek_seconds,t.roundabout_exit_acquire_max_seconds)==(.83,8.,9.)
     assert .83/t.ring_recovery_speed_m_s<8<9<t.roundabout_route_max_seconds
     for elapsed,distance in ((4.,.43),(6.,.63),(7.,.82)):

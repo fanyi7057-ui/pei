@@ -48,12 +48,12 @@ def test_prediction_clamps_motion_and_requires_current_pixels():
 
 def test_exit_new_distance_and_time_limits_are_consistent():
     r,t,now=seek()
-    assert t.ring_gyro_exit_seek_distance_m==.83
-    assert .83/t.ring_recovery_speed_m_s<t.ring_gyro_exit_seek_seconds<t.roundabout_exit_acquire_max_seconds
+    assert t.ring_gyro_exit_seek_distance_m==.73
+    assert .73/t.ring_recovery_speed_m_s<t.ring_gyro_exit_seek_seconds<t.roundabout_exit_acquire_max_seconds
     r.measured_turn.stamp=now+3.6
     assert r.motion_override(now+3.6,t,(.42,0.,0.),PathEstimate(False))[2]=="gyro_exit_seek"
     r.measured_turn.stamp=now+3.7
-    assert r.motion_override(now+3.7,t,(.831,0.,0.),PathEstimate(False))[2]=="ring_recovery_stop"
+    assert r.motion_override(now+3.7,t,(.731,0.,0.),PathEstimate(False))[2]=="ring_recovery_stop"
     assert not any(r.course.rings)
 
 

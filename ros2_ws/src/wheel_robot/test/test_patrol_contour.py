@@ -260,9 +260,9 @@ def test_v12_new_fields_reject_invalid_snapshot(changes):
 
 @pytest.mark.parametrize("name,expected",[
     ("PathSelector","8e5d914aff1fe47fd4039d05214dae936fbf56fd79d36ade94128af131015224"),
-    ("FixedSpeedController","dbc1fcb9ee7d518d5d5197fd3b77b0d488b1c6437e674a0e029c8a840d0fbe2f"),
+    ("FixedSpeedController","24a087c1b84490cccf79faefe631310a81c5e2bcda34cf0ce966181ba314bd66"),
 ])
-def test_v13_ordinary_classes_exact_v11_source(name,expected):
+def test_v23_selector_baseline_and_approved_search_controller_snapshot(name,expected):
     import ast
     import hashlib
     source=(SCRIPTS/"patrol_contour_runtime.py").read_text(encoding="utf-8-sig")
@@ -460,7 +460,7 @@ def test_visible_path_always_same_speed_even_with_large_turn(angle):
 
 
 def test_short_loss_keeps_issued_speed_then_final_timeout_stops():
-    controller, tuning = FixedSpeedController(), replace(PatrolTuning(),search_degraded_enabled=0)
+    controller, tuning = FixedSpeedController(), replace(PatrolTuning(),search_degraded_enabled=0,maintain_cruise_during_search=1)
     for now in np.arange(0, 2.01, .05):
         controller.command(PathEstimate(True, -.1, .9), now, tuning)
     v1, w1, mode = controller.command(PathEstimate(False), 2.1, tuning)
@@ -712,7 +712,7 @@ def test_sparse_and_dense_equivalent_paths_have_same_row_weighting():
 
 
 def test_many_single_frame_dropouts_never_chop_or_restart_speed():
-    controller, tuning = FixedSpeedController(), replace(PatrolTuning(),reacquire_confirm_frames=1)
+    controller, tuning = FixedSpeedController(), replace(PatrolTuning(),reacquire_confirm_frames=1,maintain_cruise_during_search=1)
     for now in np.arange(0, 2., .02):
         controller.command(PathEstimate(True, -.1, 1), now, tuning)
     for index, now in enumerate(np.arange(2., 5., .02)):
@@ -1031,6 +1031,7 @@ def test_road_observations_cannot_renew_expired_black_template(monkeypatch):
 
 
 def cruise_controller(error=-.5, **changes):
+    changes.setdefault('maintain_cruise_during_search', 1)  # explicit historical cruise-search contract
     controller, tuning = FixedSpeedController(), replace(PatrolTuning(), **changes)
     for now in np.arange(0, 2.01, 1/30):
         controller.command(PathEstimate(True,error,1,source="black"),now,tuning)
@@ -1743,7 +1744,7 @@ def test_v6_task_heading_ignores_zebra_lines_with_same_cruise_target():
 
 def test_v6_search_can_reach_cruise_not_freeze_low_start_speed():
     c=FixedSpeedController()
-    t=PatrolTuning()
+    t=replace(PatrolTuning(),maintain_cruise_during_search=1)  # legacy opt-in
     c.command(PathEstimate(True,-.1,.9,source="black"),0.,t)
     for now in np.arange(.03,1.2,.03):
         v,_,_=c.command(PathEstimate(False),now,t)
@@ -2445,7 +2446,7 @@ def test_v10_follow_search_uses_left_not_stale_right_command(node_module,monkeyp
     node.patrol_controller.last_good_turn=-.8
     node._run_control_cycle()
     assert node.patrol_controller.raw_angular>0
-    assert commands[-1][0]==.30
+    assert commands[-1][0]==.20  # V23 blind-search cap
     assert not node.patrol_controller.fault_latched
 
 

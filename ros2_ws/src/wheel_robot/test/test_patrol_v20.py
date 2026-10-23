@@ -20,12 +20,12 @@ def seek():
 
 def test_exit_search_adds_ten_cm_without_changing_any_speed():
     r,t,now=seek()
-    assert t.ring_gyro_exit_seek_distance_m==.83  # V22 approved distance extension
+    assert t.ring_gyro_exit_seek_distance_m==.73  # V22 approved distance extension
     assert (t.fixed_speed_m_s,t.roundabout_speed_m_s,t.ring_recovery_speed_m_s)==(.65,.30,.12)
     r.measured_turn.stamp=now+1.5
     assert r.motion_override(now+1.5,t,(.18,0.,0.),PathEstimate(False))==(.12,0.,"gyro_exit_seek")
     r.measured_turn.stamp=now+1.9
-    assert r.motion_override(now+1.9,t,(.831,0.,0.),PathEstimate(False))==(0.,0.,"ring_recovery_stop")
+    assert r.motion_override(now+1.9,t,(.731,0.,0.),PathEstimate(False))==(0.,0.,"ring_recovery_stop")
     assert r.fault=="gyro_exit_seek_distance_no_reliable_path" and r.completed==0
 
 

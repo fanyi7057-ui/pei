@@ -54,7 +54,8 @@ class PatrolTuning:
     search_turn_rad_s: float = 0.80
     search_default_direction: int = 1
     reacquire_confirm_frames: int = 3
-    maintain_cruise_during_search: int = 1
+    maintain_cruise_during_search: int = 0
+    search_speed_m_s: float = 0.20
     image_timeout_seconds: float = 0.35
     roi_top_ratio: float = 0.25
     roi_bottom_ratio: float = 0.98
@@ -111,8 +112,8 @@ class PatrolTuning:
     ring_gyro_exit_enabled: int = 1
     ring_gyro_exit_degrees: float = 360.0
     ring_gyro_min_distance_m: float = 0.80
-    ring_gyro_exit_seek_seconds: float = 8.0
-    ring_gyro_exit_seek_distance_m: float = 0.83
+    ring_gyro_exit_seek_seconds: float = 7.0
+    ring_gyro_exit_seek_distance_m: float = 0.73
     ring_recovery_speed_m_s: float = 0.12
     ring_recovery_turn_rad_s: float = 0.35
     ring_recovery_seconds: float = 1.0
@@ -183,7 +184,7 @@ class PatrolTuning:
     roundabout_heading_max_rate_rad_s: float = 6.0
     roundabout_heading_disagreement_deg: float = 45.0
     roundabout_require_exit_route: int = 1
-    roundabout_exit_acquire_max_seconds: float = 9.0
+    roundabout_exit_acquire_max_seconds: float = 8.0
     roundabout_exit_commit_enabled: int = 1
     roundabout_exit_commit_seconds: float = 5.0
     roundabout_exit_commit_distance_m: float = 3.5
@@ -241,6 +242,8 @@ class PatrolTuning:
     ring_prediction_max_shift_ratio: float = 0.10
 
     def validate(self):
+        if not math.isfinite(self.search_speed_m_s) or not 0 < self.search_speed_m_s <= .30:
+            raise ValueError("search_speed_m_s必须在(0,0.30]米/秒")
         """Reject an entire bad save; never silently clip a requested speed."""
         for field in fields(self):
             value = getattr(self, field.name)
@@ -2285,7 +2288,7 @@ class FixedSpeedController:
                 mode, linear = "fixed_speed", tuning.fixed_speed_m_s
             else:
                 mode = "reacquire_confirm"
-                linear = tuning.fixed_speed_m_s if tuning.maintain_cruise_during_search else min(self.loss_command[0], tuning.fixed_speed_m_s)
+                linear = tuning.fixed_speed_m_s if tuning.maintain_cruise_during_search else min(self.loss_command[0], tuning.search_speed_m_s, tuning.fixed_speed_m_s)
             angular = self._steer(path, now, tuning, elapsed, recovering)
             # A real new observation may correct the search DIRECTION at
             # once; only confirmed consecutive observations renew budgets.
@@ -2307,7 +2310,7 @@ class FixedSpeedController:
             if search_direction is not None:
                 self.search_turn_goal = math.copysign(tuning.roundabout_search_turn_rad_s, search_direction)
             age = self.loss_age(now)
-            linear = tuning.fixed_speed_m_s if tuning.maintain_cruise_during_search else min(self.loss_command[0], tuning.fixed_speed_m_s)
+            linear = tuning.fixed_speed_m_s if tuning.maintain_cruise_during_search else min(self.loss_command[0], tuning.search_speed_m_s, tuning.fixed_speed_m_s)
             recent_curve = now-self.last_curve_at <= tuning.search_max_seconds
             # A confirmed sharp-turn direction starts active recovery right
             # away, instead of driving almost straight for another 0.8s.
@@ -2352,8 +2355,15 @@ class FixedSpeedController:
                     return self._fault("time_limit", now)
                 if soft_distance:
                     return self._fault("distance_limit", now)
+        # Loss and unconfirmed reacquisition share a bounded search speed.
+        # Do not slew down from cruise while blind: cap the issued value too.
+        search_capped = self.loss_started_at is not None and not tuning.maintain_cruise_during_search
+        if search_capped:
+            linear = min(linear, tuning.search_speed_m_s)
         previous = self.last_command
         linear = self._approach(previous[0], linear, tuning.linear_accel_m_s2*dt)
+        if search_capped:
+            linear = min(linear, tuning.search_speed_m_s)
         fast_turn = self.corner_strength > 0 or path.rescue or mode in ("active_search","degraded_search")
         rate = tuning.corner_angular_accel_rad_s2 if fast_turn else tuning.angular_accel_rad_s2
         # Unwind the OLD turn quickly, independently of how gently a new turn
@@ -2363,7 +2373,13 @@ class FixedSpeedController:
         if unwinding:
             brake_rate = max(rate, tuning.unwind_angular_accel_rad_s2)
             if previous[1]*angular < 0:
-                angular = self._approach(previous[1], 0., brake_rate*dt)
+                reliable_opposite = (recovering and path.valid and not path.rescue
+                    and not path.handoff and path.confidence >= tuning.rescue_corner_confidence
+                    and abs(path.error) >= tuning.corner_start_error
+                    and path.near_error*path.error > 0)
+                # Cancel a stale wrong-way search immediately, but start the
+                # new turn from zero on the next frame (no angular jump).
+                angular = 0. if reliable_opposite else self._approach(previous[1], 0., brake_rate*dt)
             else:
                 angular = self._approach(previous[1], angular, brake_rate*dt)
         else:
