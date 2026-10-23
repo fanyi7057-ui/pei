@@ -137,6 +137,34 @@ def detect_vv_dashes(events,white,tuning,reference_x_ratio=None):
                 result.reason="vv_exit_converging_left"
     return result
 
+class RingSearchPredictor:
+    """Two real routes predict only a search reference; never a PathEstimate."""
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.previous=self.latest=None
+
+    def remember(self,path,now):
+        if (not path.valid or not path.route_locked or not path.route_observed or path.rescue or path.handoff
+                or path.points is None or len(path.points)<3):return
+        points=np.asarray(path.points,float).reshape(-1,2)
+        if not np.isfinite(points).all():return
+        if self.latest is not None and now<=self.latest[0]:return
+        self.previous,self.latest=self.latest,(now,points[np.argsort(points[:,1])].copy())
+
+    def reference(self,now,width,tuning):
+        if self.previous is None or self.latest is None:return None
+        before,old=self.previous;stamp,current=self.latest
+        dt=stamp-before;age=now-stamp
+        if not 0<dt<=tuning.roundabout_path_max_gap_seconds or not 0<age<=tuning.ring_prediction_seconds:return None
+        predicted=current.copy()
+        velocity=(current[:,0]-np.interp(current[:,1],old[:,1],old[:,0]))/dt
+        limit=width*tuning.ring_prediction_max_shift_ratio
+        predicted[:,0]=np.clip(current[:,0]+np.clip(velocity*age,-limit,limit),0,width-1)
+        return predicted
+
+
 def track_vv_curve(events,white,tuning,reference,reacquire=False):
     """Track current small blocks near an ALREADY selected curved guide.
 

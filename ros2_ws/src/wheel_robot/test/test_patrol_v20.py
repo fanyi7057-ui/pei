@@ -20,12 +20,12 @@ def seek():
 
 def test_exit_search_adds_ten_cm_without_changing_any_speed():
     r,t,now=seek()
-    assert t.ring_gyro_exit_seek_distance_m==.22
+    assert t.ring_gyro_exit_seek_distance_m==.43  # V21 approved distance extension
     assert (t.fixed_speed_m_s,t.roundabout_speed_m_s,t.ring_recovery_speed_m_s)==(.65,.30,.12)
     r.measured_turn.stamp=now+1.5
     assert r.motion_override(now+1.5,t,(.18,0.,0.),PathEstimate(False))==(.12,0.,"gyro_exit_seek")
     r.measured_turn.stamp=now+1.9
-    assert r.motion_override(now+1.9,t,(.221,0.,0.),PathEstimate(False))==(0.,0.,"ring_recovery_stop")
+    assert r.motion_override(now+1.9,t,(.431,0.,0.),PathEstimate(False))==(0.,0.,"ring_recovery_stop")
     assert r.fault=="gyro_exit_seek_distance_no_reliable_path" and r.completed==0
 
 
@@ -38,12 +38,12 @@ def test_sideways_reverse_or_no_odom_never_claim_forward_distance(pose):
 
 def test_pose_projection_follows_actual_start_heading():
     r,t,now=seek();r.loop_seek_pose=(1.,2.,math.pi/2)
-    assert r.motion_override(now,t,(1.,2.23,math.pi/2),PathEstimate(False))[2]=="ring_recovery_stop"
+    assert r.motion_override(now,t,(1.,2.44,math.pi/2),PathEstimate(False))[2]=="ring_recovery_stop"
 
 
 def test_stalled_search_still_has_hard_time_limit_with_fresh_imu():
-    r,t,now=seek();r.measured_turn.stamp=now+2.31
-    assert r.motion_override(now+2.31,t,(0.,0.,0.),PathEstimate(False))[2]=="ring_recovery_stop"
+    r,t,now=seek();r.measured_turn.stamp=now+4.51
+    assert r.motion_override(now+4.51,t,(0.,0.,0.),PathEstimate(False))[2]=="ring_recovery_stop"
     assert r.fault=="gyro_exit_seek_no_reliable_path"
 
 
@@ -160,7 +160,7 @@ def test_dry_run_does_not_require_remote_motion_authority(node_module,monkeypatc
     assert not getattr(n,"_localization_wait",False) and commands[-1]==(0.,0.)
 
 
-@pytest.mark.parametrize("changes",[{"ring_gyro_exit_seek_distance_m":0},{"ring_gyro_exit_seek_distance_m":.5},
+@pytest.mark.parametrize("changes",[{"ring_gyro_exit_seek_distance_m":0},{"ring_gyro_exit_seek_distance_m":.6},
     {"remote_guard_enabled":2},{"remote_auto_channel_index":10},{"remote_auto_channel_min":99},
     {"remote_signal_timeout_seconds":0},{"ring_curve_reacquire_enabled":2},
     {"ring_curve_reacquire_max_shift_ratio":.3}])

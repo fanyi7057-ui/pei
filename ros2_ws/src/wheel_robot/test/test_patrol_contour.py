@@ -131,7 +131,7 @@ def test_v12_full_turn_is_exit_candidate_not_immediate_success():
 
 def test_v12_unconfirmed_exit_has_bounded_non_successful_release():
     r,t,now=loop_candidate_router()
-    for dt in np.arange(.1,2.9,.1):
+    for dt in np.arange(.1,t.roundabout_exit_acquire_max_seconds+.4,.1):
         r.observe(False,0.,now+float(dt),t,(.65,.1))
     assert r.phase=="SEEK" and r.completed==0
     assert not r.crosswalk_armed(now+3.,t)

@@ -239,10 +239,10 @@ patrol_test:
   ring_gyro_exit_degrees: 360.0
   ring_gyro_min_distance_m: 0.80
   # 达标后仅在没有可靠路线时低速直探出口，可靠视觉优先，超时不假记出环。
-  # V20：0.12m/s出口寻找距离0.22m（较旧1秒名义0.12m多约0.10m），2.3秒为硬期限。
+  # V21：出口寻找目标0.43m，仍0.12m/s；理论约3.58秒，4.5秒硬期限，不强求走满。
   # 实际距离优先用出环候选起点的odom前向投影；无odom仍受时间上限，不冒充实测行程。
-  ring_gyro_exit_seek_seconds: 2.3
-  ring_gyro_exit_seek_distance_m: 0.22
+  ring_gyro_exit_seek_seconds: 4.5
+  ring_gyro_exit_seek_distance_m: 0.43
   # 入环55度后仍未取线/环岛失败时的有界恢复；超时没真实路线则保护停车。
   ring_recovery_speed_m_s: 0.12
   ring_recovery_turn_rad_s: 0.35
@@ -450,9 +450,9 @@ patrol_test:
   # 1=偏航满足后仍找真实EXIT，默认1；0只解除控制并重找本圈，不再借旧yaw捷径授权横道。
   # 一圈进展不是几何驶出；只有已经取线且EXIT有真实连续路线/行程才记本圈凭据。
   roundabout_require_exit_route: 1
-  # 偏航满圈后找真实出口的最长时间，秒>0，默认2.5；过期标yaw_exit_unconfirmed，不伪记出环。
+  # 偏航满圈后获取真实出口的总期限，默认5.0秒；长于低速寻找4.5秒，不伪记出环。
   # 会释放任务避免无限绕圈，但不启动下方“已确认出口轮廓锁”；正常定位/相机保护仍保留。
-  roundabout_exit_acquire_max_seconds: 2.5
+  roundabout_exit_acquire_max_seconds: 5.0
   # ----- F6b. 已确认出环：锁出口路线而不是强制5秒直行 -----
   # 开关0/1，默认1；仅真实visual_exit后启动；失败入环/时间释放/未确认出口不启动。
   roundabout_exit_commit_enabled: 1
@@ -572,6 +572,9 @@ patrol_test:
   ring_curve_reacquire_enabled: 1
   # 平移最大偏差占图宽；0.12..0.25，默认0.22；形状/歧义/白色两侧约束仍必须通过。
   ring_curve_reacquire_max_shift_ratio: 0.22
+  # 仅FOLLOW原匹配失败时，用最近两次真实锁定路线预测搜索参考；无当前像素仍无效。
+  ring_prediction_seconds: 0.35
+  ring_prediction_max_shift_ratio: 0.10
 
   # ===== H. 显示与正常姿态：本轮不擅自抬高车身 =====
   # 车载屏幕刷新目标fps，>0；降低减少绘图开销，不降低算法处理频率。相机/控制仍用原30Hz配置。

@@ -150,7 +150,7 @@ def test_gyro_exit_seek_cannot_expire_into_fast_blind_search():
 
 
 @pytest.mark.parametrize("changes",[{"roundabout_speed_m_s":0},{"ring_gyro_exit_enabled":2},
-    {"ring_gyro_exit_degrees":100},{"ring_gyro_min_distance_m":0},{"ring_gyro_exit_seek_seconds":4},
+    {"ring_gyro_exit_degrees":100},{"ring_gyro_min_distance_m":0},{"ring_gyro_exit_seek_seconds":6},
     {"ring_recovery_speed_m_s":.5},{"ring_recovery_turn_rad_s":0},{"ring_recovery_seconds":0}])
 def test_bad_ring_parameters_reject_save(changes):
     with pytest.raises(ValueError):replace(PatrolTuning(),**changes).validate()

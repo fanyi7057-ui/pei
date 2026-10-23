@@ -17,7 +17,7 @@ from patrol_contour_runtime import (
     black_usable, road_centerline, road_masks, path_errors, detect_crosswalk,
 )
 
-from patrol_dash_entry import DashObservation, detect_vv_dashes, track_vv_curve
+from patrol_dash_entry import DashObservation, RingSearchPredictor, detect_vv_dashes, track_vv_curve
 
 
 class PatrolVision(base.CourseVision):
@@ -44,6 +44,7 @@ class PatrolVision(base.CourseVision):
         self.entry_trigger = "none"
         self.exit_commit = ExitRouteCommit()
         self.ring_memory = RingRouteMemory()
+        self.ring_predictor=RingSearchPredictor()
         self.ring_phase = "SEEK"
         self.gate_tracked = False
         self.motion_command = (0., 0.)
@@ -66,6 +67,7 @@ class PatrolVision(base.CourseVision):
         self.motion_heading=None
 
     def reset_path(self,preserve_approach=False):
+        self.ring_predictor.reset()
         self.dash_observation = DashObservation()
         self.entry_ready = False
         self.exit_commit.reset()
@@ -86,6 +88,11 @@ class PatrolVision(base.CourseVision):
         self.road_estimate = PathEstimate(False, reason="reset")
 
     def estimate(self, frame, tuning, now, draw=False):
+        self.ring_prediction_used=False
+        self.ring_match_reason="inactive"
+        self.ring_route_delta=0.
+        self.ring_candidate_points=0
+        self.ring_reference_age=now-self.last_path_at if self.last_path_at is not None else -1.
         release_before=self.router.release_serial
         if self.router.paused_at is not None and self.ring_memory.at is not None:
             # Operator pause freezes task-relative memory age too; the NEW
@@ -226,6 +233,9 @@ class PatrolVision(base.CourseVision):
                 self.road_widths = road.widths.copy()
                 self.last_dual_at = now
         if routing:
+            self.ring_candidate_points=len(black.points) if black.points is not None else 0
+            if black.valid and self.ring_memory.path is not None:
+                self.ring_route_delta=max(abs(black.near_error-self.ring_memory.path.near_error),abs(black.mid_error-self.ring_memory.path.mid_error))
             # Select a ROUTE before choosing a sensor. Ordinary black priority
             # must not pull us back onto the straight/right fork.
             if self.router.phase=="ENTRY" and road.valid and not self.router.branch_acquired and not road.route_locked:
@@ -278,6 +288,12 @@ class PatrolVision(base.CourseVision):
         if (self.router.phase in ("ENTRY","FOLLOW") and self.previous_points is not None
                 and self.last_path_at is not None and now-self.last_path_at<=tuning.roundabout_route_memory_seconds):
             guide=track_vv_curve(events,_white,tuning,self.previous_points,reacquire=self.router.phase=="FOLLOW")
+            if not guide.valid and self.router.phase=="FOLLOW":
+                predicted=self.ring_predictor.reference(now,width,tuning)
+                if predicted is not None:
+                    guide=track_vv_curve(events,_white,tuning,predicted,reacquire=True)
+                    self.ring_prediction_used=True
+            self.ring_match_reason=guide.reason
             reliable_current=(black.valid and black.route_observed) or (road.valid and road.route_observed)
             if guide.valid and (guide.reason!="vv_owned_curve_reacquired" or not reliable_current):
                 # Already-owned entry only: no need for the straight fork
@@ -308,6 +324,10 @@ class PatrolVision(base.CourseVision):
                 self.exit_commit.reset()
         if self.router.ring_tracking:
             self.ring_memory.remember(chosen,now)
+        if self.router.phase=="FOLLOW":
+            self.ring_predictor.remember(chosen,now)
+        else:
+            self.ring_predictor.reset()
         self.ring_phase=self.router.phase
         if chosen.valid and chosen.points is not None and len(chosen.points):
             self.previous_points = chosen.points.copy()
@@ -370,7 +390,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
         self.create_subscription(base.Bool, "/patrol_test_stop", self._on_patrol_stop, 10)
         self.create_subscription(base.Bool, "/patrol_test_reset_course", self._on_patrol_reset_course, 10)
         self.get_logger().warn(
-            f"巡线/环岛/横道V20（普通巡线V11基线，VV单帧4进5出）：普通目标速度={self.patrol_tuning.fixed_speed_m_s:.2f}m/s，环岛上限={self.patrol_tuning.roundabout_speed_m_s:.2f}；"
+            f"巡线/环岛/横道V21（普通巡线V11基线，VV单帧4进5出）：普通目标速度={self.patrol_tuning.fixed_speed_m_s:.2f}m/s，环岛上限={self.patrol_tuning.roundabout_speed_m_s:.2f}；"
             f"环岛={self.patrol_tuning.roundabout_enabled}，横道={self.patrol_tuning.crosswalk_enabled}；台阶1/2仅保留位置、测试跳过；两圈环岛/横道完成凭据齐全才冲线，失败/超时不越级。实时文件：{config}"
         )
 
@@ -712,7 +732,9 @@ class PatrolTestNode(base.WheelLegRaceNode):
             road_path = getattr(self.vision, "road_estimate", PathEstimate(False))
             reason = "_".join(path.reason.split())
             self.get_logger().info(
-                f"PATROL source={self.vision.source} mode={mode} version=20 target={tuning.fixed_speed_m_s:.2f} "
+                f"PATROL source={self.vision.source} mode={mode} version=21 target={tuning.fixed_speed_m_s:.2f} "
+                f"ring_predict={int(getattr(self.vision,'ring_prediction_used',False))} ring_match={getattr(self.vision,'ring_match_reason','inactive')} "
+                f"ring_delta={getattr(self.vision,'ring_route_delta',0.):.3f} ring_ref_age={getattr(self.vision,'ring_reference_age',-1.):.3f} ring_points={getattr(self.vision,'ring_candidate_points',0)} "
                 f"authority={self._remote_state(done)} "
                 f"remote_raw={getattr(getattr(self,'remote_guard',None),'raw',None)} "
                 f"ring_multiplier={tuning.roundabout_follow_speed_multiplier:.2f} "
