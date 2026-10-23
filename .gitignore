@@ -1,0 +1,11 @@
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+log/
+recordings/
+**/__pycache__/
+*.py[cod]
+*.avi
+*.mp4
+*.bag
+*.db3
