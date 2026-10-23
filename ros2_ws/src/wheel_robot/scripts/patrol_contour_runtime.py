@@ -225,8 +225,13 @@ class PatrolTuning:
     second_crosswalk_finish_distance_m: float = 1.0
     crosswalk_task_max_seconds: float = 12.0
 
+    ring_candidate_hold_seconds: float = 0.6
+    ring_candidate_turn_limit_rad_s: float = 0.6
+
     def validate(self):
         """Reject an entire bad save; never silently clip a requested speed."""
+        if not 0 < self.ring_candidate_hold_seconds <= 2 or not 0 < self.ring_candidate_turn_limit_rad_s <= self.max_turn_rad_s:
+            raise ValueError("环岛候选保持时间须在(0,2]秒，候选转向限制须为正且不超过总角速度限制")
         for field in fields(self):
             value = getattr(self, field.name)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -1405,6 +1410,7 @@ class RoundaboutRouter:
         self.vv_entry_streak=0
         self.vv_last_at=None
         self.vv_kind=None
+        self.vv_candidate_at=None
         self.entry_detection_reason="vv_wait_first_marker"
         self.ring_recovery_until=None
         self.ring_recovery_streak=0
@@ -1553,6 +1559,7 @@ class RoundaboutRouter:
             self.measured_turn.reset()
 
     def pause(self,now):
+        self.vv_candidate_at=None
         self.vv_streak=0
         self.vv_entry_streak=0
         self.vv_last_at=None
@@ -1636,6 +1643,12 @@ class RoundaboutRouter:
     def crosswalk_armed(self,now,tuning):
         return self.crosswalk_block_reason(now,tuning)=="armed"
 
+    def candidate_active(self,now,tuning):
+        """Fresh main dashes slow observation, but NEVER authorize left entry."""
+        return (self.phase=="SEEK" and not self.fault and self.ring_recovery_until is None
+                and self.gate_detection_allowed(now,tuning) and self.vv_candidate_at is not None
+                and 0<=now-self.vv_candidate_at<=tuning.ring_candidate_hold_seconds)
+
     def _observe_vv_entry(self,cue,now,tuning,elapsed,travel,command):
         """Only entrance authorizer: pass first junction, then current left fork.
 
@@ -1654,6 +1667,8 @@ class RoundaboutRouter:
             # Accumulate equivalent forward-command time from measured travel.
             self.marker_moving_seconds+=travel/command[0] if self.progress_source=="odom" else elapsed
         hit=cue is not None and cue.valid
+        if hit and self.gate_detection_allowed(now,tuning):
+            self.vv_candidate_at=now
         kind=("entry" if cue.branch.valid else "exit" if cue.exit_branch.valid else "main") if hit else None
         self.vv_streak=(self.vv_streak+1 if fresh and kind==self.vv_kind else 1) if hit and moving else 0
         self.vv_kind=kind
@@ -1951,6 +1966,12 @@ class RoundaboutRouter:
         turn_progress=self.measured_turn.angle if tuning.roundabout_heading_enabled and self.measured_turn.fresh(now,tuning) else self.left_yaw
         establish=turn_progress<tuning.roundabout_entry_min_yaw_rad or ((tuning.roundabout_entry_commit_enabled or not self.branch_acquired) and turn_progress<math.radians(tuning.roundabout_entry_acquire_yaw_deg))
         if self.phase=="ENTRY" and not (reliable and path.route_locked):
+            if path is not None and path.valid and path.route_locked and not path.rescue and not path.handoff:
+                # Current owned pixels can steer before full acquisition proof.
+                # No turn/time credit is invented; accept_path remains strict.
+                turn=float(np.clip(-tuning.steering_gain*path.error,
+                                   -tuning.ring_candidate_turn_limit_rad_s,tuning.ring_candidate_turn_limit_rad_s))
+                return min(tuning.fixed_speed_m_s,tuning.ring_recovery_speed_m_s),turn,"ring_curve_preview"
             # Establish the verified LEFT entry before any outside/right line
             # may take over. Bounded by route timeout, not perpetual blind yaw.
             speed=min(tuning.fixed_speed_m_s,tuning.roundabout_speed_m_s)

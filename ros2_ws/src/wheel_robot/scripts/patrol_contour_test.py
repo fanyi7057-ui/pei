@@ -285,7 +285,7 @@ class PatrolVision(base.CourseVision):
                 black=guide
         self.black_estimate, self.road_estimate = black, road
         committed=self.exit_commit.select(black,road,now,self.motion_command[0],tuning)
-        if (committed is None and self.router.phase=="APPROACH"
+        if (committed is None and (self.router.phase=="APPROACH" or self.router.candidate_active(now,tuning))
                 and self.dash_observation.main.valid
                 and self.dash_observation.main.route_observed):
             # Current main dash chain, not a fabricated remembered path.
@@ -576,25 +576,28 @@ class PatrolTestNode(base.WheelLegRaceNode):
             self._wait_for_operator(router.fault)
             return
         override=router.motion_override(done,tuning,getattr(self.vision,"motion_pose",None),path=path) if router is not None else None
+        candidate=router is not None and router.candidate_active(done,tuning)
         if override is not None:
             target_v,target_w,mode=override
             planned_target=target_v
             linear,angular=self.patrol_controller.task_command(target_v,target_w,done,tuning,
                 immediate_stop=mode in ("crosswalk_stop","finished","ring_recovery_stop","unauthorized_finish"),
                 left_only=mode=="roundabout_left_acquire")
-            if mode in ("roundabout_left_acquire","gyro_exit_seek","ring_failure_recovery","ring_recovery_stop"):
+            if mode in ("roundabout_left_acquire","ring_curve_preview","gyro_exit_seek","ring_failure_recovery","ring_recovery_stop"):
                 linear=min(linear,target_v)  # no stale 0.65m/s during deceleration
         else:
             control_tuning=tuning
-            if router is not None and router.phase in ("APPROACH","ENTRY","FOLLOW","EXIT"):
+            if router is not None and (candidate or router.phase in ("APPROACH","ENTRY","FOLLOW","EXIT")):
                 control_tuning=replace(tuning,fixed_speed_m_s=min(tuning.fixed_speed_m_s,tuning.roundabout_speed_m_s))
             exit_turn=router.exit_search_turn(path,done,tuning,getattr(self.vision,"motion_heading",None)) if router is not None else None
             linear, angular, mode = self.patrol_controller.command(path, done, control_tuning,
                 search_direction=1 if router is not None and router.search_left and tuning.roundabout_enabled else None,
                 search_heading_turn=exit_turn)
             planned_target=min(control_tuning.fixed_speed_m_s,control_tuning.search_degraded_speed_m_s) if self.patrol_controller.degraded else control_tuning.fixed_speed_m_s
-        if router is not None and router.phase in ("APPROACH","ENTRY","FOLLOW","EXIT"):
+        if router is not None and (candidate or router.phase in ("APPROACH","ENTRY","FOLLOW","EXIT")):
             linear=min(linear,tuning.roundabout_speed_m_s)
+        if router is not None and (candidate or router.phase=="APPROACH"):
+            angular=float(np.clip(angular,-tuning.ring_candidate_turn_limit_rad_s,tuning.ring_candidate_turn_limit_rad_s))
         source = self.vision.source
         previous_source = getattr(self, "_previous_path_source", source)
         self._source_changes_total = getattr(self, "_source_changes_total", 0)+int(source != previous_source)
@@ -630,7 +633,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
             road_path = getattr(self.vision, "road_estimate", PathEstimate(False))
             reason = "_".join(path.reason.split())
             self.get_logger().info(
-                f"PATROL source={self.vision.source} mode={mode} version=17 target={tuning.fixed_speed_m_s:.2f} "
+                f"PATROL source={self.vision.source} mode={mode} version=18 target={tuning.fixed_speed_m_s:.2f} "
                 f"ring_multiplier={tuning.roundabout_follow_speed_multiplier:.2f} "
                 f"ring_cap={tuning.roundabout_speed_m_s:.2f} "
                 f"planned_target={planned_target:.3f} "
@@ -656,6 +659,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 f"entry_ready={int(getattr(self.vision,'entry_ready',False))} "
                 f"entry_detector=vv entry_reason={router.entry_detection_reason if router is not None else 'none'} "
                 f"vv_reason={dash.reason} vv_blocks={dash.blocks} "
+                f"vv_raw={dash.raw_blocks} vv_white={dash.white_blocks} vv_column={dash.column_blocks} vv_branch={dash.branch_blocks} candidate={int(candidate)} "
                 f"vv_frames={router.vv_streak if router is not None else 0} "
                 f"vv_entry_frames={router.vv_entry_streak if router is not None else 0} "
                 f"vv_entry={int(dash.branch.valid)} vv_exit={int(dash.exit_branch.valid)} "

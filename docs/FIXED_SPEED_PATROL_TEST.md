@@ -1,4 +1,10 @@
-# V17：缩短入环通过距离、持续虚线接管与360度出口保底
+# V18：候选提前减速与当前弯曲虚线接管
+
+V18在V17基础上修复日志34da8771的问题。普通速度仍0.65；可信主虚线候选先限速0.30，消失0.6秒释放，候选/APPROACH角速度限制±0.6。候选不授权入环；5号/4号方向判断不变。已入环但尚未取得完整路线证明时，当前锁定虚线可用0.12低速视觉引导，而不是被固定左转覆盖。近端证明统一使用vv_dash_entry_near_ratio，仍需多块真实观察。最终失线停车保留。
+
+参数位于ros2_ws/src/wheel_robot/config/patrol_test.yaml：ring_candidate_hold_seconds、ring_candidate_turn_limit_rad_s；新日志vv_raw/vv_white/vv_column/vv_branch/candidate及version=18。详见records/2026-10-23-V18-candidate-and-current-curve.md。
+
+以下为保留的V17设计说明；“只有主虚线”在V18会先局部减速，但仍不认定5号。
 
 基准是E:/Two的V16（585823a）。普通巡线、黑线/轮廓预处理、PathSelector、FixedSpeedController、原比赛/台阶和C++底盘不改。只改环岛分支及失败后的有界恢复。
 

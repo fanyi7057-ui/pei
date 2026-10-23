@@ -22,6 +22,10 @@ class DashObservation:
     branch: PathEstimate = field(default_factory=lambda: PathEstimate(False))
     exit_branch: PathEstimate = field(default_factory=lambda: PathEstimate(False))
     reason: str = "no_dash_blocks"
+    white_blocks: int = 0
+    column_blocks: int = 0
+    branch_blocks: int = 0
+    raw_blocks: int = 0
 
 
 def _path(points,width,height,tuning,reason):
@@ -34,13 +38,15 @@ def _path(points,width,height,tuning,reason):
     return result
 
 
-def _white_sided_blocks(events,white,tuning):
+def _white_sided_blocks(events,white,tuning,diagnostics=None):
     height,width=events.shape
     black=cv2.resize(events,(80,56),interpolation=cv2.INTER_AREA)>=96
     road=cv2.resize(white,(80,56),interpolation=cv2.INTER_AREA)>=160
     black[:int(56*tuning.vv_dash_roi_top_ratio)]=False
     black[int(56*tuning.vv_dash_roi_bottom_ratio):]=False
     count,_,stats,centers=cv2.connectedComponentsWithStats(black.astype(np.uint8),8)
+    if diagnostics is not None:
+        diagnostics.raw_blocks=count-1
     candidates=[]
     for i in range(1,count):
         x,y,bw,bh,area=stats[i]
@@ -64,8 +70,9 @@ def detect_vv_dashes(events,white,tuning,reference_x_ratio=None):
     Thresholds are in the reference grid, never reused as ROS speed units.
     """
     result=DashObservation()
-    height,width,candidates=_white_sided_blocks(events,white,tuning)
+    height,width,candidates=_white_sided_blocks(events,white,tuning,result)
     candidates=sorted(candidates,key=lambda c:c[1],reverse=True)[:40]
+    result.white_blocks=len(candidates)
     if len(candidates)<tuning.vv_dash_min_blocks:
         result.reason="vv_few_white_sided_blocks"
         return result
@@ -81,6 +88,7 @@ def detect_vv_dashes(events,white,tuning,reference_x_ratio=None):
                     rows[-1]=c
             else:
                 rows.append(c)
+        result.column_blocks=max(result.column_blocks,len(rows))
         if len(rows)<tuning.vv_dash_min_blocks:
             continue
         gaps=sum(b[1]-(a[1]+a[2])>=tuning.vv_dash_min_gap_rows56 for a,b in zip(rows,rows[1:]))
@@ -108,6 +116,7 @@ def detect_vv_dashes(events,white,tuning,reference_x_ratio=None):
         gap=np.polyval(fit,py)-px
         if .035*width<=gap<=.45*width:
             branch.append((px,py))
+    result.branch_blocks=len(branch)
     if len(branch)>=2:
         branch=np.asarray(branch)
         if np.ptp(branch[:,1])>=.10*height and branch[:,1].max()/height>=tuning.vv_dash_entry_near_ratio:
@@ -159,5 +168,5 @@ def track_vv_curve(events,white,tuning,reference):
     guide.route_locked=True
     # Local multi-block evidence only; global black/road thresholds unchanged.
     guide.route_observed=(len(chosen)>=3 and chosen[-1][0]-chosen[0][0]>=.12*height
-                          and chosen[-1][0]>=.72*height)
+                          and chosen[-1][0]>=tuning.vv_dash_entry_near_ratio*height)
     return guide

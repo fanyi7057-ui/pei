@@ -546,6 +546,12 @@ patrol_test:
   # 横道接近/终点冲线最长运动秒数>0，默认12；无有效行程进展则故障等待，不靠超时冒充走够距离。
   crosswalk_task_max_seconds: 12.0
 
+  # V18：仅可信主虚线候选/APPROACH局部生效，不授权入环，不改普通巡线。
+  # 候选丢失后最多保持秒数；暂停立即清除。
+  ring_candidate_hold_seconds: 0.6
+  # 候选/首次岔口通过阶段角速度绝对上限rad/s；左右均可修正。
+  ring_candidate_turn_limit_rad_s: 0.6
+
   # ===== H. 显示与正常姿态：本轮不擅自抬高车身 =====
   # 车载屏幕刷新目标fps，>0；降低减少绘图开销，不降低算法处理频率。相机/控制仍用原30Hz配置。
   display_fps: 10.0
