@@ -18,7 +18,7 @@ def reliable():
 def test_short_pass_defaults_and_no_generic_dash_five_marker():
     r,t=armed()
     assert t.roundabout_first_marker_cooldown_seconds==.5
-    assert t.roundabout_first_marker_pass_distance_m==.30  # V25 user-confirmed entrance pass
+    assert t.roundabout_first_marker_pass_distance_m==.12
     for i in range(20):r.observe(True,1.,i*.03,t,(.3,0.),dash_cue=DashObservation(valid=True,blocks=5))
     assert r.phase=="SEEK" and r.first_marker_at is None
 
@@ -30,12 +30,12 @@ def test_explicit_four_is_direct_entry_not_an_exit_to_ignore():
     assert r.phase=="ENTRY" and not r.course.rings[0]
 
 
-def test_v24_fifteen_cm_is_no_longer_enough_to_pass_five():
+def test_five_pass_is_about_fifteen_cm_not_sixtyfive_cm():
     r,t=armed()
     for i in range(8):r.observe(True,1.,i*.1,t,(.3,0.),(i*.03,0.,0.),dash_cue=cue("converging",t))
     assert .12<=r.distance-r.first_marker_distance<=.21
     r.observe(True,1.,.8,t,(.3,0.),(.24,0.,0.),dash_cue=cue(t=t))
-    assert r.phase=="APPROACH"  # .21m since marker is below the new .73m gate
+    assert r.phase=="ENTRY"
 
 
 @pytest.mark.parametrize("degrees",[54,56,101,164])

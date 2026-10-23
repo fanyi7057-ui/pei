@@ -230,10 +230,8 @@ patrol_test:
   # 有odom按实测位移/当前前进指令折算，避免10Hz里程计被30Hz图像拉长冷却；停车不累计。
   # 接近阶段上限0.30m/s，默认0.5等效运动秒约0.15米；不是普通0.65m/s盲走1秒。
   roundabout_first_marker_cooldown_seconds: 0.5
-  # V25：识别5号出口后，沿主线至少通过0.30米，再允许识别4号入口。
-  # 与下方ring_gyro_exit_seek_distance_m（绕环后找出口）完全不同；这里不强制转向。
-  # 有odom沿用现有行程累计，无odom用命令估计；距离达标仍须当前有效入口分叉。
-  roundabout_first_marker_pass_distance_m: 0.30
+  # 同时至少通过的前进行程m>0；有新鲜odom用实测，无odom沿用命令估计并打印来源。
+  roundabout_first_marker_pass_distance_m: 0.12
   # V17接近/入环/环内/出环的线速度硬上限m/s，普通巡线不受影响。
   # 上限同时约束继承的1.3倍率，默认不再达到0.845m/s。
   roundabout_speed_m_s: 0.30
