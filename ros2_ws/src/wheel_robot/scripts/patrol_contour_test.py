@@ -18,6 +18,8 @@ from patrol_contour_runtime import (
 )
 
 from patrol_dash_entry import DashObservation, RingSearchPredictor, detect_vv_dashes, track_vv_curve
+from patrol_stability import stabilize_masks
+from patrol_preview import FirstPersonPreview
 
 
 class PatrolVision(base.CourseVision):
@@ -120,6 +122,13 @@ class PatrolVision(base.CourseVision):
         guard = cv2.dilate(blue, np.ones((3, 3), np.uint8))
         dark[guard > 0] = 0
         events[guard > 0] = 0
+        self.mask_guard_fallback = False
+        try:
+            dark, events = stabilize_masks(dark, events, hsv, tuning)
+        except (cv2.error, ValueError, TypeError):
+            # Optional guard failure falls back to the current base masks,
+            # not stale image memory. Existing localization safety still runs.
+            self.mask_guard_fallback = True
         gate, self.gate_score = False, 0.
         self.gate_tracked=False
         self.gate_chain_count=0
@@ -383,6 +392,16 @@ class PatrolTestNode(base.WheelLegRaceNode):
         self._capture_fps = self._process_fps = self._display_fps = 0.
         self._last_patrol_log = 0.
         self._patrol_ready = True
+        self.pc_preview = None
+        if os.environ.get('PATROL_PC_PREVIEW','1') == '1':
+            try:
+                port = int(os.environ.get('PATROL_PC_PREVIEW_PORT','8080'))
+                if not 1024 <= port <= 65535:
+                    raise ValueError('preview port must be 1024..65535')
+                self.pc_preview = FirstPersonPreview(self._pc_camera_frame,port)
+                self.get_logger().info(f'电脑第一视角：127.0.0.1:{port}，请用SSH本地端口转发；仅观看，无运动控制')
+            except (OSError,ValueError) as error:
+                self.get_logger().warn(f'电脑预览未启用，巡线继续：{error}')
         from std_msgs.msg import Int16MultiArray
         self.remote_guard=RemoteAuthorityGuard()
         self.create_subscription(Int16MultiArray,"/sbus_channels",self._on_remote_channels,10)
@@ -390,7 +409,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
         self.create_subscription(base.Bool, "/patrol_test_stop", self._on_patrol_stop, 10)
         self.create_subscription(base.Bool, "/patrol_test_reset_course", self._on_patrol_reset_course, 10)
         self.get_logger().warn(
-            f"巡线/环岛/横道V23（普通巡线V11基线，丢线限速，VV单帧4进5出）：普通目标速度={self.patrol_tuning.fixed_speed_m_s:.2f}m/s，环岛上限={self.patrol_tuning.roundabout_speed_m_s:.2f}；"
+            f"巡线/环岛/横道V26（暗蓝排除、短掉帧宽限、电脑第一视角）：普通目标速度={self.patrol_tuning.fixed_speed_m_s:.2f}m/s，环岛上限={self.patrol_tuning.roundabout_speed_m_s:.2f}；"
             f"环岛={self.patrol_tuning.roundabout_enabled}，横道={self.patrol_tuning.crosswalk_enabled}；台阶1/2仅保留位置、测试跳过；两圈环岛/横道完成凭据齐全才冲线，失败/超时不越级。实时文件：{config}"
         )
 
@@ -419,6 +438,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
             # Saving speed/gain/display changes must not throw away a trusted
             # path and manufacture a new dropout. Reset only geometry/masks.
             geometry = ("target_x_ratio", "black_enabled", "contour_enabled", "roi_top_ratio", "roi_bottom_ratio", "blue_h_min", "blue_h_max", "blue_s_min", "blue_v_min", "blue_weak_s_min", "blue_weak_br_delta", "blue_weak_min_area_ratio", "blue_context_radius_ratio", "road_blue_contrast_gray", "white_s_max", "white_v_min", "close_kernel_px", "black_gap_fill_px", "road_max_row_step_ratio", "min_road_area_ratio", "min_observed_rows_ratio", "seed_bottom_ratio", "seed_half_width_ratio", "min_road_width_ratio", "max_repair_gap_rows", "road_near_y_ratio", "road_mid_y_ratio", "road_far_y_ratio", "road_near_gap_ratio")
+            geometry += ('mask_stability_enabled','dark_blue_guard_enabled','dark_blue_s_min','dark_blue_br_min','black_max_run_ratio')
             if posture_changed or any(getattr(old, key) != getattr(updated, key) for key in geometry):
                 self.vision.reset_path()
                 self.patrol_controller.reset_error()
@@ -440,6 +460,19 @@ class PatrolTestNode(base.WheelLegRaceNode):
         self._posture_transition.set_target(base.RacePosture.from_values(
             t.posture_height_m, t.posture_roll_deg, t.posture_pitch_deg, t.posture_slide_m,
         ), time.monotonic())
+
+    def _pc_camera_frame(self):
+        with self._frame_lock:
+            frame = self._latest_frame if self._camera_healthy else None
+            return (frame.copy() if frame is not None else None), self._latest_frame_time
+
+    def close(self):
+        try:
+            super().close()  # motion/camera shutdown precedes optional HTTP cleanup
+        finally:
+            preview = getattr(self,'pc_preview',None)
+            if preview is not None:
+                preview.close()
 
     def _on_step_execute_jump(self, _message):
         # The inherited subscription must never arm the frozen jump controller.
@@ -693,7 +726,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 search_direction=1 if router is not None and router.search_left and tuning.roundabout_enabled else None,
                 search_heading_turn=exit_turn)
             planned_target=min(control_tuning.fixed_speed_m_s,control_tuning.search_degraded_speed_m_s) if self.patrol_controller.degraded else control_tuning.fixed_speed_m_s
-            if self.patrol_controller.loss_started_at is not None and not control_tuning.maintain_cruise_during_search:
+            if self.patrol_controller.loss_started_at is not None and not control_tuning.maintain_cruise_during_search and not self.patrol_controller.grace_active:
                 planned_target=min(planned_target,control_tuning.search_speed_m_s)
         if router is not None and (candidate or router.phase in ("APPROACH","ENTRY","FOLLOW","EXIT")):
             linear=min(linear,tuning.roundabout_speed_m_s)
@@ -734,7 +767,8 @@ class PatrolTestNode(base.WheelLegRaceNode):
             road_path = getattr(self.vision, "road_estimate", PathEstimate(False))
             reason = "_".join(path.reason.split())
             self.get_logger().info(
-                f"PATROL source={self.vision.source} mode={mode} version=23 target={tuning.fixed_speed_m_s:.2f} "
+                f"PATROL source={self.vision.source} mode={mode} version=26 target={tuning.fixed_speed_m_s:.2f} "
+                f"loss_grace={int(self.patrol_controller.grace_active)} mask_guard_fallback={int(getattr(self.vision,'mask_guard_fallback',False))} "
                 f"ring_predict={int(getattr(self.vision,'ring_prediction_used',False))} ring_match={getattr(self.vision,'ring_match_reason','inactive')} "
                 f"ring_delta={getattr(self.vision,'ring_route_delta',0.):.3f} ring_ref_age={getattr(self.vision,'ring_reference_age',-1.):.3f} ring_points={getattr(self.vision,'ring_candidate_points',0)} "
                 f"authority={self._remote_state(done)} "

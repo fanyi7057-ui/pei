@@ -112,12 +112,22 @@ patrol_test:
   # 找线后连续多少个真实新帧才回到正常跟踪，整数1..20；默认3。
   # 确认期间已有新路径可纠方向；单帧重获不清空预算或重置为零。maintain=1仍平滑趋近巡航目标。
   reacquire_confirm_frames: 3
-  # V23默认0：短失线/未确认重获限速到search_speed_m_s，且不超过失线前速度。
+  # V26默认0：短掉帧宽限结束后，失线/未确认重获限速到search_speed_m_s。
   # 1为旧巡航搜索兼容开关，盲区可能继续加速，不建议实车启用；定位保护始终保留。
   # 从未有可信路径时仍不盲起步；不是第二圈速度档位，每圈同一速度。
   maintain_cruise_during_search: 0
   # 无可靠路线/未确认重获的输出上限，m/s；范围(0,0.30]，低速退化0.12优先。
   search_speed_m_s: 0.20
+  # 仅近期可靠跟踪后获短掉帧宽限；时间/指令累计距离任一达限即低速搜索。
+  loss_grace_seconds: 0.12
+  loss_grace_distance_m: 0.08
+  # 暗蓝保护：H76..140，无V亮度下限，同时要求S和B-R有蓝色证据。
+  dark_blue_guard_enabled: 1
+  mask_stability_enabled: 1
+  dark_blue_s_min: 48
+  dark_blue_br_min: 8
+  # 连续宽块行宽上限比例；需连续至少图高12%的行都过宽才过滤，不处理事件图。
+  black_max_run_ratio: 0.18
   # 取帧后允许图像最大年龄，s，>0；计算前后均检查，超时立即停车，不能靠重发旧图一直跑。
   image_timeout_seconds: 0.35
 
@@ -578,15 +588,15 @@ patrol_test:
   ring_prediction_seconds: 0.35
   ring_prediction_max_shift_ratio: 0.10
 
-  # ===== H. 显示与正常姿态：本轮不擅自抬高车身 =====
+  # ===== H. 显示与正常姿态：V26用户指定腿高0.25m、低头28度 =====
   # 车载屏幕刷新目标fps，>0；降低减少绘图开销，不降低算法处理频率。相机/控制仍用原30Hz配置。
   display_fps: 10.0
-  # 正常姿态：沿用原包0.15m/25°；保存后0.5秒平滑过渡，不能超出底盘接口范围。
+  # 正常姿态：0.25m/28度；保存后沿原平滑过渡，不能超出底盘接口范围。
   # 腿高m，0.14..0.36；减小下蹲、增大抬高。
-  posture_height_m: 0.15
+  posture_height_m: 0.25
   # 横滚度，-15..15；正负方向以实车为准，通常保持0。
   posture_roll_deg: 0.0
   # 俯仰度，-35..35；本车正值低头，增大更看近端。
-  posture_pitch_deg: 25.0
+  posture_pitch_deg: 28.0
   # 滑步m，-0.08..0.08；方向以实车为准，通常保持0。
   posture_slide_m: 0.0

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# V23包内入口：普通巡线回V11；保留V12偏航修复与旧二进制检查。
+# V26包内入口：普通巡线回V11；保留V12偏航修复与旧二进制检查。
 set -u
 TWO_TOOLS="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)" || exit 1
 source "$TWO_TOOLS/workspace_env.sh" || exit 1
@@ -9,8 +9,8 @@ export XAUTHORITY=/home/orangepi/.Xauthority
 export QT_X11_NO_MITSHM=1
 
 while true; do
-  printf '\n===== V23 本包机器人菜单（普通巡线V11）=====\n工程：%s\n' "$TWO_ROOT"
-  printf '1. 编译并检查本包环境（未编译偏航修复时必须先选）\n2. 视觉干跑：巡线/环岛/横道，不启动底盘\n3. 原地站立检查（沿用原站立程序）\n4. V23巡线＋环岛＋横道/终点测试（不跳台阶）\n5. 原比赛流程（含原台阶；共享底盘偏航发布修复）\n6. 查看本包环境与设备\n0. 退出\n'
+  printf '\n===== V26 本包机器人菜单（普通巡线V11）=====\n工程：%s\n' "$TWO_ROOT"
+  printf '1. 编译并检查本包环境（未编译偏航修复时必须先选）\n2. 视觉干跑：巡线/环岛/横道，不启动底盘\n3. 原地站立检查（沿用原站立程序）\n4. V26巡线＋环岛＋横道/终点测试（不跳台阶）\n5. 原比赛流程（含原台阶；共享底盘偏航发布修复）\n6. 查看本包环境与设备\n0. 退出\n'
   read -r -p '请选择：' two_option || break
   case "$two_option" in
     1) two_build_workspace ;;
@@ -23,7 +23,7 @@ while true; do
         if [[ "$two_option" == 3 ]]; then
           ros2 launch "$TWO_WS/src/wheel_robot/launch/stand_only.launch.py"
         else
-          printf '原比赛流程不是V23测试；仍使用原比赛参数，共享修复后的IMU发布。启动后在另一个已加载本包环境的终端发送/race_start_confirm；Ctrl+C结束。\n'
+          printf '原比赛流程不是V26测试；仍使用原比赛参数，共享修复后的IMU发布。启动后在另一个已加载本包环境的终端发送/race_start_confirm；Ctrl+C结束。\n'
           ros2 launch "$TWO_WS/src/wheel_robot/launch/icn.launch.py" \
             enable_motion:=true show_debug:=true start_base:=true start_step_support:=true
         fi

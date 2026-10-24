@@ -56,6 +56,13 @@ class PatrolTuning:
     reacquire_confirm_frames: int = 3
     maintain_cruise_during_search: int = 0
     search_speed_m_s: float = 0.20
+    loss_grace_seconds: float = 0.12
+    loss_grace_distance_m: float = 0.08
+    dark_blue_guard_enabled: int = 1
+    mask_stability_enabled: int = 1
+    dark_blue_s_min: int = 48
+    dark_blue_br_min: int = 8
+    black_max_run_ratio: float = 0.18
     image_timeout_seconds: float = 0.35
     roi_top_ratio: float = 0.25
     roi_bottom_ratio: float = 0.98
@@ -85,9 +92,9 @@ class PatrolTuning:
     road_mid_y_ratio: float = 0.60
     road_far_y_ratio: float = 0.38
     display_fps: float = 10.0
-    posture_height_m: float = 0.15
+    posture_height_m: float = 0.25
     posture_roll_deg: float = 0.0
-    posture_pitch_deg: float = 25.0
+    posture_pitch_deg: float = 28.0
     posture_slide_m: float = 0.0
     roundabout_enabled: int = 1
     roundabout_arm_seconds: float = 6.0
@@ -242,9 +249,23 @@ class PatrolTuning:
     ring_prediction_max_shift_ratio: float = 0.10
 
     def validate(self):
+        """Reject the whole invalid snapshot; never silently clip controls."""
+        if not math.isfinite(self.loss_grace_seconds) or not 0 <= self.loss_grace_seconds <= .15:
+            raise ValueError("loss_grace_seconds must be 0..0.15s")
+        if not math.isfinite(self.loss_grace_distance_m) or not 0 < self.loss_grace_distance_m <= .10:
+            raise ValueError("loss_grace_distance_m must be (0,0.10]m")
+        if self.dark_blue_guard_enabled not in (0,1):
+            raise ValueError("dark_blue_guard_enabled must be 0 or 1")
+        if self.mask_stability_enabled not in (0,1):
+            raise ValueError("mask_stability_enabled must be 0 or 1")
+        for name,lo,hi in (("dark_blue_s_min",32,160),("dark_blue_br_min",4,32)):
+            v=getattr(self,name)
+            if not math.isfinite(v) or int(v)!=v or not lo<=v<=hi:
+                raise ValueError(name+" invalid integer range")
+        if not math.isfinite(self.black_max_run_ratio) or not .12<=self.black_max_run_ratio<=.35:
+            raise ValueError("black_max_run_ratio must be 0.12..0.35")
         if not math.isfinite(self.search_speed_m_s) or not 0 < self.search_speed_m_s <= .30:
             raise ValueError("search_speed_m_s必须在(0,0.30]米/秒")
-        """Reject an entire bad save; never silently clip a requested speed."""
         for field in fields(self):
             value = getattr(self, field.name)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -2107,7 +2128,7 @@ class PathSelector:
             estimate, source = road, "road"
         else:
             return PathEstimate(False, reason=f"no_path:black={black.reason};road={road.reason}"), "none"
-        if (source == "black" and self.last_observed_error is not None
+        if ((source == "black" or (source == "road" and estimate.single_edge)) and self.last_observed_error is not None
                 and abs(estimate.error-self.last_observed_error) > tuning.path_jump_error
                 and estimate.error*self.last_observed_error < 0 and not estimate.route_locked):
             self.jump_streak = self.jump_streak+1 if self.jump_candidate is not None and abs(estimate.error-self.jump_candidate) < .20 else 1
@@ -2193,6 +2214,8 @@ class FixedSpeedController:
         self.last_curve_turn = 0.
         self.last_curve_at = -math.inf
         self.search_turn_goal = 0.
+        self.last_reliable_at = None
+        self.grace_active = False
         self.fault_latched = False
         self.fault_reason = ""
         self.degraded = False
@@ -2271,6 +2294,7 @@ class FixedSpeedController:
             return 0., 0., "localization_fault_latched"
         elapsed = max(0., now-self.last_time) if self.last_time is not None else 1/30
         self.degraded=False
+        self.grace_active=False
         dt = min(.1, elapsed)
         recovering = self.loss_started_at is not None
         if recovering:
@@ -2282,6 +2306,8 @@ class FixedSpeedController:
             self.reacquire_streak = self.reacquire_streak+1 if recovering else 0
             confirmed = not recovering or self.reacquire_streak >= tuning.reacquire_confirm_frames
             if confirmed:
+                if not path.rescue and not path.handoff and path.confidence >= tuning.rescue_corner_confidence:
+                    self.last_reliable_at = now
                 self.last_valid_at = now
                 self.loss_started_at, self.loss_distance = None, 0.
                 self.loss_command = None
@@ -2357,7 +2383,19 @@ class FixedSpeedController:
                     return self._fault("distance_limit", now)
         # Loss and unconfirmed reacquisition share a bounded search speed.
         # Do not slew down from cruise while blind: cap the issued value too.
-        search_capped = self.loss_started_at is not None and not tuning.maintain_cruise_during_search
+        grace = (self.loss_started_at is not None and not self.degraded and not tuning.maintain_cruise_during_search
+            and self.last_reliable_at is not None and self.last_reliable_at >= self.loss_started_at-1e-6
+            and self.loss_age(now) < tuning.loss_grace_seconds
+            and self.loss_distance < tuning.loss_grace_distance_m
+            and search_direction is None and search_heading_turn is None)
+        self.grace_active = grace
+        if grace:
+            linear = min(tuning.fixed_speed_m_s, self.loss_command[0])
+            if not path.valid:
+                angular = self.loss_command[1]
+                self.raw_angular = angular
+                mode = "short_loss_bridge"
+        search_capped = self.loss_started_at is not None and not tuning.maintain_cruise_during_search and not grace
         if search_capped:
             linear = min(linear, tuning.search_speed_m_s)
         previous = self.last_command

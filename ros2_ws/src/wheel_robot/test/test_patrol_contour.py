@@ -259,8 +259,8 @@ def test_v12_new_fields_reject_invalid_snapshot(changes):
 
 
 @pytest.mark.parametrize("name,expected",[
-    ("PathSelector","8e5d914aff1fe47fd4039d05214dae936fbf56fd79d36ade94128af131015224"),
-    ("FixedSpeedController","24a087c1b84490cccf79faefe631310a81c5e2bcda34cf0ce966181ba314bd66"),
+    ("PathSelector","48f084f908e8843776ed6343a2accfec411349dbdbc0c70ecb4fe18a62920e6e"),
+    ("FixedSpeedController","6c7922dfaa17a0152e5b796e25140b5405f874e8683d2fdfcd378d8988a39473"),
 ])
 def test_v23_selector_baseline_and_approved_search_controller_snapshot(name,expected):
     import ast
@@ -732,7 +732,7 @@ def test_loss_holds_actual_turn_not_unreached_requested_turn():
 
 
 def test_repeated_invalid_frames_do_not_extend_memory_deadline():
-    controller, tuning = FixedSpeedController(), replace(PatrolTuning(),search_max_seconds=.8,search_degraded_enabled=0)
+    controller, tuning = FixedSpeedController(), replace(PatrolTuning(),search_max_seconds=.8,search_degraded_enabled=0,loss_grace_seconds=0)  # historical hold-mode contract
     for now in np.arange(0, 2.01, .05):
         controller.command(PathEstimate(True, -.1, 1), now, tuning)
     for now in [2.1, 2.2, 2.4, 2.79]:

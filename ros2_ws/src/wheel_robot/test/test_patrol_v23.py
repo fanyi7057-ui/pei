@@ -11,7 +11,7 @@ def test_exit_budget_073():
     assert r.motion_override(now+6.2,t,(.731,0.,0.),PathEstimate(False))[0]==0
 
 def test_blind_speed_is_capped_immediately_and_during_confirmation():
-    t=PatrolTuning();c=FixedSpeedController()
+    t=replace(PatrolTuning(),loss_grace_seconds=0);c=FixedSpeedController()  # V23 immediate-cap contract
     p=PathEstimate(True,-.5,.9,near_error=-.5,source='black')
     for i in range(40): c.command(p,i*.04,t)
     assert c.last_command[0]>.6
