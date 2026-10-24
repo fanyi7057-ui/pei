@@ -1,5 +1,6 @@
 """Source-launched patrol; V12 first requires rebuilding the corrected C++ bridge."""
 from pathlib import Path
+import os
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, EmitEvent, ExecuteProcess, RegisterEventHandler
@@ -26,6 +27,7 @@ def generate_launch_description():
         ],
         output="screen", emulate_tty=True,
         additional_env={
+            "PATROL_PC_X11_DISPLAY": os.environ.get('PATROL_PC_X11_DISPLAY',os.environ.get('DISPLAY','')),
             "DISPLAY": ":0", "XAUTHORITY": "/home/orangepi/.Xauthority",
             "QT_X11_NO_MITSHM": "1", "PYTHONUNBUFFERED": "1",
             "PATROL_TUNING_FILE": str(package / "config" / "patrol_test.yaml"),

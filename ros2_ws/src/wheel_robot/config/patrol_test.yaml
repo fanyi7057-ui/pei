@@ -594,6 +594,16 @@ patrol_test:
   # 正常姿态：0.25m/28度；保存后沿原平滑过渡，不能超出底盘接口范围。
   # 腿高m，0.14..0.36；减小下蹲、增大抬高。
   posture_height_m: 0.25
+  # V27起步0.15m/25度，完成两次独立大弯并稳定跟线后沿原接口平滑切到0.25m/28度。
+  posture_stage_enabled: 1
+  posture_start_height_m: 0.15
+  posture_start_pitch_deg: 25.0
+  # 接近90度的净转角下界（度），还须出弯回正/持续前进，不是单独到角度就计数。
+  posture_turn_target_deg: 80.0
+  posture_turn_center_error: 0.12
+  posture_turn_center_frames: 5
+  posture_turn_min_travel_m: 0.12
+  posture_turn_timeout_seconds: 10.0
   # 横滚度，-15..15；正负方向以实车为准，通常保持0。
   posture_roll_deg: 0.0
   # 俯仰度，-35..35；本车正值低头，增大更看近端。

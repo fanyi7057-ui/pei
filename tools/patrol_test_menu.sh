@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# V26测试子菜单；普通巡线V11，保留偏航C++修复，加载本包。
+# V27测试子菜单；普通巡线V11，保留偏航C++修复，加载本包。
 set -u
 PATROL_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)" || exit 1
 PATROL_WS="$PATROL_ROOT/ros2_ws"
@@ -36,6 +36,11 @@ if ! python3 -c 'import cv2; import numpy; import yaml; from wheel_robot.msg imp
   printf '缺少OpenCV/numpy或原包已生成的ROS消息，未启动测试。\n'
   exit 1
 fi
+# Preserve the forwarded SSH display before selecting the robot HDMI display.
+# OpenCV stays on HDMI; a separate read-only viewer uses this X11 endpoint.
+if [[ "${DISPLAY:-}" == localhost:* || "${DISPLAY:-}" == 127.0.0.1:* ]]; then
+  export PATROL_PC_X11_DISPLAY="$DISPLAY"
+fi
 export DISPLAY=:0
 export XAUTHORITY=/home/orangepi/.Xauthority
 export QT_X11_NO_MITSHM=1
@@ -53,7 +58,7 @@ if [[ "$patrol_nodes" == *"/wheelleg_vision_race"* || "$patrol_nodes" == *"/wl_b
   printf '已有比赛或底盘节点在运行，请先在原终端Ctrl+C退出；禁止两个程序抢/cmd_vel。\n'
   exit 1
 fi
-printf '\n===== V26巡线＋环岛＋横道/终点（普通巡线V11，不执行台阶）=====\n'
+printf '\n===== V27巡线＋环岛＋横道/终点（普通巡线V11，不执行台阶）=====\n'
 case "${1:-}" in
   --dry) patrol_option=1 ;;
   --real) patrol_option=2 ;;
@@ -63,7 +68,7 @@ esac
 case "$patrol_option" in
   1) patrol_motion=false; patrol_base=false ;;
   2)
-    printf 'V26：可靠跟踪短掉帧宽限0.12秒/0.08米，持续丢线搜索上限0.20，确认找回后恢复；腿高0.25m低头28度；电脑第一视角SSH转发127.0.0.1:8080；普通0.65/环岛上限0.30/虚线预引导0.12均不变。5号通过、4号进入；FOLLOW局部虚线重定位及短时预测搜索。360度候选后出口目标0.73米、最多7秒，获取总期限8秒，不冒充完成。SWA按本包固件ROS档后输入1；遥控接管/话题过期零速等待，未完成环岛作废，切回自动仍需1。定位等待不重复站立。两圈横道/终点顺序不变，不跳台阶、不录像。请调零/使能、清场并保留遥控急停。\n'
+    printf 'V27：可靠跟踪短掉帧宽限0.12秒/0.08米，持续丢线搜索上限0.20，确认找回后恢复；起步腿高0.15m低头25度，两弯确认后0.25m/28度；电脑第一视角自动X11弹窗（MobaXterm需启用X11 forwarding）；普通0.65/环岛上限0.30/虚线预引导0.12均不变。5号通过、4号进入；FOLLOW局部虚线重定位及短时预测搜索。360度候选后出口目标0.73米、最多7秒，获取总期限8秒，不冒充完成。SWA按本包固件ROS档后输入1；遥控接管/话题过期零速等待，未完成环岛作废，切回自动仍需1。定位等待不重复站立。两圈横道/终点顺序不变，不跳台阶、不录像。请调零/使能、清场并保留遥控急停。\n'
     read -r -p '确认在安全普通赛道测试：1继续，其他取消：' patrol_confirm
     [[ "$patrol_confirm" == 1 ]] || exit 0
     patrol_motion=true; patrol_base=true ;;

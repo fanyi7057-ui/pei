@@ -93,6 +93,14 @@ class PatrolTuning:
     road_far_y_ratio: float = 0.38
     display_fps: float = 10.0
     posture_height_m: float = 0.25
+    posture_stage_enabled: int = 1
+    posture_start_height_m: float = 0.15
+    posture_start_pitch_deg: float = 25.0
+    posture_turn_target_deg: float = 80.0
+    posture_turn_center_error: float = 0.12
+    posture_turn_center_frames: int = 5
+    posture_turn_min_travel_m: float = 0.12
+    posture_turn_timeout_seconds: float = 10.0
     posture_roll_deg: float = 0.0
     posture_pitch_deg: float = 28.0
     posture_slide_m: float = 0.0
@@ -250,6 +258,15 @@ class PatrolTuning:
 
     def validate(self):
         """Reject the whole invalid snapshot; never silently clip controls."""
+        if self.posture_stage_enabled not in (0,1):
+            raise ValueError('posture_stage_enabled must be 0 or 1')
+        for name,lo,hi in (('posture_start_height_m',.14,.36),('posture_start_pitch_deg',-35,35),
+                ('posture_turn_target_deg',75,100),('posture_turn_center_error',.03,.25),
+                ('posture_turn_min_travel_m',.05,.5),('posture_turn_timeout_seconds',3,20)):
+            if not math.isfinite(getattr(self,name)) or not lo<=getattr(self,name)<=hi:
+                raise ValueError(name+' invalid range')
+        if int(self.posture_turn_center_frames)!=self.posture_turn_center_frames or not 3<=self.posture_turn_center_frames<=20:
+            raise ValueError('posture_turn_center_frames must be integer 3..20')
         if not math.isfinite(self.loss_grace_seconds) or not 0 <= self.loss_grace_seconds <= .15:
             raise ValueError("loss_grace_seconds must be 0..0.15s")
         if not math.isfinite(self.loss_grace_distance_m) or not 0 < self.loss_grace_distance_m <= .10:

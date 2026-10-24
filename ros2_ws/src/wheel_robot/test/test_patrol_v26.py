@@ -131,6 +131,7 @@ def test_requested_posture_reaches_existing_transition_interface(node_module,mon
     from race_posture import RacePosture
     monkeypatch.setattr(node_module.base,'RacePosture',RacePosture,raising=False)
     node,_=make_node(node_module,monkeypatch)
+    node.patrol_tuning=replace(node.patrol_tuning,posture_stage_enabled=0)  # explicit V26 single-posture contract
     targets=[]
     node._posture_transition=SimpleNamespace(set_target=lambda pose,stamp:targets.append(pose))
     node._set_patrol_posture()

@@ -1,3 +1,23 @@
+# V27：两弯后切换姿态，启动即自动电脑第一视角
+
+## 使用：不再手动开终端转发或打开网页
+
+MobaXterm SSH会话需启用X11 forwarding，且本机X server运行（通常默认开启）。这是连接的一次性设置，不是每次另开窗口输入命令。若之前没启用：编辑SSH会话勾选X11 forwarding后重新连接；缺少转发时远程程序无法自行在电脑创建窗口。
+
+仍只运行`bash /home/orangepi/Two_patrol/tools/patrol_test_menu.sh`。程序自动打开电脑第一视角窗口，同时保留车载屏幕。菜单和launch在选择车载DISPLAY=:0前保留SSH转发地址；后台viewer通过转发显示，不额外打开摄像头、无需SSH端口隧道/浏览器。窗口是只读，按Q/关闭只退出观看，不停车，急停用原遥控/终端。转发失败会警告但不影响控制；HTTP预览仍作为可选后备，下面V26手动网页步骤不再是默认操作。
+
+## 分阶段姿态
+
+`posture_stage_enabled: 1`：从起步到第二弯完成使用`posture_start_height_m: 0.15`和`posture_start_pitch_deg: 25.0`。确认两次独立大弯、出弯连续稳定跟线后，沿原RacePostureTransition切换至`posture_height_m: 0.25`、`posture_pitch_deg: 28.0`。不修改巡线速度或环岛/横道许可，第二圈保持后段姿态。设stage=0则直接用后段姿态（V26行为）。
+
+借鉴E:/wheel_robot.pei的航向记录，但不搬其0.95rad(54.4度)就计数逻辑。新计数使用新鲜、同一来源的实测航向净变化（支持跨±180），约90度下界`posture_turn_target_deg: 80`，还需前进行程`posture_turn_min_travel_m: 0.12`、低转速且黑线/道路可靠居中`posture_turn_center_error: 0.12`持续`posture_turn_center_frames: 5`个新航向样本。未回正不计数、超过130度拒绝宽转/自旋、单弯超时`posture_turn_timeout_seconds: 10`丢弃；小幅左右摆动不累计绝对转角。运动有odom用现有实测行程，缺odom仅为指令估计；不是绝对证明位移。
+
+仅首圈普通SEEK/APPROACH阶段记录，最多2次；停止、遥控、航向过期/跳变/来源变化丢弃未完成弯，保留已完成数。按2暂停保留姿态阶段，按3重置全部计数并恢复起始姿态，仍须1开始。参数修改不混用旧门槛证据。姿态切换清理视觉几何缓存，不清除环岛/横道完成凭据。
+
+日志：`posture_turns=0/2`、`posture_turn_deg`、`posture_reason`；每个弯完成打印POSTURE_TURN和净角度，第二次打印POSTURE_SWITCH。航向不可靠则保持起始姿态，不用时间假装完成两弯。高度和角度变化会改视野，先干跑、后实车观察转弯计数及切换时是否短暂丢线；未实测X11电脑弹窗和底盘，不能承诺流畅/完赛。
+
+复制时必须包含新增patrol_turn_posture.py、patrol_pc_viewer.py，以及更新的launch/patrol_test.launch.py和两个菜单。按原校验/菜单指令运行，确认V27，源码启动无需重编译C++。以下V26和更早均为历史说明。
+
 # V26：视觉稳定、短掉帧宽限、电脑第一视角、姿态0.25米/28度
 
 基于完整V23，不沿用V24/V25入环距离试验。入口前通过距离仍0.12米；出口寻找仍0.73米/7秒/8秒。本次不调普通0.65、环岛上限0.30、内环/横道任务参数。
