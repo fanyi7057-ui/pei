@@ -193,7 +193,7 @@ def test_ordinary_algorithms_and_numeric_speed_defaults_unchanged():
     text=(scripts/"patrol_contour_runtime.py").read_text(encoding="utf-8-sig")
     tree=ast.parse(text)
     for name,digest in (("PathSelector","48f084f908e8843776ed6343a2accfec411349dbdbc0c70ecb4fe18a62920e6e"),
-                        ("FixedSpeedController","6c7922dfaa17a0152e5b796e25140b5405f874e8683d2fdfcd378d8988a39473")):
+                        ("FixedSpeedController","222f4b17a4d673df0a46bb0d5e14c7838a58a0c7efa4551c76ad2f9b93f556b6")):
         item=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name==name)
         assert hashlib.sha256(ast.get_source_segment(text,item).strip().encode()).hexdigest()==digest
     t=PatrolTuning();c=FixedSpeedController()

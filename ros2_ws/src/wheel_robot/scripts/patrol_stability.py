@@ -14,6 +14,8 @@ def stabilize_masks(dark, events, hsv, tuning):
                 & (bgr[:,:,0]-bgr[:,:,2] >= tuning.dark_blue_br_min))
         dark[blue] = 0
         events[blue] = 0
+    if not tuning.black_wide_guard_enabled:
+        return dark, events
     width = dark.shape[1]
     wide = []
     for y in range(int(dark.shape[0]*tuning.roi_top_ratio),dark.shape[0]):

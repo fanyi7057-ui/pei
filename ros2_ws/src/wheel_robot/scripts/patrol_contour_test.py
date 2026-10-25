@@ -125,6 +125,11 @@ class PatrolVision(base.CourseVision):
         guard = cv2.dilate(blue, np.ones((3, 3), np.uint8))
         dark[guard > 0] = 0
         events[guard > 0] = 0
+        base_preview=dark.copy() if draw else None
+        top,bottom=int(height*tuning.roi_top_ratio),int(height*tuning.roi_bottom_ratio)
+        roi=dark[top:bottom]
+        base_pixels=int(np.count_nonzero(roi))
+        self.mask_base_fill=base_pixels/max(1,roi.size)
         self.mask_guard_fallback = False
         try:
             dark, events = stabilize_masks(dark, events, hsv, tuning)
@@ -132,6 +137,9 @@ class PatrolVision(base.CourseVision):
             # Optional guard failure falls back to the current base masks,
             # not stale image memory. Existing localization safety still runs.
             self.mask_guard_fallback = True
+        filtered_pixels=int(np.count_nonzero(dark[top:bottom]))
+        self.mask_filtered_fill=filtered_pixels/max(1,roi.size)
+        self.mask_removed_ratio=max(0,base_pixels-filtered_pixels)/max(1,base_pixels)
         gate, self.gate_score = False, 0.
         self.gate_tracked=False
         self.gate_chain_count=0
@@ -350,6 +358,14 @@ class PatrolVision(base.CourseVision):
                                                        chosen.points[order, 1], chosen.points[order, 0]) / width, 0, 1))
         if draw:
             debug = work.copy()
+            if base_preview is not None:
+                bw,bh=width//3,height//3
+                filtered=cv2.resize(dark,(bw,bh),interpolation=cv2.INTER_NEAREST)
+                debug[height-bh:height,0:bw]=cv2.cvtColor(filtered,cv2.COLOR_GRAY2BGR)
+                cv2.putText(debug,'FILTER',(0,height-bh+12),cv2.FONT_HERSHEY_SIMPLEX,.3,(0,180,255),1)
+                small=cv2.resize(base_preview,(bw,bh),interpolation=cv2.INTER_NEAREST)
+                debug[height-bh:height,width-2*bw:width-bw]=cv2.cvtColor(small,cv2.COLOR_GRAY2BGR)
+                cv2.putText(debug,'BASE',(width-2*bw,height-bh+12),cv2.FONT_HERSHEY_SIMPLEX,.3,(0,180,255),1)
             if chosen.exit_boundary is not None and len(chosen.exit_boundary)>1:
                 cv2.polylines(debug,[np.rint(chosen.exit_boundary).astype(np.int32)],False,(255,0,255),2)
             if chosen.points is not None and len(chosen.points) > 1:
@@ -427,7 +443,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
         self.create_subscription(base.Bool, "/patrol_test_stop", self._on_patrol_stop, 10)
         self.create_subscription(base.Bool, "/patrol_test_reset_course", self._on_patrol_reset_course, 10)
         self.get_logger().warn(
-            f"巡线/环岛/横道V27（两弯后姿态切换、自动电脑第一视角）：普通目标速度={self.patrol_tuning.fixed_speed_m_s:.2f}m/s，环岛上限={self.patrol_tuning.roundabout_speed_m_s:.2f}；"
+            f"巡线/环岛/横道V28（温和丢线搜索、方向防闪、宽块过滤对照关闭）：普通目标速度={self.patrol_tuning.fixed_speed_m_s:.2f}m/s，环岛上限={self.patrol_tuning.roundabout_speed_m_s:.2f}；"
             f"环岛={self.patrol_tuning.roundabout_enabled}，横道={self.patrol_tuning.crosswalk_enabled}；台阶1/2仅保留位置、测试跳过；两圈环岛/横道完成凭据齐全才冲线，失败/超时不越级。实时文件：{config}"
         )
 
@@ -467,7 +483,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
             # Saving speed/gain/display changes must not throw away a trusted
             # path and manufacture a new dropout. Reset only geometry/masks.
             geometry = ("target_x_ratio", "black_enabled", "contour_enabled", "roi_top_ratio", "roi_bottom_ratio", "blue_h_min", "blue_h_max", "blue_s_min", "blue_v_min", "blue_weak_s_min", "blue_weak_br_delta", "blue_weak_min_area_ratio", "blue_context_radius_ratio", "road_blue_contrast_gray", "white_s_max", "white_v_min", "close_kernel_px", "black_gap_fill_px", "road_max_row_step_ratio", "min_road_area_ratio", "min_observed_rows_ratio", "seed_bottom_ratio", "seed_half_width_ratio", "min_road_width_ratio", "max_repair_gap_rows", "road_near_y_ratio", "road_mid_y_ratio", "road_far_y_ratio", "road_near_gap_ratio")
-            geometry += ('mask_stability_enabled','dark_blue_guard_enabled','dark_blue_s_min','dark_blue_br_min','black_max_run_ratio')
+            geometry += ('mask_stability_enabled','dark_blue_guard_enabled','dark_blue_s_min','dark_blue_br_min','black_max_run_ratio','black_wide_guard_enabled')
             if posture_changed or any(getattr(old, key) != getattr(updated, key) for key in geometry):
                 self.vision.reset_path()
                 self.patrol_controller.reset_error()
@@ -836,10 +852,11 @@ class PatrolTestNode(base.WheelLegRaceNode):
             road_path = getattr(self.vision, "road_estimate", PathEstimate(False))
             reason = "_".join(path.reason.split())
             self.get_logger().info(
-                f"PATROL source={self.vision.source} mode={mode} version=27 target={tuning.fixed_speed_m_s:.2f} "
+                f"PATROL source={self.vision.source} mode={mode} version=28 target={tuning.fixed_speed_m_s:.2f} "
                 f"posture_turns={getattr(getattr(self,'turn_posture',None),'count',0)}/2 "
                 f"posture_turn_deg={math.degrees(getattr(getattr(self,'turn_posture',None),'turn',0.)):+.1f} posture_reason={getattr(getattr(self,'turn_posture',None),'reason','none')} "
                 f"loss_grace={int(self.patrol_controller.grace_active)} mask_guard_fallback={int(getattr(self.vision,'mask_guard_fallback',False))} "
+                f"mask_base_fill={getattr(self.vision,'mask_base_fill',0.):.3f} mask_filtered_fill={getattr(self.vision,'mask_filtered_fill',0.):.3f} mask_removed={getattr(self.vision,'mask_removed_ratio',0.):.3f} wide_guard={tuning.black_wide_guard_enabled} "
                 f"ring_predict={int(getattr(self.vision,'ring_prediction_used',False))} ring_match={getattr(self.vision,'ring_match_reason','inactive')} "
                 f"ring_delta={getattr(self.vision,'ring_route_delta',0.):.3f} ring_ref_age={getattr(self.vision,'ring_reference_age',-1.):.3f} ring_points={getattr(self.vision,'ring_candidate_points',0)} "
                 f"authority={self._remote_state(done)} "

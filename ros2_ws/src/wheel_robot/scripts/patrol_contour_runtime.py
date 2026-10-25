@@ -56,10 +56,12 @@ class PatrolTuning:
     reacquire_confirm_frames: int = 3
     maintain_cruise_during_search: int = 0
     search_speed_m_s: float = 0.20
+    search_max_turn_rad_s: float = 0.60
     loss_grace_seconds: float = 0.12
     loss_grace_distance_m: float = 0.08
     dark_blue_guard_enabled: int = 1
     mask_stability_enabled: int = 1
+    black_wide_guard_enabled: int = 0
     dark_blue_s_min: int = 48
     dark_blue_br_min: int = 8
     black_max_run_ratio: float = 0.18
@@ -275,6 +277,10 @@ class PatrolTuning:
             raise ValueError("dark_blue_guard_enabled must be 0 or 1")
         if self.mask_stability_enabled not in (0,1):
             raise ValueError("mask_stability_enabled must be 0 or 1")
+        if self.black_wide_guard_enabled not in (0,1):
+            raise ValueError('black_wide_guard_enabled must be 0 or 1')
+        if not math.isfinite(self.search_max_turn_rad_s) or not .1<=self.search_max_turn_rad_s<=2.:
+            raise ValueError('search_max_turn_rad_s must be 0.1..2.0')
         for name,lo,hi in (("dark_blue_s_min",32,160),("dark_blue_br_min",4,32)):
             v=getattr(self,name)
             if not math.isfinite(v) or int(v)!=v or not lo<=v<=hi:
@@ -2231,6 +2237,8 @@ class FixedSpeedController:
         self.last_curve_turn = 0.
         self.last_curve_at = -math.inf
         self.search_turn_goal = 0.
+        self.turn_memory_hits = 0
+        self.turn_memory_sign = 0
         self.last_reliable_at = None
         self.grace_active = False
         self.fault_latched = False
@@ -2296,6 +2304,8 @@ class FixedSpeedController:
         self.last_valid_at=now
         self.loss_started_at,self.loss_distance,self.loss_command=None,0.,None
         self.reacquire_streak=0
+        self.turn_memory_hits=0
+        self.turn_memory_sign=0
         self.last_good_turn=angular
         self.last_curve_at=-math.inf
         self.raw_angular=angular
@@ -2314,6 +2324,8 @@ class FixedSpeedController:
         self.grace_active=False
         dt = min(.1, elapsed)
         recovering = self.loss_started_at is not None
+        unconfirmed_recovery = False
+        pending_opposite = False
         if recovering:
             # Count real issued travel and elapsed time, including brief valid
             # flickers. A single line flash cannot renew either budget.
@@ -2333,18 +2345,31 @@ class FixedSpeedController:
                 mode = "reacquire_confirm"
                 linear = tuning.fixed_speed_m_s if tuning.maintain_cruise_during_search else min(self.loss_command[0], tuning.search_speed_m_s, tuning.fixed_speed_m_s)
             angular = self._steer(path, now, tuning, elapsed, recovering)
-            # A real new observation may correct the search DIRECTION at
-            # once; only confirmed consecutive observations renew budgets.
-            self.last_good_turn = angular
-            if abs(path.error) >= tuning.corner_start_error or path.rescue:
-                self.last_curve_turn, self.last_curve_at = angular, now
+            reliable = not path.rescue and not path.handoff and path.confidence >= tuning.rescue_corner_confidence
+            sign=1 if angular>.05 else -1 if angular<-.05 else 0
+            agrees=sign==self.turn_memory_sign
+            self.turn_memory_hits=(self.turn_memory_hits+1 if agrees else 1) if reliable else 0
+            self.turn_memory_sign=sign if reliable else 0
+            if reliable and confirmed and self.turn_memory_hits>=tuning.reacquire_confirm_frames:
+                self.last_good_turn = angular
+                if abs(path.error) >= tuning.corner_start_error:
+                    self.last_curve_turn, self.last_curve_at = angular, now
                 if recovering:
                     self.search_turn_goal = angular
+            unconfirmed_recovery = recovering and not confirmed
+            if unconfirmed_recovery:
+                goal=self.search_turn_goal
+                sign=math.copysign(1.,goal) if abs(goal)>.05 else tuning.search_default_direction
+                pending_opposite=angular*sign<0
+                if pending_opposite:
+                    angular=0.  # do not follow a one-frame opposite-side flash
         elif self.last_valid_at is None:
             self.last_time, self.last_command = now, (0., 0.)
             return 0., 0., "waiting_for_path"
         else:
             self.reacquire_streak = 0
+            self.turn_memory_hits = 0
+            self.turn_memory_sign = 0
             if not recovering:
                 self.loss_started_at = self.last_valid_at
                 self.loss_distance = abs(self.last_command[0])*elapsed
@@ -2412,6 +2437,11 @@ class FixedSpeedController:
                 angular = self.loss_command[1]
                 self.raw_angular = angular
                 mode = "short_loss_bridge"
+        bounded_turn = unconfirmed_recovery or (not path.valid and not grace and search_heading_turn is None)
+        turn_limit = min(tuning.max_turn_rad_s,tuning.search_max_turn_rad_s)
+        if bounded_turn:
+            angular=float(np.clip(angular,-turn_limit,turn_limit))
+            self.raw_angular=angular
         search_capped = self.loss_started_at is not None and not tuning.maintain_cruise_during_search and not grace
         if search_capped:
             linear = min(linear, tuning.search_speed_m_s)
@@ -2440,5 +2470,9 @@ class FixedSpeedController:
         else:
             angular = self._approach(previous[1], angular, rate*dt)
         angular = float(np.clip(angular, -tuning.max_turn_rad_s, tuning.max_turn_rad_s))
+        if bounded_turn:
+            angular=float(np.clip(angular,-turn_limit,turn_limit))  # no inherited high-turn slew leakage
+        if pending_opposite:
+            angular=0.
         self.last_time, self.last_command = now, (linear, angular)
         return linear, angular, mode

@@ -118,12 +118,16 @@ patrol_test:
   maintain_cruise_during_search: 0
   # 无可靠路线/未确认重获的输出上限，m/s；范围(0,0.30]，低速退化0.12优先。
   search_speed_m_s: 0.20
+  # V28仅限制丢线/未确认重获的实际输出角速度；可靠正常巡线和任务转向不改。
+  search_max_turn_rad_s: 0.60
   # 仅近期可靠跟踪后获短掉帧宽限；时间/指令累计距离任一达限即低速搜索。
   loss_grace_seconds: 0.12
   loss_grace_distance_m: 0.08
   # 暗蓝保护：H76..140，无V亮度下限，同时要求S和B-R有蓝色证据。
   dark_blue_guard_enabled: 1
   mask_stability_enabled: 1
+  # V28低姿态对照：默认关闭新增宽块剔除，保留暗蓝保护；1可重新启用对照。
+  black_wide_guard_enabled: 0
   dark_blue_s_min: 48
   dark_blue_br_min: 8
   # 连续宽块行宽上限比例；需连续至少图高12%的行都过宽才过滤，不处理事件图。

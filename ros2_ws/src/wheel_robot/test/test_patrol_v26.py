@@ -30,7 +30,7 @@ def test_dark_blue_removed_without_removing_neutral_black():
 def test_wide_black_blob_not_tracking_target_but_zebra_event_retained():
     mask=np.zeros((120,160),np.uint8);mask[40:90,20:140]=255
     hsv=np.zeros((120,160,3),np.uint8)
-    a,e=stabilize_masks(mask,mask,hsv,PatrolTuning())
+    a,e=stabilize_masks(mask,mask,hsv,replace(PatrolTuning(),black_wide_guard_enabled=1))  # explicit V26 filter
     assert not a.any() and np.array_equal(e,mask)
 
 def test_neutral_curved_thin_and_dashed_lines_survive():
