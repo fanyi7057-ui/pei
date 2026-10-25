@@ -259,8 +259,8 @@ def test_v12_new_fields_reject_invalid_snapshot(changes):
 
 
 @pytest.mark.parametrize("name,expected",[
-    ("PathSelector","48f084f908e8843776ed6343a2accfec411349dbdbc0c70ecb4fe18a62920e6e"),
-    ("FixedSpeedController","222f4b17a4d673df0a46bb0d5e14c7838a58a0c7efa4551c76ad2f9b93f556b6"),
+    ("PathSelector","8e5d914aff1fe47fd4039d05214dae936fbf56fd79d36ade94128af131015224"),
+    ("FixedSpeedController","cbe3c92ba09de97deb9b2d044abc591baf5beb109808a8437e45cb80cb34af80"),
 ])
 def test_v23_selector_baseline_and_approved_search_controller_snapshot(name,expected):
     import ast
@@ -460,7 +460,7 @@ def test_visible_path_always_same_speed_even_with_large_turn(angle):
 
 
 def test_short_loss_keeps_issued_speed_then_final_timeout_stops():
-    controller, tuning = FixedSpeedController(), replace(PatrolTuning(),search_degraded_enabled=0,maintain_cruise_during_search=1)
+    controller, tuning = FixedSpeedController(), replace(PatrolTuning(),search_degraded_enabled=0,maintain_cruise_during_search=1,search_slow_after_seconds=0)
     for now in np.arange(0, 2.01, .05):
         controller.command(PathEstimate(True, -.1, .9), now, tuning)
     v1, w1, mode = controller.command(PathEstimate(False), 2.1, tuning)
@@ -712,7 +712,7 @@ def test_sparse_and_dense_equivalent_paths_have_same_row_weighting():
 
 
 def test_many_single_frame_dropouts_never_chop_or_restart_speed():
-    controller, tuning = FixedSpeedController(), replace(PatrolTuning(),reacquire_confirm_frames=1,maintain_cruise_during_search=1)
+    controller, tuning = FixedSpeedController(), replace(PatrolTuning(),reacquire_confirm_frames=1,maintain_cruise_during_search=1,search_slow_after_seconds=0)
     for now in np.arange(0, 2., .02):
         controller.command(PathEstimate(True, -.1, 1), now, tuning)
     for index, now in enumerate(np.arange(2., 5., .02)):
@@ -728,11 +728,12 @@ def test_loss_holds_actual_turn_not_unreached_requested_turn():
     before = controller.command(PathEstimate(True, -1, 1), 1.05, tuning)
     lost = controller.command(PathEstimate(False), 1.10, tuning)
     assert before[1] < tuning.max_turn_rad_s
-    assert lost[:2] == pytest.approx(before[:2])  # no blind acceleration, either
+    assert lost[0] == pytest.approx(before[0])
+    assert lost[1] == pytest.approx(min(before[1],tuning.search_max_turn_rad_s))  # V29 caps inherited turn
 
 
 def test_repeated_invalid_frames_do_not_extend_memory_deadline():
-    controller, tuning = FixedSpeedController(), replace(PatrolTuning(),search_max_seconds=.8,search_degraded_enabled=0,loss_grace_seconds=0)  # historical hold-mode contract
+    controller, tuning = FixedSpeedController(), replace(PatrolTuning(),search_max_seconds=.8,search_degraded_enabled=0,search_slow_after_seconds=0)
     for now in np.arange(0, 2.01, .05):
         controller.command(PathEstimate(True, -.1, 1), now, tuning)
     for now in [2.1, 2.2, 2.4, 2.79]:
@@ -1032,6 +1033,7 @@ def test_road_observations_cannot_renew_expired_black_template(monkeypatch):
 
 def cruise_controller(error=-.5, **changes):
     changes.setdefault('maintain_cruise_during_search', 1)  # explicit historical cruise-search contract
+    changes.setdefault('search_slow_after_seconds', 0.)  # explicitly exercise the historical cruise-search budget
     controller, tuning = FixedSpeedController(), replace(PatrolTuning(), **changes)
     for now in np.arange(0, 2.01, 1/30):
         controller.command(PathEstimate(True,error,1,source="black"),now,tuning)
@@ -1744,7 +1746,7 @@ def test_v6_task_heading_ignores_zebra_lines_with_same_cruise_target():
 
 def test_v6_search_can_reach_cruise_not_freeze_low_start_speed():
     c=FixedSpeedController()
-    t=replace(PatrolTuning(),maintain_cruise_during_search=1)  # legacy opt-in
+    t=replace(PatrolTuning(),maintain_cruise_during_search=1,search_slow_after_seconds=0)  # explicit legacy opt-in
     c.command(PathEstimate(True,-.1,.9,source="black"),0.,t)
     for now in np.arange(.03,1.2,.03):
         v,_,_=c.command(PathEstimate(False),now,t)
@@ -2446,7 +2448,7 @@ def test_v10_follow_search_uses_left_not_stale_right_command(node_module,monkeyp
     node.patrol_controller.last_good_turn=-.8
     node._run_control_cycle()
     assert node.patrol_controller.raw_angular>0
-    assert commands[-1][0]==.20  # V23 blind-search cap
+    assert commands[-1][0]==.30  # V29 short gap keeps ring-capped speed, not ordinary .65
     assert not node.patrol_controller.fault_latched
 
 

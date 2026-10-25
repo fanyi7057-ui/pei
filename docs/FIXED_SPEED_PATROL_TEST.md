@@ -1,52 +1,24 @@
-# V27：两弯后切换姿态，启动即自动电脑第一视角
+# V29：回到V23基础，撤回叠加实验，仅保留必要稳定性修复
 
-## 使用：不再手动开终端转发或打开网页
+用户明确要求回到之前指定的V23，并直接分析取舍。当前不是V23逐字原样，而是V23巡线/视觉/任务基础加最小失线修复和只读自动第一视角。未完成V28已保存在本地debug/2026-10-25-V28未完成试验留档-01（c3ccc27），既有V26/V27历史不丢失；本目录移除实验模块和相应测试/说明文件，历史分支可恢复。
 
-MobaXterm SSH会话需启用X11 forwarding，且本机X server运行（通常默认开启）。这是连接的一次性设置，不是每次另开窗口输入命令。若之前没启用：编辑SSH会话勾选X11 forwarding后重新连接；缺少转发时远程程序无法自行在电脑创建窗口。
+## 保留与撤回
 
-仍只运行`bash /home/orangepi/Two_patrol/tools/patrol_test_menu.sh`。程序自动打开电脑第一视角窗口，同时保留车载屏幕。菜单和launch在选择车载DISPLAY=:0前保留SSH转发地址；后台viewer通过转发显示，不额外打开摄像头、无需SSH端口隧道/浏览器。窗口是只读，按Q/关闭只退出观看，不停车，急停用原遥控/终端。转发失败会警告但不影响控制；HTTP预览仍作为可选后备，下面V26手动网页步骤不再是默认操作。
+- 恢复V23原图像预处理、黑线提取、ROI、PathSelector、环岛状态机及原有PID/转向公式。删除patrol_stability.py的暗蓝补充/宽块剔除、patrol_turn_posture.py及额外门槛；不再引入多套姿态/宽限状态。
+- 固定姿态posture_height_m=0.15、posture_pitch_deg=25，无按两弯/时间自动升腿；时间抬腿仍仅待办，不启用。普通目标0.65、环岛上限0.30不变。
+- V23的即时0.20限速可能让单帧掉线造成顿挫；现在maintain_cruise_during_search=1且search_slow_after_seconds=0.20：短掉帧保持已发速度/转向、不加速；持续丢线或重获不足3帧时，原同一搜索预算继续累计，到0.20秒后限速0.20，实际搜索转向上限search_max_turn_rad_s=0.60。平滑后再次夹紧，避免继承2rad/s残留。定位硬预算/相机/遥控保护保留。不保证身体能瞬时物理减速。
+- 没连续确认找回时不改写搜索方向记忆；可靠正常巡线转向上限仍原max_turn_rad_s=2.0，任务单独转向和实测出环航向控制不被普通搜索夹紧。
+- 保留同一采集源的后台只读FPV、自动X11电脑窗口；无需手动新终端/网页。MobaXterm须一次性启用X11 forwarding并运行X server，无转发会警告但不影响控制。关闭观看窗口不是急停。
 
-## 分阶段姿态
+## 入口距离不再混用
 
-`posture_stage_enabled: 1`：从起步到第二弯完成使用`posture_start_height_m: 0.15`和`posture_start_pitch_deg: 25.0`。确认两次独立大弯、出弯连续稳定跟线后，沿原RacePostureTransition切换至`posture_height_m: 0.25`、`posture_pitch_deg: 28.0`。不修改巡线速度或环岛/横道许可，第二圈保持后段姿态。设stage=0则直接用后段姿态（V26行为）。
+入口roundabout_first_marker_pass_distance_m恢复V23基准0.12米、运动冷却0.5秒；只有5号标记后APPROACH才使用，不影响之前SEEK普通巡线。出环ring_gyro_exit_seek_distance_m仍独立0.73米/7秒寻找/8秒获取。新增回归对照0.12/0.30/0.73入口参数，普通巡线输出应完全一样。没有依据“增大入口距离”去更改普通速度/姿态/掩模。
 
-借鉴E:/wheel_robot.pei的航向记录，但不搬其0.95rad(54.4度)就计数逻辑。新计数使用新鲜、同一来源的实测航向净变化（支持跨±180），约90度下界`posture_turn_target_deg: 80`，还需前进行程`posture_turn_min_travel_m: 0.12`、低转速且黑线/道路可靠居中`posture_turn_center_error: 0.12`持续`posture_turn_center_frames: 5`个新航向样本。未回正不计数、超过130度拒绝宽转/自旋、单弯超时`posture_turn_timeout_seconds: 10`丢弃；小幅左右摆动不累计绝对转角。运动有odom用现有实测行程，缺odom仅为指令估计；不是绝对证明位移。
+## 测试和部署
 
-仅首圈普通SEEK/APPROACH阶段记录，最多2次；停止、遥控、航向过期/跳变/来源变化丢弃未完成弯，保留已完成数。按2暂停保留姿态阶段，按3重置全部计数并恢复起始姿态，仍须1开始。参数修改不混用旧门槛证据。姿态切换清理视觉几何缓存，不清除环岛/横道完成凭据。
+停止旧程序后复制E:/Two更新内容至/home/orangepi/Two_patrol，运行`sha256sum -c checksums/PATROL_TEST_ADDITIONS_SHA256SUMS.txt && bash tools/patrol_test_menu.sh`，确认V29，先1干跑后2实车。无需重编译C++。保留patrol_preview.py和patrol_pc_viewer.py，并更新launch/patrol_test.launch.py及两个菜单；未使用的旧实验.py即使留在Pi也不导入，可先不手动删除。
 
-日志：`posture_turns=0/2`、`posture_turn_deg`、`posture_reason`；每个弯完成打印POSTURE_TURN和净角度，第二次打印POSTURE_SWITCH。航向不可靠则保持起始姿态，不用时间假装完成两弯。高度和角度变化会改视野，先干跑、后实车观察转弯计数及切换时是否短暂丢线；未实测X11电脑弹窗和底盘，不能承诺流畅/完赛。
-
-复制时必须包含新增patrol_turn_posture.py、patrol_pc_viewer.py，以及更新的launch/patrol_test.launch.py和两个菜单。按原校验/菜单指令运行，确认V27，源码启动无需重编译C++。以下V26和更早均为历史说明。
-
-# V26：视觉稳定、短掉帧宽限、电脑第一视角、姿态0.25米/28度
-
-基于完整V23，不沿用V24/V25入环距离试验。入口前通过距离仍0.12米；出口寻找仍0.73米/7秒/8秒。本次不调普通0.65、环岛上限0.30、内环/横道任务参数。
-
-## 视觉与流畅度
-
-- 当前帧暗蓝色保护：H在76..140、S至少48、B-R至少8，不设亮度下限；不会仅因低亮度或高饱和就删除黑胶带。无跨帧二值图叠加。
-- 普通黑线图仅过滤宽度超过图宽0.18、且连续至少图高12%行都很宽的大块区域；保留短暂近水平急弯。横道/虚线事件图不应用宽度过滤，只排除明确蓝色证据。
-- 黑线已有跳变防抖保留，扩展到单边轮廓突然换侧；锁定环内路线不套普通跳变判断。
-- 当前可靠路线刚丢失时，最多0.12秒且指令累计行程小于0.08米，保持不高于丢失前速度及已发转向，不盲加速/加转。任一到限进入原0.20低速搜索；弱路线、补救/交接路线、明确环岛找线不获此宽限。时间/距离保护预算不被宽限刷新；相机超时和遥控保护优先。
-- `mask_stability_enabled: 0`关闭新增掩模处理；`loss_grace_seconds: 0`关闭宽限。保存后按原实时参数机制应用。新掩模处理异常回退当前基础掩模，日志`mask_guard_fallback=1`；不伪造路径。
-
-## 电脑第一视角（原始摄像头，不含算法叠加）
-
-车载屏幕保留，电脑预览复用唯一采集源；后台JPEG编码上限8fps、宽640、质量70，只绑定小车127.0.0.1:8080。无人观看不编码；网络线程不能发布速度。页面标注LIVE/STALE/DISCONNECTED；仅供观察，不是急停通道。
-
-1. 在MobaXterm启动小车测试程序，看到V26和电脑预览提示。
-2. 电脑另开PowerShell，替换下方`小车IP`：`ssh -N -L 8080:127.0.0.1:8080 orangepi@小车IP`。输入密码后保持窗口打开，无输出是正常现象。
-3. 电脑浏览器打开 `http://127.0.0.1:8080/`。
-
-也可使用MobaXterm的Tunneling：New SSH tunnel / Local port forwarding，本地8080，远端127.0.0.1:8080，SSH服务器填小车IP、用户orangepi、端口22；启动隧道后访问同一网页。不要同时启动两个占用本地8080的隧道。
-
-小车8080被占用：启动前`export PATROL_PC_PREVIEW_PORT=8081`，电脑隧道对应`ssh -N -L 8080:127.0.0.1:8081 orangepi@小车IP`。关闭电脑预览：启动前`export PATROL_PC_PREVIEW=0`；恢复为1。端口和启用开关需重启程序。端口失败只警告，不中断巡线。
-
-## 姿态与部署
-
-YAML `posture_height_m: 0.25`、`posture_pitch_deg: 28.0`，单位米/度，正俯仰低头，沿原姿态平滑与站立使能流程。0.15升到0.25会显著改变相机地面视野；务必先干跑确认近远ROI、虚线和横道，再低风险实测，不保证完赛。
-
-将E:/Two更新内容复制到/home/orangepi/Two_patrol，执行`sha256sum -c checksums/PATROL_TEST_ADDITIONS_SHA256SUMS.txt && bash tools/patrol_test_menu.sh`；先1干跑后2实车。新增patrol_stability.py和patrol_preview.py必须一起复制；当前源码启动方式无需重编译C++。下文为历史V23记录。
+重点实测：初始黑线是否稳定、单帧掉线是否顿挫、持续掉线0.20秒是否降速/转向温和、重获与左右弯、S弯、环岛/横道顺序、遥控与相机超时。盲走宽限最多约0.13米(0.65*0.20)，仍有冲出风险；较小搜索角速度也可能找不回急弯，所以必须保留遥控急停。当前只有合成/代码回归，不能保证完赛或声称实物稳定。下文V23为历史说明。
 
 # V23：出口0.73米，丢线搜索限速与可靠反向消除
 

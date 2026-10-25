@@ -54,17 +54,10 @@ class PatrolTuning:
     search_turn_rad_s: float = 0.80
     search_default_direction: int = 1
     reacquire_confirm_frames: int = 3
-    maintain_cruise_during_search: int = 0
+    maintain_cruise_during_search: int = 1
     search_speed_m_s: float = 0.20
+    search_slow_after_seconds: float = 0.20
     search_max_turn_rad_s: float = 0.60
-    loss_grace_seconds: float = 0.12
-    loss_grace_distance_m: float = 0.08
-    dark_blue_guard_enabled: int = 1
-    mask_stability_enabled: int = 1
-    black_wide_guard_enabled: int = 0
-    dark_blue_s_min: int = 48
-    dark_blue_br_min: int = 8
-    black_max_run_ratio: float = 0.18
     image_timeout_seconds: float = 0.35
     roi_top_ratio: float = 0.25
     roi_bottom_ratio: float = 0.98
@@ -94,17 +87,9 @@ class PatrolTuning:
     road_mid_y_ratio: float = 0.60
     road_far_y_ratio: float = 0.38
     display_fps: float = 10.0
-    posture_height_m: float = 0.25
-    posture_stage_enabled: int = 1
-    posture_start_height_m: float = 0.15
-    posture_start_pitch_deg: float = 25.0
-    posture_turn_target_deg: float = 80.0
-    posture_turn_center_error: float = 0.12
-    posture_turn_center_frames: int = 5
-    posture_turn_min_travel_m: float = 0.12
-    posture_turn_timeout_seconds: float = 10.0
+    posture_height_m: float = 0.15
     posture_roll_deg: float = 0.0
-    posture_pitch_deg: float = 28.0
+    posture_pitch_deg: float = 25.0
     posture_slide_m: float = 0.0
     roundabout_enabled: int = 1
     roundabout_arm_seconds: float = 6.0
@@ -259,36 +244,13 @@ class PatrolTuning:
     ring_prediction_max_shift_ratio: float = 0.10
 
     def validate(self):
-        """Reject the whole invalid snapshot; never silently clip controls."""
-        if self.posture_stage_enabled not in (0,1):
-            raise ValueError('posture_stage_enabled must be 0 or 1')
-        for name,lo,hi in (('posture_start_height_m',.14,.36),('posture_start_pitch_deg',-35,35),
-                ('posture_turn_target_deg',75,100),('posture_turn_center_error',.03,.25),
-                ('posture_turn_min_travel_m',.05,.5),('posture_turn_timeout_seconds',3,20)):
-            if not math.isfinite(getattr(self,name)) or not lo<=getattr(self,name)<=hi:
-                raise ValueError(name+' invalid range')
-        if int(self.posture_turn_center_frames)!=self.posture_turn_center_frames or not 3<=self.posture_turn_center_frames<=20:
-            raise ValueError('posture_turn_center_frames must be integer 3..20')
-        if not math.isfinite(self.loss_grace_seconds) or not 0 <= self.loss_grace_seconds <= .15:
-            raise ValueError("loss_grace_seconds must be 0..0.15s")
-        if not math.isfinite(self.loss_grace_distance_m) or not 0 < self.loss_grace_distance_m <= .10:
-            raise ValueError("loss_grace_distance_m must be (0,0.10]m")
-        if self.dark_blue_guard_enabled not in (0,1):
-            raise ValueError("dark_blue_guard_enabled must be 0 or 1")
-        if self.mask_stability_enabled not in (0,1):
-            raise ValueError("mask_stability_enabled must be 0 or 1")
-        if self.black_wide_guard_enabled not in (0,1):
-            raise ValueError('black_wide_guard_enabled must be 0 or 1')
+        if not math.isfinite(self.search_slow_after_seconds) or not 0<=self.search_slow_after_seconds<=.5:
+            raise ValueError('search_slow_after_seconds must be 0..0.5')
         if not math.isfinite(self.search_max_turn_rad_s) or not .1<=self.search_max_turn_rad_s<=2.:
             raise ValueError('search_max_turn_rad_s must be 0.1..2.0')
-        for name,lo,hi in (("dark_blue_s_min",32,160),("dark_blue_br_min",4,32)):
-            v=getattr(self,name)
-            if not math.isfinite(v) or int(v)!=v or not lo<=v<=hi:
-                raise ValueError(name+" invalid integer range")
-        if not math.isfinite(self.black_max_run_ratio) or not .12<=self.black_max_run_ratio<=.35:
-            raise ValueError("black_max_run_ratio must be 0.12..0.35")
         if not math.isfinite(self.search_speed_m_s) or not 0 < self.search_speed_m_s <= .30:
             raise ValueError("search_speed_m_s必须在(0,0.30]米/秒")
+        """Reject an entire bad save; never silently clip a requested speed."""
         for field in fields(self):
             value = getattr(self, field.name)
             if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -2151,7 +2113,7 @@ class PathSelector:
             estimate, source = road, "road"
         else:
             return PathEstimate(False, reason=f"no_path:black={black.reason};road={road.reason}"), "none"
-        if ((source == "black" or (source == "road" and estimate.single_edge)) and self.last_observed_error is not None
+        if (source == "black" and self.last_observed_error is not None
                 and abs(estimate.error-self.last_observed_error) > tuning.path_jump_error
                 and estimate.error*self.last_observed_error < 0 and not estimate.route_locked):
             self.jump_streak = self.jump_streak+1 if self.jump_candidate is not None and abs(estimate.error-self.jump_candidate) < .20 else 1
@@ -2237,10 +2199,6 @@ class FixedSpeedController:
         self.last_curve_turn = 0.
         self.last_curve_at = -math.inf
         self.search_turn_goal = 0.
-        self.turn_memory_hits = 0
-        self.turn_memory_sign = 0
-        self.last_reliable_at = None
-        self.grace_active = False
         self.fault_latched = False
         self.fault_reason = ""
         self.degraded = False
@@ -2304,8 +2262,6 @@ class FixedSpeedController:
         self.last_valid_at=now
         self.loss_started_at,self.loss_distance,self.loss_command=None,0.,None
         self.reacquire_streak=0
-        self.turn_memory_hits=0
-        self.turn_memory_sign=0
         self.last_good_turn=angular
         self.last_curve_at=-math.inf
         self.raw_angular=angular
@@ -2321,11 +2277,8 @@ class FixedSpeedController:
             return 0., 0., "localization_fault_latched"
         elapsed = max(0., now-self.last_time) if self.last_time is not None else 1/30
         self.degraded=False
-        self.grace_active=False
         dt = min(.1, elapsed)
         recovering = self.loss_started_at is not None
-        unconfirmed_recovery = False
-        pending_opposite = False
         if recovering:
             # Count real issued travel and elapsed time, including brief valid
             # flickers. A single line flash cannot renew either budget.
@@ -2335,8 +2288,6 @@ class FixedSpeedController:
             self.reacquire_streak = self.reacquire_streak+1 if recovering else 0
             confirmed = not recovering or self.reacquire_streak >= tuning.reacquire_confirm_frames
             if confirmed:
-                if not path.rescue and not path.handoff and path.confidence >= tuning.rescue_corner_confidence:
-                    self.last_reliable_at = now
                 self.last_valid_at = now
                 self.loss_started_at, self.loss_distance = None, 0.
                 self.loss_command = None
@@ -2345,31 +2296,19 @@ class FixedSpeedController:
                 mode = "reacquire_confirm"
                 linear = tuning.fixed_speed_m_s if tuning.maintain_cruise_during_search else min(self.loss_command[0], tuning.search_speed_m_s, tuning.fixed_speed_m_s)
             angular = self._steer(path, now, tuning, elapsed, recovering)
-            reliable = not path.rescue and not path.handoff and path.confidence >= tuning.rescue_corner_confidence
-            sign=1 if angular>.05 else -1 if angular<-.05 else 0
-            agrees=sign==self.turn_memory_sign
-            self.turn_memory_hits=(self.turn_memory_hits+1 if agrees else 1) if reliable else 0
-            self.turn_memory_sign=sign if reliable else 0
-            if reliable and confirmed and self.turn_memory_hits>=tuning.reacquire_confirm_frames:
+            # A real new observation may correct the search DIRECTION at
+            # once; only confirmed consecutive observations renew budgets.
+            if not recovering or confirmed:
                 self.last_good_turn = angular
-                if abs(path.error) >= tuning.corner_start_error:
+                if abs(path.error) >= tuning.corner_start_error or path.rescue:
                     self.last_curve_turn, self.last_curve_at = angular, now
                 if recovering:
                     self.search_turn_goal = angular
-            unconfirmed_recovery = recovering and not confirmed
-            if unconfirmed_recovery:
-                goal=self.search_turn_goal
-                sign=math.copysign(1.,goal) if abs(goal)>.05 else tuning.search_default_direction
-                pending_opposite=angular*sign<0
-                if pending_opposite:
-                    angular=0.  # do not follow a one-frame opposite-side flash
         elif self.last_valid_at is None:
             self.last_time, self.last_command = now, (0., 0.)
             return 0., 0., "waiting_for_path"
         else:
             self.reacquire_streak = 0
-            self.turn_memory_hits = 0
-            self.turn_memory_sign = 0
             if not recovering:
                 self.loss_started_at = self.last_valid_at
                 self.loss_distance = abs(self.last_command[0])*elapsed
@@ -2425,26 +2364,24 @@ class FixedSpeedController:
                     return self._fault("distance_limit", now)
         # Loss and unconfirmed reacquisition share a bounded search speed.
         # Do not slew down from cruise while blind: cap the issued value too.
-        grace = (self.loss_started_at is not None and not self.degraded and not tuning.maintain_cruise_during_search
-            and self.last_reliable_at is not None and self.last_reliable_at >= self.loss_started_at-1e-6
-            and self.loss_age(now) < tuning.loss_grace_seconds
-            and self.loss_distance < tuning.loss_grace_distance_m
-            and search_direction is None and search_heading_turn is None)
-        self.grace_active = grace
-        if grace:
-            linear = min(tuning.fixed_speed_m_s, self.loss_command[0])
-            if not path.valid:
-                angular = self.loss_command[1]
-                self.raw_angular = angular
-                mode = "short_loss_bridge"
-        bounded_turn = unconfirmed_recovery or (not path.valid and not grace and search_heading_turn is None)
-        turn_limit = min(tuning.max_turn_rad_s,tuning.search_max_turn_rad_s)
-        if bounded_turn:
-            angular=float(np.clip(angular,-turn_limit,turn_limit))
-            self.raw_angular=angular
-        search_capped = self.loss_started_at is not None and not tuning.maintain_cruise_during_search and not grace
+        search_capped = self.loss_started_at is not None and (not tuning.maintain_cruise_during_search or
+            (tuning.search_slow_after_seconds>0 and self.loss_age(now)>=tuning.search_slow_after_seconds))
         if search_capped:
             linear = min(linear, tuning.search_speed_m_s)
+        # During a brief missing-frame gap retain the issued speed, but never
+        # accelerate or strengthen steering using an old curve template.
+        short_gap = self.loss_started_at is not None and tuning.maintain_cruise_during_search and not search_capped and tuning.search_slow_after_seconds>0
+        if short_gap:
+            linear=min(linear,self.loss_command[0])
+            if not path.valid and search_direction is None and search_heading_turn is None:
+                angular=self.loss_command[1]
+                self.raw_angular=angular
+                mode='brief_loss_hold'
+        gentle=search_capped and search_heading_turn is None
+        search_limit=min(tuning.max_turn_rad_s,tuning.search_max_turn_rad_s)
+        if gentle:
+            angular=float(np.clip(angular,-search_limit,search_limit))
+            self.raw_angular=angular
         previous = self.last_command
         linear = self._approach(previous[0], linear, tuning.linear_accel_m_s2*dt)
         if search_capped:
@@ -2470,9 +2407,7 @@ class FixedSpeedController:
         else:
             angular = self._approach(previous[1], angular, rate*dt)
         angular = float(np.clip(angular, -tuning.max_turn_rad_s, tuning.max_turn_rad_s))
-        if bounded_turn:
-            angular=float(np.clip(angular,-turn_limit,turn_limit))  # no inherited high-turn slew leakage
-        if pending_opposite:
-            angular=0.
+        if gentle:
+            angular=float(np.clip(angular,-search_limit,search_limit))
         self.last_time, self.last_command = now, (linear, angular)
         return linear, angular, mode

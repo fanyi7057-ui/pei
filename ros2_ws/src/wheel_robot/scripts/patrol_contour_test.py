@@ -7,6 +7,8 @@ from pathlib import Path
 import signal
 import threading
 import time
+import subprocess
+import sys
 
 import cv2
 import numpy as np
@@ -18,11 +20,7 @@ from patrol_contour_runtime import (
 )
 
 from patrol_dash_entry import DashObservation, RingSearchPredictor, detect_vv_dashes, track_vv_curve
-from patrol_stability import stabilize_masks
 from patrol_preview import FirstPersonPreview
-from patrol_turn_posture import TurnPostureGate
-import subprocess
-import sys
 
 
 class PatrolVision(base.CourseVision):
@@ -125,21 +123,6 @@ class PatrolVision(base.CourseVision):
         guard = cv2.dilate(blue, np.ones((3, 3), np.uint8))
         dark[guard > 0] = 0
         events[guard > 0] = 0
-        base_preview=dark.copy() if draw else None
-        top,bottom=int(height*tuning.roi_top_ratio),int(height*tuning.roi_bottom_ratio)
-        roi=dark[top:bottom]
-        base_pixels=int(np.count_nonzero(roi))
-        self.mask_base_fill=base_pixels/max(1,roi.size)
-        self.mask_guard_fallback = False
-        try:
-            dark, events = stabilize_masks(dark, events, hsv, tuning)
-        except (cv2.error, ValueError, TypeError):
-            # Optional guard failure falls back to the current base masks,
-            # not stale image memory. Existing localization safety still runs.
-            self.mask_guard_fallback = True
-        filtered_pixels=int(np.count_nonzero(dark[top:bottom]))
-        self.mask_filtered_fill=filtered_pixels/max(1,roi.size)
-        self.mask_removed_ratio=max(0,base_pixels-filtered_pixels)/max(1,base_pixels)
         gate, self.gate_score = False, 0.
         self.gate_tracked=False
         self.gate_chain_count=0
@@ -358,14 +341,6 @@ class PatrolVision(base.CourseVision):
                                                        chosen.points[order, 1], chosen.points[order, 0]) / width, 0, 1))
         if draw:
             debug = work.copy()
-            if base_preview is not None:
-                bw,bh=width//3,height//3
-                filtered=cv2.resize(dark,(bw,bh),interpolation=cv2.INTER_NEAREST)
-                debug[height-bh:height,0:bw]=cv2.cvtColor(filtered,cv2.COLOR_GRAY2BGR)
-                cv2.putText(debug,'FILTER',(0,height-bh+12),cv2.FONT_HERSHEY_SIMPLEX,.3,(0,180,255),1)
-                small=cv2.resize(base_preview,(bw,bh),interpolation=cv2.INTER_NEAREST)
-                debug[height-bh:height,width-2*bw:width-bw]=cv2.cvtColor(small,cv2.COLOR_GRAY2BGR)
-                cv2.putText(debug,'BASE',(width-2*bw,height-bh+12),cv2.FONT_HERSHEY_SIMPLEX,.3,(0,180,255),1)
             if chosen.exit_boundary is not None and len(chosen.exit_boundary)>1:
                 cv2.polylines(debug,[np.rint(chosen.exit_boundary).astype(np.int32)],False,(255,0,255),2)
             if chosen.points is not None and len(chosen.points) > 1:
@@ -411,31 +386,23 @@ class PatrolTestNode(base.WheelLegRaceNode):
         self._capture_fps = self._process_fps = self._display_fps = 0.
         self._last_patrol_log = 0.
         self._patrol_ready = True
-        self.turn_posture = TurnPostureGate()
-        self._posture_geometry_reset_pending = False
-        self.pc_preview = None
-        self.pc_viewer = None
-        if os.environ.get('PATROL_PC_PREVIEW','1') == '1':
+        self.pc_preview=self.pc_viewer=None
+        if os.environ.get('PATROL_PC_PREVIEW','1')=='1':
             try:
-                port = int(os.environ.get('PATROL_PC_PREVIEW_PORT','8080'))
-                if not 1024 <= port <= 65535:
-                    raise ValueError('preview port must be 1024..65535')
-                self.pc_preview = FirstPersonPreview(self._pc_camera_frame,port)
-                self.get_logger().info(f'第一视角只读服务已就绪127.0.0.1:{port}；正在检查自动电脑窗口')
-                forwarded = os.environ.get('PATROL_PC_X11_DISPLAY','')
+                port=int(os.environ.get('PATROL_PC_PREVIEW_PORT','8080'))
+                if not 1024<=port<=65535:raise ValueError('preview port must be 1024..65535')
+                self.pc_preview=FirstPersonPreview(self._pc_camera_frame,port)
+                forwarded=os.environ.get('PATROL_PC_X11_DISPLAY','')
                 if forwarded.startswith(('localhost:','127.0.0.1:')):
-                    env = os.environ.copy();env['DISPLAY']=forwarded
+                    env=os.environ.copy();env['DISPLAY']=forwarded
                     probe=subprocess.run(['xset','q'],env=env,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=2.)
                     if probe.returncode==0:
-                        self.pc_viewer = subprocess.Popen([sys.executable,str(Path(__file__).with_name('patrol_pc_viewer.py')),str(port)],
-                            env=env,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-                        self.get_logger().info('已自动启动电脑第一视角窗口（MobaXterm X11转发，无需另开终端/网页）')
-                    else:
-                        self.get_logger().warn('SSH的X11显示不可连接，电脑窗口未启动；请检查MobaXterm X server/X11 forwarding。巡线继续')
-                else:
-                    self.get_logger().warn('当前SSH没有X11转发，不能自动在电脑弹窗；请在MobaXterm启用X11 forwarding并重新连接。小车控制不受影响')
+                        self.pc_viewer=subprocess.Popen([sys.executable,str(Path(__file__).with_name('patrol_pc_viewer.py')),str(port)],env=env,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+                        self.get_logger().info('电脑第一视角窗口已自动启动，无需另开终端/网页；关闭窗口不停车')
+                    else:self.get_logger().warn('电脑X11不可达，未弹窗；巡线继续')
+                else:self.get_logger().warn('当前SSH没有X11 forwarding；电脑未弹窗，巡线继续')
             except (OSError,ValueError,subprocess.TimeoutExpired) as error:
-                self.get_logger().warn(f'电脑预览未启用，巡线继续：{error}')
+                self.get_logger().warn(f'电脑预览未完全启动，巡线继续：{error}')
         from std_msgs.msg import Int16MultiArray
         self.remote_guard=RemoteAuthorityGuard()
         self.create_subscription(Int16MultiArray,"/sbus_channels",self._on_remote_channels,10)
@@ -443,7 +410,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
         self.create_subscription(base.Bool, "/patrol_test_stop", self._on_patrol_stop, 10)
         self.create_subscription(base.Bool, "/patrol_test_reset_course", self._on_patrol_reset_course, 10)
         self.get_logger().warn(
-            f"巡线/环岛/横道V28（温和丢线搜索、方向防闪、宽块过滤对照关闭）：普通目标速度={self.patrol_tuning.fixed_speed_m_s:.2f}m/s，环岛上限={self.patrol_tuning.roundabout_speed_m_s:.2f}；"
+            f"V29：V23基线精简巡线，固定0.15m/25度，无新增掩模过滤/自动升腿；普通目标={self.patrol_tuning.fixed_speed_m_s:.2f}m/s，环岛上限={self.patrol_tuning.roundabout_speed_m_s:.2f}；"
             f"环岛={self.patrol_tuning.roundabout_enabled}，横道={self.patrol_tuning.crosswalk_enabled}；台阶1/2仅保留位置、测试跳过；两圈环岛/横道完成凭据齐全才冲线，失败/超时不越级。实时文件：{config}"
         )
 
@@ -452,11 +419,11 @@ class PatrolTestNode(base.WheelLegRaceNode):
         # or adaptive_tuning.yaml in this test: only this file is authoritative.
         if not self._patrol_ready:
             return
+        updated, message = self.patrol_watcher.poll()
         viewer=getattr(self,'pc_viewer',None)
         if viewer is not None and viewer.poll() is not None and not getattr(self,'_pc_viewer_exit_logged',False):
             self._pc_viewer_exit_logged=True
-            self.get_logger().warn('电脑第一视角窗口已关闭或X11连接失败；小车程序继续运行。关闭此窗口不是急停')
-        updated, message = self.patrol_watcher.poll()
+            self.get_logger().warn('电脑第一视角窗口已关闭或X11失败；小车继续，关闭窗口不是急停')
         if updated is not None:
             old = self.patrol_tuning
             router = getattr(self.vision, "router", None)
@@ -470,20 +437,12 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 self.patrol_watcher.signature=None
                 return
             self.patrol_tuning = updated
-            gate=getattr(self,'turn_posture',None)
-            if gate is not None and (not updated.enabled or old.posture_stage_enabled!=updated.posture_stage_enabled):
-                gate.pause()
-            if gate is not None and any(getattr(old,key)!=getattr(updated,key) for key in (
-                    'posture_turn_target_deg','posture_turn_center_error','posture_turn_center_frames',
-                    'posture_turn_min_travel_m','posture_turn_timeout_seconds')):
-                gate.pause()
-            posture_changed = any(getattr(old, key) != getattr(updated, key) for key in ("posture_height_m", "posture_roll_deg", "posture_pitch_deg", "posture_slide_m",'posture_stage_enabled','posture_start_height_m','posture_start_pitch_deg'))
+            posture_changed = any(getattr(old, key) != getattr(updated, key) for key in ("posture_height_m", "posture_roll_deg", "posture_pitch_deg", "posture_slide_m"))
             if posture_changed:
                 self._set_patrol_posture()
             # Saving speed/gain/display changes must not throw away a trusted
             # path and manufacture a new dropout. Reset only geometry/masks.
             geometry = ("target_x_ratio", "black_enabled", "contour_enabled", "roi_top_ratio", "roi_bottom_ratio", "blue_h_min", "blue_h_max", "blue_s_min", "blue_v_min", "blue_weak_s_min", "blue_weak_br_delta", "blue_weak_min_area_ratio", "blue_context_radius_ratio", "road_blue_contrast_gray", "white_s_max", "white_v_min", "close_kernel_px", "black_gap_fill_px", "road_max_row_step_ratio", "min_road_area_ratio", "min_observed_rows_ratio", "seed_bottom_ratio", "seed_half_width_ratio", "min_road_width_ratio", "max_repair_gap_rows", "road_near_y_ratio", "road_mid_y_ratio", "road_far_y_ratio", "road_near_gap_ratio")
-            geometry += ('mask_stability_enabled','dark_blue_guard_enabled','dark_blue_s_min','dark_blue_br_min','black_max_run_ratio','black_wide_guard_enabled')
             if posture_changed or any(getattr(old, key) != getattr(updated, key) for key in geometry):
                 self.vision.reset_path()
                 self.patrol_controller.reset_error()
@@ -502,37 +461,22 @@ class PatrolTestNode(base.WheelLegRaceNode):
 
     def _set_patrol_posture(self):
         t = self.patrol_tuning
-        gate = getattr(self,'turn_posture',None)
-        initial = t.posture_stage_enabled and (gate is None or not gate.complete)
         self._posture_transition.set_target(base.RacePosture.from_values(
-            t.posture_start_height_m if initial else t.posture_height_m,
-            t.posture_roll_deg,
-            t.posture_start_pitch_deg if initial else t.posture_pitch_deg, t.posture_slide_m,
+            t.posture_height_m, t.posture_roll_deg, t.posture_pitch_deg, t.posture_slide_m,
         ), time.monotonic())
 
-    def _update_turn_posture(self,path,now,tuning):
-        gate=getattr(self,'turn_posture',None)
-        if gate is None or not tuning.posture_stage_enabled or gate.complete:
-            return
-        router=getattr(self.vision,'router',None)
-        pose=getattr(self.vision,'motion_pose',None)
-        active=router is None or (router.phase in ('SEEK','APPROACH') and router.course.lap==0)
-        heading=self._heading_snapshot(now,replace(tuning,roundabout_heading_enabled=1),pose)
-        if gate.update(heading,pose,now,*self._last_command,path,tuning,active):
-            self.get_logger().info(f'POSTURE_TURN 已确认独立大弯 {gate.count}/2，净转角{gate.last_completed_deg:+.1f}度（实测净角度＋出弯稳定跟线）')
-            if gate.complete:
-                self._set_patrol_posture()
-                self._posture_geometry_reset_pending=True
-                self.get_logger().warn(f'POSTURE_SWITCH 两弯完成，平滑切换腿高{tuning.posture_height_m:.2f}m、低头{tuning.posture_pitch_deg:.1f}度；速度/任务凭据不变')
+    def _on_step_execute_jump(self, _message):
+        # The inherited subscription must never arm the frozen jump controller.
+        return
 
     def _pc_camera_frame(self):
         with self._frame_lock:
-            frame = self._latest_frame if self._camera_healthy else None
-            return (frame.copy() if frame is not None else None), self._latest_frame_time
+            frame=self._latest_frame if self._camera_healthy else None
+            return (frame.copy() if frame is not None else None),self._latest_frame_time
 
     def close(self):
         try:
-            super().close()  # motion/camera shutdown precedes optional HTTP cleanup
+            super().close()
         finally:
             viewer=getattr(self,'pc_viewer',None)
             if viewer is not None and viewer.poll() is None:
@@ -540,13 +484,8 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 try:viewer.wait(timeout=1.)
                 except subprocess.TimeoutExpired:
                     viewer.kill();viewer.wait(timeout=1.)
-            preview = getattr(self,'pc_preview',None)
-            if preview is not None:
-                preview.close()
-
-    def _on_step_execute_jump(self, _message):
-        # The inherited subscription must never arm the frozen jump controller.
-        return
+            preview=getattr(self,'pc_preview',None)
+            if preview is not None:preview.close()
 
     def _on_odom(self,message):
         super()._on_odom(message)
@@ -592,17 +531,10 @@ class PatrolTestNode(base.WheelLegRaceNode):
             return
         self._wait_for_operator("人工重置新场")
         self.vision.reset_course()
-        gate=getattr(self,'turn_posture',None)
-        if gate is not None:
-            gate.reset()
-            self._set_patrol_posture()
         self.patrol_watcher.signature=None
         self.get_logger().warn("任务已重置到起点：环岛/横道次数清零；放回起点后输入1开始，不会自行运动")
 
     def _wait_for_operator(self, reason, localization=False):
-        gate=getattr(self,'turn_posture',None)
-        if gate is not None:
-            gate.pause()  # preserve completed bends; discard unfinished/manual yaw
         self._publish_zero()
         self.patrol_controller.reset()
         self.vision.reset_path()
@@ -705,9 +637,6 @@ class PatrolTestNode(base.WheelLegRaceNode):
     def _fault_stop(self, reason, now):
         """True data/process failures bypass all visual memory immediately."""
         self._publish_zero()
-        gate=getattr(self,'turn_posture',None)
-        if gate is not None:
-            gate.pause()
         if self._patrol_ready:
             self.patrol_controller.reset()
             reset = getattr(self.vision, "reset_path", None)
@@ -754,10 +683,6 @@ class PatrolTestNode(base.WheelLegRaceNode):
             self._fault_stop("missing_frame", now)
             return
         self._last_processed_sequence = sequence
-        if getattr(self,'_posture_geometry_reset_pending',False):
-            self.vision.reset_path()
-            self.patrol_controller.reset_error()
-            self._posture_geometry_reset_pending=False
         draw = base.SHOW_DEBUG and now-self._last_display_at >= 1/tuning.display_fps
         if getattr(self,"_localization_wait",False):
             self._run_localization_preview(frame,tuning,now,draw)
@@ -782,7 +707,6 @@ class PatrolTestNode(base.WheelLegRaceNode):
             return
         if self._hold_remote_if_needed(done):
             return
-        self._update_turn_posture(path,done,tuning)
         loss_age = 0. if path.valid else self.patrol_controller.loss_age(done)
         if router is not None and router.fault:
             self.get_logger().error(f"PATROL_ROUTE_FAULT {router.fault}：不靠超时假装出环，回站立等待人工")
@@ -811,7 +735,8 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 search_direction=1 if router is not None and router.search_left and tuning.roundabout_enabled else None,
                 search_heading_turn=exit_turn)
             planned_target=min(control_tuning.fixed_speed_m_s,control_tuning.search_degraded_speed_m_s) if self.patrol_controller.degraded else control_tuning.fixed_speed_m_s
-            if self.patrol_controller.loss_started_at is not None and not control_tuning.maintain_cruise_during_search and not self.patrol_controller.grace_active:
+            if self.patrol_controller.loss_started_at is not None and (not control_tuning.maintain_cruise_during_search or
+                    (control_tuning.search_slow_after_seconds>0 and self.patrol_controller.loss_age(done)>=control_tuning.search_slow_after_seconds)):
                 planned_target=min(planned_target,control_tuning.search_speed_m_s)
         if router is not None and (candidate or router.phase in ("APPROACH","ENTRY","FOLLOW","EXIT")):
             linear=min(linear,tuning.roundabout_speed_m_s)
@@ -852,11 +777,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
             road_path = getattr(self.vision, "road_estimate", PathEstimate(False))
             reason = "_".join(path.reason.split())
             self.get_logger().info(
-                f"PATROL source={self.vision.source} mode={mode} version=28 target={tuning.fixed_speed_m_s:.2f} "
-                f"posture_turns={getattr(getattr(self,'turn_posture',None),'count',0)}/2 "
-                f"posture_turn_deg={math.degrees(getattr(getattr(self,'turn_posture',None),'turn',0.)):+.1f} posture_reason={getattr(getattr(self,'turn_posture',None),'reason','none')} "
-                f"loss_grace={int(self.patrol_controller.grace_active)} mask_guard_fallback={int(getattr(self.vision,'mask_guard_fallback',False))} "
-                f"mask_base_fill={getattr(self.vision,'mask_base_fill',0.):.3f} mask_filtered_fill={getattr(self.vision,'mask_filtered_fill',0.):.3f} mask_removed={getattr(self.vision,'mask_removed_ratio',0.):.3f} wide_guard={tuning.black_wide_guard_enabled} "
+                f"PATROL source={self.vision.source} mode={mode} version=29 target={tuning.fixed_speed_m_s:.2f} "
                 f"ring_predict={int(getattr(self.vision,'ring_prediction_used',False))} ring_match={getattr(self.vision,'ring_match_reason','inactive')} "
                 f"ring_delta={getattr(self.vision,'ring_route_delta',0.):.3f} ring_ref_age={getattr(self.vision,'ring_reference_age',-1.):.3f} ring_points={getattr(self.vision,'ring_candidate_points',0)} "
                 f"authority={self._remote_state(done)} "
