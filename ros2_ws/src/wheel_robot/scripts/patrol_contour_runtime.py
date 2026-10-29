@@ -1470,7 +1470,7 @@ class RoundaboutRouter:
     def search_left(self):
         # FOLLOW keeps task identity too; ordinary tracking can still steer
         # right on valid geometry. This only selects the LOST-path direction.
-        return self.ring_tracking
+        return self.ring_tracking or self.phase == "APPROACH"
 
     @property
     def active(self):
@@ -2043,7 +2043,7 @@ class RoundaboutRouter:
                 # Current owned pixels can steer before full acquisition proof.
                 # No turn/time credit is invented; accept_path remains strict.
                 turn=float(np.clip(-tuning.steering_gain*path.error,
-                                   -tuning.ring_candidate_turn_limit_rad_s,tuning.ring_candidate_turn_limit_rad_s))
+                                   0.,tuning.ring_candidate_turn_limit_rad_s))
                 return min(tuning.fixed_speed_m_s,tuning.ring_recovery_speed_m_s),turn,"ring_curve_preview"
             # Establish the verified LEFT entry before any outside/right line
             # may take over. Bounded by route timeout, not perpetual blind yaw.

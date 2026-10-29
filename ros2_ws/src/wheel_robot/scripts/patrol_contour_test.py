@@ -723,7 +723,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
             planned_target=target_v
             linear,angular=self.patrol_controller.task_command(target_v,target_w,done,tuning,
                 immediate_stop=mode in ("crosswalk_stop","finished","ring_recovery_stop","unauthorized_finish"),
-                left_only=mode=="roundabout_left_acquire")
+                left_only=mode in ("roundabout_left_acquire","ring_curve_preview"))
             if mode in ("roundabout_left_acquire","ring_curve_preview","gyro_exit_seek","ring_failure_recovery","ring_recovery_stop"):
                 linear=min(linear,target_v)  # no stale 0.65m/s during deceleration
         else:
@@ -763,6 +763,14 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 f"search_distance={self.patrol_controller.loss_distance:.2f}m；持续无定位，等待人工确认")
             self._wait_for_operator("定位保护停车，节点未退出；持续无定位达到找线边界",localization=True)
             return
+        diagnostic_state=(mode, path.valid, router.phase if router is not None else "SEEK")
+        if diagnostic_state != getattr(self,"_last_control_diagnostic",None):
+            self.get_logger().info(
+                f"CONTROL_CHANGE mode={mode} phase={diagnostic_state[2]} valid={int(path.valid)} "
+                f"loss={self.patrol_controller.loss_age(done):.3f}s "
+                f"reacquire={self.patrol_controller.reacquire_streak}/{tuning.reacquire_confirm_frames} "
+                f"image_age={age:.3f}s v={linear:.3f} w={angular:.3f}")
+            self._last_control_diagnostic=diagnostic_state
         self._processed_count += 1
         elapsed = done-self._stats_at
         if elapsed >= 1:
