@@ -894,7 +894,7 @@ def test_near_single_band_rescue_confirms_opposite_jump_not_old_return_delay():
 
 
 @pytest.mark.parametrize("cutoff,expected_bands", [(190, 2), (200, 2), (210, 1)])
-def test_actual_near_only_black_remains_usable(monkeypatch, cutoff, expected_bands):
+def test_actual_near_only_black_requires_recent_trusted_turn(monkeypatch, cutoff, expected_bands):
     module = load_actual_vision_module(monkeypatch)
     frame = np.full((240, 320, 3), (255, 0, 0), np.uint8)
     frame[:, 40:280] = 245
@@ -904,10 +904,42 @@ def test_actual_near_only_black_remains_usable(monkeypatch, cutoff, expected_ban
     extracted = vision._extract_line(frame, dark, hsv, False, use_dynamic_offset=False)
     assert extracted[0] and extracted[6] == expected_bands
     vision = module.PatrolVision()
-    result = vision.estimate(frame, PatrolTuning(), 1.)
-    assert result.valid and vision.source == "black"
-    assert result.error == pytest.approx(extracted[1])
-    assert result.rescue == (expected_bands == 1)
+    result = vision.estimate(frame, replace(PatrolTuning(), contour_enabled=0), 1.)
+    if expected_bands == 1:
+        assert not result.valid and "rescue_no_trusted_black_history" in result.reason
+    else:
+        assert result.valid and vision.source == "black"
+        assert result.error == pytest.approx(extracted[1])
+        assert not result.rescue
+
+
+def test_single_edge_rescue_requires_fresh_same_direction_trusted_black(monkeypatch):
+    module = load_actual_vision_module(monkeypatch)
+    vision = module.PatrolVision()
+    points = np.array([[170., 205.], [175., 225.]])
+    older = PathEstimate(True, .12, .8, points=points, near_error=.12, mid_error=.12,
+                         route_observed=True)
+    newer = PathEstimate(True, .28, .8, points=points, near_error=.28, mid_error=.28,
+                         route_observed=True)
+    rescue = PathEstimate(True, .72, .31, points=points[:1], near_error=.72, mid_error=.72,
+                          rescue=True)
+    vision._remember_trusted_black(older, 1.00)
+    vision._remember_trusted_black(newer, 1.08)
+    assert vision._edge_rescue_reason(rescue, 1.14) == "line_edge_single_rescue"
+    assert vision._edge_rescue_reason(replace(rescue, near_error=-.72), 1.14) == "rescue_near_position_jump"
+    assert vision._edge_rescue_reason(rescue, 1.60) == "rescue_trusted_black_stale"
+
+
+def test_road_jump_only_passes_for_bounded_same_direction_turn(monkeypatch):
+    module = load_actual_vision_module(monkeypatch)
+    vision, tuning = module.PatrolVision(), PatrolTuning()
+    points = np.array([[170., 205.], [175., 225.]])
+    vision._remember_trusted_route(PathEstimate(True, .10, .8, points=points, near_error=.10,
+                                                    mid_error=.10, route_observed=True), 1.00)
+    vision._remember_trusted_route(PathEstimate(True, .30, .8, points=points, near_error=.30,
+                                                    mid_error=.30, route_observed=True), 1.08)
+    assert vision._road_turn_is_continuous(PathEstimate(True, .64, .8, near_error=.64), 1.14, tuning)
+    assert not vision._road_turn_is_continuous(PathEstimate(True, -.20, .8, near_error=-.20), 1.14, tuning)
 
 
 def test_reset_path_clears_all_black_and_road_history(monkeypatch):
@@ -917,11 +949,14 @@ def test_reset_path_clears_all_black_and_road_history(monkeypatch):
     vision._previous_band_x = [95.] * len(module.base.LOOKAHEAD_Y_RATIOS)
     vision.road_widths = np.array([[100,100],[100,220]])
     vision.last_dual_at = 1.
+    vision._trusted_black_history = [(1., PathEstimate(True))]
+    vision._trusted_route_history = [(1., .1)]
     vision.last_debug = np.zeros((2,2,3), np.uint8)
     vision.reset_path()
     assert all(x is None for x in vision._last_good_band_x)
     assert all(x is None for x in vision._previous_band_x)
     assert vision.road_widths is None and vision.last_dual_at is None
+    assert not vision._trusted_black_history and not vision._trusted_route_history
     assert vision.last_debug is None and vision.selector.source == "none"
 
 
