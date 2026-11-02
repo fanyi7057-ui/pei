@@ -919,7 +919,7 @@ def test_single_edge_rescue_requires_fresh_same_direction_trusted_black(monkeypa
     points = np.array([[170., 205.], [175., 225.]])
     older = PathEstimate(True, .12, .8, points=points, near_error=.12, mid_error=.12,
                          route_observed=True)
-    newer = PathEstimate(True, .28, .8, points=points, near_error=.28, mid_error=.28,
+    newer = PathEstimate(True, .28, .8, points=points, near_error=.28, mid_error=.45,
                          route_observed=True)
     rescue = PathEstimate(True, .72, .31, points=points[:1], near_error=.72, mid_error=.72,
                           rescue=True)
@@ -933,12 +933,16 @@ def test_single_edge_rescue_requires_fresh_same_direction_trusted_black(monkeypa
 def test_road_jump_only_passes_for_bounded_same_direction_turn(monkeypatch):
     module = load_actual_vision_module(monkeypatch)
     vision, tuning = module.PatrolVision(), PatrolTuning()
-    points = np.array([[170., 205.], [175., 225.]])
+    points = np.array([[170., 145.], [175., 225.]])
     vision._remember_trusted_route(PathEstimate(True, .10, .8, points=points, near_error=.10,
                                                     mid_error=.10, route_observed=True), 1.00)
     vision._remember_trusted_route(PathEstimate(True, .30, .8, points=points, near_error=.30,
                                                     mid_error=.30, route_observed=True), 1.08)
-    assert vision._road_turn_is_continuous(PathEstimate(True, .64, .8, near_error=.64), 1.14, tuning)
+    road = PathEstimate(True, .64, .8, near_error=.64, points=points+np.array([54.,0.]), route_observed=True)
+    blue = np.zeros((240,320), np.uint8)
+    assert vision._road_turn_is_continuous(road, 1.14, tuning, blue, 320, 240)
+    blue[:,190:200] = 255
+    assert not vision._road_turn_is_continuous(road, 1.14, tuning, blue, 320, 240)
     assert not vision._road_turn_is_continuous(PathEstimate(True, -.20, .8, near_error=-.20), 1.14, tuning)
 
 
@@ -958,6 +962,43 @@ def test_reset_path_clears_all_black_and_road_history(monkeypatch):
     assert vision.road_widths is None and vision.last_dual_at is None
     assert not vision._trusted_black_history and not vision._trusted_route_history
     assert vision.last_debug is None and vision.selector.source == "none"
+
+
+def test_diagnostic_changes_cannot_bypass_rate_limit(monkeypatch, capsys):
+    module = load_actual_vision_module(monkeypatch)
+    vision = module.PatrolVision()
+    for i in range(100):
+        vision._emit_diagnostic(str(i), i/100.)
+    assert capsys.readouterr().out.count("[patrol-vision]") == 2
+
+
+def test_rescue_allows_high_fps_small_motion_and_return_without_renewal(monkeypatch):
+    module = load_actual_vision_module(monkeypatch)
+    vision = module.PatrolVision()
+    for i in range(8):
+        value = .70+i*.001
+        p = PathEstimate(True, value, .8, points=np.array([[270.,180.],[273.,225.]]),
+                         near_error=value, mid_error=.60, route_observed=True)
+        vision._remember_trusted_black(p, 1.+i*.01)
+    rescue = replace(p, rescue=True, near_error=.64, points=p.points[:1])
+    assert vision._edge_rescue_reason(rescue, 1.10) == "line_edge_single_rescue"
+    before = list(vision._trusted_black_history)
+    vision._remember_trusted_black(rescue, 1.11)
+    assert vision._trusted_black_history == before
+    assert vision._edge_rescue_reason(rescue, 1.50) == "rescue_trusted_black_stale"
+
+
+def test_final_selection_rejection_does_not_create_black_evidence(monkeypatch):
+    module = load_actual_vision_module(monkeypatch)
+    vision = module.PatrolVision()
+    frame = np.full((240,320,3), 245, np.uint8)
+    cv2.line(frame,(160,0),(160,239),(0,0,0),7)
+    monkeypatch.setattr(vision.selector, "select", lambda *args: (PathEstimate(False,reason="path_jump_confirm"), "none"))
+    for now in (1.,1.03,1.06):
+        assert not vision.estimate(frame, replace(PatrolTuning(),roundabout_enabled=0,crosswalk_enabled=0),now).valid
+        assert not vision._trusted_black_history
+        assert vision.last_black_at is None
+        assert all(x is None for x in vision._last_good_band_x)
 
 
 @pytest.mark.parametrize("center", [.49, .50, .51])

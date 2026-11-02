@@ -1196,7 +1196,9 @@ class CourseVision:
         y0 = max(0, min(h - 1, y0))
         y1 = max(y0 + 1, min(h, y1))
         candidate = hsv[y0:y1, x0:x1]
+        self._candidate_reject_reason = "accepted"
         if candidate.size == 0:
+            self._candidate_reject_reason = "empty"
             return False
 
         med_v = float(np.median(candidate[:, :, 2]))
@@ -1205,9 +1207,11 @@ class CourseVision:
             np.mean(candidate[:, :, 2] <= STRONG_BLACK_V_MAX)
         )
         if med_v > COLOR_REJECT_MIN_V and med_s > COLOR_REJECT_S:
+            self._candidate_reject_reason = "color"
             return False
         # 阴影往往只是“相对暗”，却没有足够的真正黑核心。
         if strong_fraction < 0.06 and med_v > 105:
+            self._candidate_reject_reason = "weak_black_core"
             return False
 
         pad = max(7, min(26, 2 * (x1 - x0)))
@@ -1237,9 +1241,13 @@ class CourseVision:
             return float(np.mean(blue_pixels))
 
         if blue_fraction(left) >= 0.20 or blue_fraction(right) >= 0.20:
+            self._candidate_reject_reason = "blue_flank"
             return False
 
-        return med_v <= CANDIDATE_ABSOLUTE_V_MAX or contrast >= CANDIDATE_MIN_CONTRAST
+        accepted = med_v <= CANDIDATE_ABSOLUTE_V_MAX or contrast >= CANDIDATE_MIN_CONTRAST
+        if not accepted:
+            self._candidate_reject_reason = "contrast"
+        return accepted
 
     def _extract_line(
         self,
@@ -1266,6 +1274,9 @@ class CourseVision:
         这专门解决第一个 90° 弯中“左下真线 + 右上假目标”被拟合在一起的问题。
         """
         h, w = dark.shape
+        self.line_candidate_stats = {}
+        def count_candidate(reason):
+            self.line_candidate_stats[reason] = self.line_candidate_stats.get(reason, 0)+1
         x_left = int(w * SEARCH_LEFT_RATIO)
         x_right = int(w * SEARCH_RIGHT_RATIO)
         min_width = max(2, int(w * MIN_RUN_WIDTH_RATIO))
@@ -1288,15 +1299,19 @@ class CourseVision:
             binary = (occupancy >= BAND_OCCUPANCY_THRESHOLD).astype(np.uint8)
             candidates: List[Tuple[float, float, float]] = []
             for start, end in self._runs(binary):
+                count_candidate("raw_runs")
                 width = end - start
                 if not min_width <= width <= max_width:
+                    count_candidate("width")
                     continue
                 gx0 = x_left + start
                 gx1 = x_left + end
                 if not self._candidate_valid(hsv, gx0, gx1, y0, y1):
+                    count_candidate(self._candidate_reject_reason)
                     continue
                 candidate_v = float(np.median(hsv[y0:y1, gx0:gx1, 2]))
                 candidates.append((0.5 * (gx0 + gx1 - 1), float(width), candidate_v))
+                count_candidate("color_pass")
 
             temporal = self._previous_band_x[i]
             if temporal is None:
@@ -1356,8 +1371,10 @@ class CourseVision:
             compatible: List[Tuple[float, float, float]] = []
             for center, width, candidate_v in candidates:
                 if abs(center - last_x) > max_step:
+                    count_candidate("spatial_step")
                     continue
                 if len(chosen_indices) >= 2 and abs(center - predicted) > max_predict_error:
+                    count_candidate("prediction")
                     continue
                 compatible.append((center, width, candidate_v))
 
@@ -1403,6 +1420,7 @@ class CourseVision:
                 continue
             delta = float(value) - float(temporal)
             if roundabout and abs(delta) > PATH_ROUNDABOUT_MAX_FRAME_JUMP_RATIO * w:
+                count_candidate("temporal_jump")
                 selected[i] = None
                 continue
             if abs(delta) <= 0.32 * w:
@@ -1448,6 +1466,7 @@ class CourseVision:
                         continue
                     e = (float(selected[i]) - 0.5 * w) / (0.5 * w)
                     if i > near_anchor_i and e * sign < -HARD_TURN_OPPOSITE_REJECT:
+                        count_candidate("opposite_outlier")
                         selected[i] = None
                         cut = True
                 valid_indices = [i for i, value in enumerate(selected) if value is not None]

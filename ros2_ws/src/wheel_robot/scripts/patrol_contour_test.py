@@ -42,12 +42,16 @@ class PatrolVision(base.CourseVision):
         self.road_widths = None
         self.last_dual_at = None
         self.last_width_probe_at = -float("inf")
-        self._trusted_black_history = []
-        self._trusted_route_history = []
+        self._reset_evidence()
         self.road_jump_reason = "not_checked"
         self.vision_status = "not_processed"
         self._last_diagnostic_text = None
         self._last_diagnostic_at = -float("inf")
+        self._diagnostic_counts = {"switches": 0, "rejects": 0}
+        self._diagnostic_source = "none"
+        self._snapshot_at = -float("inf")
+        self._snapshot_index = 0
+        self._snapshot_busy = False
         self.black_estimate = PathEstimate(False, reason="not_processed")
         self.road_estimate = PathEstimate(False, reason="not_processed")
         self.preview_kind = "black"
@@ -95,8 +99,7 @@ class PatrolVision(base.CourseVision):
         self.road_widths = None
         self.last_dual_at = None
         self.last_width_probe_at = -float("inf")
-        self._trusted_black_history = []
-        self._trusted_route_history = []
+        self._reset_evidence()
         self.road_jump_reason = "reset"
         self.vision_status = "reset"
         self._last_diagnostic_text = None
@@ -110,28 +113,45 @@ class PatrolVision(base.CourseVision):
     def _copy_path(path):
         return replace(path, points=None if path.points is None else path.points.copy(), mask=None)
 
+    def _reset_evidence(self):
+        self._trusted_black_history = []
+        self._trusted_route_history = []
+
+    @staticmethod
+    def _append_observation(history, path, now):
+        if history and now <= history[-1][0]:
+            history.clear()
+        history.append((now, PatrolVision._copy_path(path)))
+        history[:] = [(stamp, item) for stamp, item in history if now-stamp <= 0.35][-12:]
+
     def _remember_trusted_black(self, path, now):
         """Keep only measured multi-band black paths; rescue must not renew it."""
         if not (path.valid and path.route_observed and not path.rescue
                 and path.points is not None and len(path.points) >= 2):
             return
-        self._trusted_black_history.append((now, self._copy_path(path)))
-        self._trusted_black_history = self._trusted_black_history[-2:]
+        self._append_observation(self._trusted_black_history, path, now)
 
     def _edge_rescue_reason(self, path, now):
         """Require a fresh, same-direction observed black turn before one-point rescue."""
         if len(self._trusted_black_history) < 2:
             return "rescue_no_trusted_black_history"
-        previous_at, previous = self._trusted_black_history[-2]
+        previous_at, previous = self._trusted_black_history[0]
         latest_at, latest = self._trusted_black_history[-1]
         if not (0.0 <= now - latest_at <= self._TRUSTED_BLACK_MAX_AGE_SECONDS
-                and 0.0 < latest_at - previous_at <= self._ROAD_TURN_MAX_GAP_SECONDS):
+                and 0.0 < latest_at - previous_at <= self._TRUSTED_BLACK_MAX_AGE_SECONDS):
             return "rescue_trusted_black_stale"
         previous_delta = latest.near_error - previous.near_error
         candidate_delta = path.near_error - latest.near_error
         if abs(candidate_delta) > self._RESCUE_MAX_NEAR_DELTA:
             return "rescue_near_position_jump"
-        if abs(previous_delta) < 0.015 or candidate_delta * previous_delta <= 0.0:
+        # Errors are normalized by half-width. Small movement is inconclusive,
+        # and a bounded return toward centre is normal while steering a bend.
+        rate = previous_delta / (latest_at-previous_at)
+        heading = latest.mid_error-latest.near_error
+        returning = path.near_error*latest.near_error > 0 and abs(path.near_error) <= abs(latest.near_error)
+        close = abs(candidate_delta) <= 0.16
+        geometric_support = abs(latest.near_error) >= 0.45 or abs(heading) >= 0.10
+        if not (geometric_support and (close or returning or candidate_delta*rate > 0)):
             return "rescue_turn_direction_disagrees"
         return "line_edge_single_rescue"
 
@@ -140,30 +160,77 @@ class PatrolVision(base.CourseVision):
         if not (path.valid and path.route_observed and not path.rescue and not path.handoff
                 and path.points is not None and len(path.points) >= 2):
             return
-        self._trusted_route_history.append((now, path.near_error))
-        self._trusted_route_history = self._trusted_route_history[-2:]
+        self._append_observation(self._trusted_route_history, path, now)
 
-    def _road_turn_is_continuous(self, road, now, tuning):
+    def _road_turn_is_continuous(self, road, now, tuning, blue=None, width=None, height=None):
         """Allow only a bounded, already-observed same-direction road bend."""
-        if len(self._trusted_route_history) < 2:
+        if (len(self._trusted_route_history) < 2 or not road.route_observed
+                or road.single_edge or road.points is None or blue is None):
             return False
-        previous_at, previous_error = self._trusted_route_history[-2]
-        latest_at, latest_error = self._trusted_route_history[-1]
+        previous_at, previous = self._trusted_route_history[-2]
+        latest_at, latest = self._trusted_route_history[-1]
         if not (0.0 < latest_at - previous_at <= self._ROAD_TURN_MAX_GAP_SECONDS
                 and 0.0 <= now - latest_at <= self._ROAD_TURN_MAX_GAP_SECONDS):
             return False
-        previous_delta = latest_error - previous_error
-        candidate_delta = road.near_error - latest_error
-        if abs(previous_delta) < 0.03 or candidate_delta * previous_delta <= 0.0:
+        if width is None or height is None or self.router.ring_tracking or self.router.phase != "SEEK":
             return False
-        maximum_delta = max(tuning.road_max_near_jump_ratio * 1.45,
-                            abs(previous_delta) * 1.70 + 0.05)
-        return abs(candidate_delta) <= maximum_delta
+        # All displacement thresholds below are fractions of FULL image width.
+        previous_delta = (latest.near_error-previous.near_error)*0.5
+        candidate_delta = (road.near_error-latest.near_error)*0.5
+        if abs(previous_delta) < 0.015 or candidate_delta*previous_delta <= 0:
+            return False
+        dt = latest_at-previous_at
+        prediction = previous_delta * ((now-latest_at)/dt)
+        if abs(candidate_delta) > 0.35 or abs(candidate_delta-prediction) > 0.10:
+            return False
+        old = latest.points[np.argsort(latest.points[:, 1])]
+        new = road.points[np.argsort(road.points[:, 1])]
+        rows = np.linspace(max(old[0,1], new[0,1], height*0.60),
+                           min(old[-1,1], new[-1,1]), 4)
+        if rows[-1]-rows[0] < height*0.12 or rows[-1] < height*0.82:
+            return False
+        offsets = (np.interp(rows,new[:,1],new[:,0])-np.interp(rows,old[:,1],old[:,0]))/width
+        if np.max(np.abs(offsets)) > 0.35 or np.ptp(offsets) > 0.10:
+            return False
+        for y in rows:
+            a,b = sorted((int(np.interp(y,old[:,1],old[:,0])), int(np.interp(y,new[:,1],new[:,0]))))
+            if np.any(blue[int(y), max(0,a):min(width,b+1)]):
+                return False
+        return True
 
     def _emit_diagnostic(self, text, now):
-        if text != self._last_diagnostic_text or now - self._last_diagnostic_at >= 0.5:
-            print(f"[patrol-vision] {text}", flush=True)
+        if now - self._last_diagnostic_at >= 0.5:
+            print(f"[patrol-vision] {text} interval={self._diagnostic_counts}")
+            self._diagnostic_counts = {"switches": 0, "rejects": 0}
             self._last_diagnostic_text, self._last_diagnostic_at = text, now
+
+    def _save_anomaly(self, work, dark, blue, chosen, now):
+        """Opt-in bounded background capture: twelve slots, at most one per 5s."""
+        if (os.environ.get("PATROL_SAVE_ANOMALIES") != "1" or chosen.valid
+                or self._snapshot_busy or now-self._snapshot_at < 5.):
+            return
+        self._snapshot_at = now
+        self._snapshot_busy = True
+        slot = self._snapshot_index % 12
+        self._snapshot_index += 1
+        original, black_mask, blue_mask = work.copy(), dark.copy(), blue.copy()
+        selected = original.copy()
+        if chosen.points is not None and len(chosen.points):
+            cv2.polylines(selected, [np.rint(chosen.points).astype(np.int32)], False, (0,255,0), 2)
+        folder = Path(__file__).resolve().parents[4] / "records" / "vision_anomalies"
+        status = self.vision_status
+        def save():
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+                panel = np.vstack((np.hstack((original,selected)), np.hstack((
+                    cv2.cvtColor(black_mask,cv2.COLOR_GRAY2BGR), cv2.cvtColor(blue_mask,cv2.COLOR_GRAY2BGR)))))
+                cv2.imwrite(str(folder / f"anomaly_{slot:02d}.png"), panel)
+                (folder / f"anomaly_{slot:02d}.txt").write_text(status, encoding="utf-8")
+            except (OSError, cv2.error):
+                pass  # optional diagnostics cannot interrupt steering
+            finally:
+                self._snapshot_busy = False
+        threading.Thread(target=save, daemon=True).start()
 
     def estimate(self, frame, tuning, now, draw=False):
         self.ring_prediction_used=False
@@ -197,6 +264,7 @@ class PatrolVision(base.CourseVision):
             events = dark.copy()
         blue, _white = road_masks(hsv, tuning)
         guard = cv2.dilate(blue, np.ones((3, 3), np.uint8))
+        blue_removed_pixels = int(np.count_nonzero((dark > 0) & (guard > 0)))
         dark[guard > 0] = 0
         events[guard > 0] = 0
         gate, self.gate_score = False, 0.
@@ -288,9 +356,6 @@ class PatrolVision(base.CourseVision):
                     self._previous_band_x = band_history_before
                     self._last_good_band_x = good_band_history_before
                     black.valid, black.rescue, black.reason = False, False, rescue_reason
-            if black.valid:
-                self.last_black_at = now
-                self._remember_trusted_black(black, now)
         road = PathEstimate(False, reason="contour_not_needed")
         # While returning from road fallback, compute both until black is
         # confirmed. Sample measured dual-edge width at a low rate while
@@ -316,7 +381,7 @@ class PatrolVision(base.CourseVision):
                 road_points = road.points[np.argsort(road.points[:, 1])]
                 current_x = float(np.interp(y, road_points[:, 1], road_points[:, 0]))
                 if abs(current_x-previous_x) > tuning.road_max_near_jump_ratio*width and not (self.router.phase=="EXIT" and road.exit_boundary is not None):
-                    if self._road_turn_is_continuous(road, now, tuning):
+                    if self._road_turn_is_continuous(road, now, tuning, blue, width, height):
                         self.road_jump_reason = "road_near_continuous_turn"
                     else:
                         self.road_jump_reason = "road_near_disagrees_with_recent_path"
@@ -423,6 +488,17 @@ class PatrolVision(base.CourseVision):
         else:
             self.ring_predictor.reset()
         self.ring_phase=self.router.phase
+        # Only the final accepted ORIGINAL black observation may renew evidence.
+        accepted_black = (tuning.black_enabled and chosen.valid and self.source == "black"
+                          and not chosen.rescue and not chosen.handoff
+                          and black.valid and black.route_observed
+                          and chosen.reason == extracted[9])
+        if accepted_black:
+            self.last_black_at = now
+            self._remember_trusted_black(black, now)
+        elif tuning.black_enabled:
+            self._previous_band_x = band_history_before
+            self._last_good_band_x = good_band_history_before
         if chosen.valid and chosen.points is not None and len(chosen.points):
             if not chosen.rescue:
                 self.previous_points = chosen.points.copy()
@@ -435,8 +511,13 @@ class PatrolVision(base.CourseVision):
         self.vision_status = (f"bands={extracted[6] if tuning.black_enabled else 0} "
                               f"black={black.reason} rescue={int(black.rescue)} "
                               f"road={road.reason} jump={self.road_jump_reason} "
-                              f"source={self.source} control={'track' if chosen.valid else 'search'}")
+                              f"source={self.source} visual_valid={int(chosen.valid)}")
+        self.vision_status += f" blue_removed_pixels={blue_removed_pixels} candidates={getattr(self, 'line_candidate_stats', {})}"
+        self._diagnostic_counts["switches"] += int(self.source != self._diagnostic_source)
+        self._diagnostic_source = self.source
+        self._diagnostic_counts["rejects"] += int(not chosen.valid)
         self._emit_diagnostic(self.vision_status, now)
+        self._save_anomaly(work, dark, blue, chosen, now)
         if draw:
             debug = work.copy()
             if chosen.exit_boundary is not None and len(chosen.exit_boundary)>1:
@@ -462,7 +543,8 @@ class PatrolVision(base.CourseVision):
             preview_width = max(1, width//3)
             for label, preview, bottom in (("black", dark, height), ("road", road.mask, height-preview_height)):
                 if preview is None:
-                    continue
+                    preview = np.zeros_like(dark)
+                    label += " not computed"
                 small = cv2.resize(preview, (preview_width, preview_height), interpolation=cv2.INTER_NEAREST)
                 top = bottom-preview_height
                 debug[top:bottom, width-preview_width:width] = cv2.cvtColor(small, cv2.COLOR_GRAY2BGR)
@@ -858,6 +940,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
         if not base.ENABLE_MOTION:
             linear, angular = 0., 0.
         self._publish_command(linear, angular)
+        self.vision.final_control_status = f"mode={mode} published_v={linear:.3f} published_w={angular:.3f}"
         self._last_command = (linear, angular)
         self.patrol_controller.last_command=self._last_command
         if mode == "localization_fault_latched":
