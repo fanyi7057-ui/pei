@@ -7,20 +7,17 @@ from pathlib import Path
 import signal
 import threading
 import time
-import subprocess
-import sys
 
 import cv2
 import numpy as np
 import icn as base
 from patrol_contour_runtime import (
-    FixedSpeedController, CornerExitGuard, RemoteAuthorityGuard, PathEstimate, PathSelector, PatrolFileWatcher,
+    FixedSpeedController, PathEstimate, PathSelector, PatrolFileWatcher,
     PatrolTuning, RoundaboutRouter, ExitRouteCommit, RingRouteMemory, observed_route,
     black_usable, road_centerline, road_masks, path_errors, detect_crosswalk,
 )
 
-from patrol_dash_entry import DashObservation, RingSearchPredictor, detect_vv_dashes, track_vv_curve
-from patrol_preview import FirstPersonPreview
+from patrol_dash_entry import DashObservation, detect_vv_dashes
 
 
 class PatrolVision(base.CourseVision):
@@ -47,7 +44,6 @@ class PatrolVision(base.CourseVision):
         self.entry_trigger = "none"
         self.exit_commit = ExitRouteCommit()
         self.ring_memory = RingRouteMemory()
-        self.ring_predictor=RingSearchPredictor()
         self.ring_phase = "SEEK"
         self.gate_tracked = False
         self.motion_command = (0., 0.)
@@ -70,7 +66,6 @@ class PatrolVision(base.CourseVision):
         self.motion_heading=None
 
     def reset_path(self,preserve_approach=False):
-        self.ring_predictor.reset()
         self.dash_observation = DashObservation()
         self.entry_ready = False
         self.exit_commit.reset()
@@ -91,11 +86,6 @@ class PatrolVision(base.CourseVision):
         self.road_estimate = PathEstimate(False, reason="reset")
 
     def estimate(self, frame, tuning, now, draw=False):
-        self.ring_prediction_used=False
-        self.ring_match_reason="inactive"
-        self.ring_route_delta=0.
-        self.ring_candidate_points=0
-        self.ring_reference_age=now-self.last_path_at if self.last_path_at is not None else -1.
         release_before=self.router.release_serial
         if self.router.paused_at is not None and self.ring_memory.at is not None:
             # Operator pause freezes task-relative memory age too; the NEW
@@ -236,9 +226,6 @@ class PatrolVision(base.CourseVision):
                 self.road_widths = road.widths.copy()
                 self.last_dual_at = now
         if routing:
-            self.ring_candidate_points=len(black.points) if black.points is not None else 0
-            if black.valid and self.ring_memory.path is not None:
-                self.ring_route_delta=max(abs(black.near_error-self.ring_memory.path.near_error),abs(black.mid_error-self.ring_memory.path.mid_error))
             # Select a ROUTE before choosing a sensor. Ordinary black priority
             # must not pull us back onto the straight/right fork.
             if self.router.phase=="ENTRY" and road.valid and not self.router.branch_acquired and not road.route_locked:
@@ -288,24 +275,9 @@ class PatrolVision(base.CourseVision):
             for candidate in (black, road):
                 if candidate.valid:
                     candidate.error = float(np.clip(candidate.near_error+tuning.roundabout_heading_gain*(candidate.mid_error-candidate.near_error), -1., 1.))
-        if (self.router.phase in ("ENTRY","FOLLOW") and self.previous_points is not None
-                and self.last_path_at is not None and now-self.last_path_at<=tuning.roundabout_route_memory_seconds):
-            guide=track_vv_curve(events,_white,tuning,self.previous_points,reacquire=self.router.phase=="FOLLOW")
-            if not guide.valid and self.router.phase=="FOLLOW":
-                predicted=self.ring_predictor.reference(now,width,tuning)
-                if predicted is not None:
-                    guide=track_vv_curve(events,_white,tuning,predicted,reacquire=True)
-                    self.ring_prediction_used=True
-            self.ring_match_reason=guide.reason
-            reliable_current=(black.valid and black.route_observed) or (road.valid and road.route_observed)
-            if guide.valid and (guide.reason!="vv_owned_curve_reacquired" or not reliable_current):
-                # Already-owned entry only: no need for the straight fork
-                # to remain visible. Current measured points, never old pixels.
-                guide.error=float(np.clip(guide.near_error+tuning.roundabout_heading_gain*(guide.mid_error-guide.near_error),-1.,1.))
-                black=guide
         self.black_estimate, self.road_estimate = black, road
         committed=self.exit_commit.select(black,road,now,self.motion_command[0],tuning)
-        if (committed is None and (self.router.phase=="APPROACH" or self.router.candidate_active(now,tuning))
+        if (committed is None and self.router.phase=="APPROACH"
                 and self.dash_observation.main.valid
                 and self.dash_observation.main.route_observed):
             # Current main dash chain, not a fabricated remembered path.
@@ -327,10 +299,6 @@ class PatrolVision(base.CourseVision):
                 self.exit_commit.reset()
         if self.router.ring_tracking:
             self.ring_memory.remember(chosen,now)
-        if self.router.phase=="FOLLOW":
-            self.ring_predictor.remember(chosen,now)
-        else:
-            self.ring_predictor.reset()
         self.ring_phase=self.router.phase
         if chosen.valid and chosen.points is not None and len(chosen.points):
             self.previous_points = chosen.points.copy()
@@ -359,8 +327,8 @@ class PatrolVision(base.CourseVision):
                 row = min(height-1, int(ratio*height))
                 cv2.line(debug, (0,row), (width-1,row), color, 1)
                 cv2.putText(debug, label, (2,max(10,row-2)), cv2.FONT_HERSHEY_SIMPLEX, .3, color, 1)
-            self.preview_kind = "black"
-            preview = dark
+            self.preview_kind = "road" if road.mask is not None and self.source != "black" else "black"
+            preview = road.mask if self.preview_kind == "road" else dark
             if preview is not None:
                 small = cv2.resize(preview, (width//3, height//3), interpolation=cv2.INTER_NEAREST)
                 debug[-small.shape[0]:, -small.shape[1]:] = cv2.cvtColor(small, cv2.COLOR_GRAY2BGR)
@@ -386,31 +354,11 @@ class PatrolTestNode(base.WheelLegRaceNode):
         self._capture_fps = self._process_fps = self._display_fps = 0.
         self._last_patrol_log = 0.
         self._patrol_ready = True
-        self.pc_preview=self.pc_viewer=None
-        if os.environ.get('PATROL_PC_PREVIEW','1')=='1':
-            try:
-                port=int(os.environ.get('PATROL_PC_PREVIEW_PORT','8080'))
-                if not 1024<=port<=65535:raise ValueError('preview port must be 1024..65535')
-                self.pc_preview=FirstPersonPreview(self._pc_camera_frame,port)
-                forwarded=os.environ.get('PATROL_PC_X11_DISPLAY','')
-                if forwarded.startswith(('localhost:','127.0.0.1:')):
-                    env=os.environ.copy();env['DISPLAY']=forwarded
-                    probe=subprocess.run(['xset','q'],env=env,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=2.)
-                    if probe.returncode==0:
-                        self.pc_viewer=subprocess.Popen([sys.executable,str(Path(__file__).with_name('patrol_pc_viewer.py')),str(port)],env=env,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-                        self.get_logger().info('电脑第一视角窗口已自动启动，无需另开终端/网页；关闭窗口不停车')
-                    else:self.get_logger().warn('电脑X11不可达，未弹窗；巡线继续')
-                else:self.get_logger().warn('当前SSH没有X11 forwarding；电脑未弹窗，巡线继续')
-            except (OSError,ValueError,subprocess.TimeoutExpired) as error:
-                self.get_logger().warn(f'电脑预览未完全启动，巡线继续：{error}')
-        from std_msgs.msg import Int16MultiArray
-        self.remote_guard=RemoteAuthorityGuard()
-        self.create_subscription(Int16MultiArray,"/sbus_channels",self._on_remote_channels,10)
         self._set_patrol_posture()
         self.create_subscription(base.Bool, "/patrol_test_stop", self._on_patrol_stop, 10)
         self.create_subscription(base.Bool, "/patrol_test_reset_course", self._on_patrol_reset_course, 10)
         self.get_logger().warn(
-            f"077bb36基础巡线恢复版（保留当前环岛任务），普通目标={self.patrol_tuning.fixed_speed_m_s:.2f}m/s，环岛上限={self.patrol_tuning.roundabout_speed_m_s:.2f}；"
+            f"巡线/环岛/横道V16（普通巡线V11基线，VV单帧4进5出）：普通目标速度={self.patrol_tuning.fixed_speed_m_s:.2f}m/s，确认环内倍率={self.patrol_tuning.roundabout_follow_speed_multiplier:.2f}；"
             f"环岛={self.patrol_tuning.roundabout_enabled}，横道={self.patrol_tuning.crosswalk_enabled}；台阶1/2仅保留位置、测试跳过；两圈环岛/横道完成凭据齐全才冲线，失败/超时不越级。实时文件：{config}"
         )
 
@@ -420,10 +368,6 @@ class PatrolTestNode(base.WheelLegRaceNode):
         if not self._patrol_ready:
             return
         updated, message = self.patrol_watcher.poll()
-        viewer=getattr(self,'pc_viewer',None)
-        if viewer is not None and viewer.poll() is not None and not getattr(self,'_pc_viewer_exit_logged',False):
-            self._pc_viewer_exit_logged=True
-            self.get_logger().warn('电脑第一视角窗口已关闭或X11失败；小车继续，关闭窗口不是急停')
         if updated is not None:
             old = self.patrol_tuning
             router = getattr(self.vision, "router", None)
@@ -468,24 +412,6 @@ class PatrolTestNode(base.WheelLegRaceNode):
     def _on_step_execute_jump(self, _message):
         # The inherited subscription must never arm the frozen jump controller.
         return
-
-    def _pc_camera_frame(self):
-        with self._frame_lock:
-            frame=self._latest_frame if self._camera_healthy else None
-            return (frame.copy() if frame is not None else None),self._latest_frame_time
-
-    def close(self):
-        try:
-            super().close()
-        finally:
-            viewer=getattr(self,'pc_viewer',None)
-            if viewer is not None and viewer.poll() is None:
-                viewer.terminate()
-                try:viewer.wait(timeout=1.)
-                except subprocess.TimeoutExpired:
-                    viewer.kill();viewer.wait(timeout=1.)
-            preview=getattr(self,'pc_preview',None)
-            if preview is not None:preview.close()
 
     def _on_odom(self,message):
         super()._on_odom(message)
@@ -534,53 +460,19 @@ class PatrolTestNode(base.WheelLegRaceNode):
         self.patrol_watcher.signature=None
         self.get_logger().warn("任务已重置到起点：环岛/横道次数清零；放回起点后输入1开始，不会自行运动")
 
-    def _wait_for_operator(self, reason, localization=False):
+    def _wait_for_operator(self, reason):
         self._publish_zero()
         self.patrol_controller.reset()
         self.vision.reset_path()
         router=getattr(self.vision,"router",None)
         if router is not None:
             router.pause(time.monotonic())
-        self._localization_wait=localization
-        if localization:
-            self._recovery_preview=PatrolVision()
-            self._recovery_ready_frames=0
-            self._recovery_preview_at=None
-            self._recovery_ready_announced=False
-            self._recovery_ready_log_at=-math.inf
-        else:
-            self._stand_gate = base.StandGate(enabled=True, settle_seconds=base.STAND_SETTLE_SECONDS)
+        self._stand_gate = base.StandGate(enabled=True, settle_seconds=base.STAND_SETTLE_SECONDS)
         self._stand_confirm_prompted = False
         self._start_cue_until = 0.
-        self.get_logger().warn(f"{reason}；已清零并保留任务阶段。{'定位恢复等待（不是退出/重新站立），保持检测；' if localization else ''}1继续当前任务，3从起点重置新场，不会自动重启。")
-
-    def _on_remote_channels(self,message):
-        self.remote_guard.update(message.data,time.monotonic(),self.patrol_tuning)
-
-    def _remote_state(self,now):
-        guard=getattr(self,"remote_guard",None)
-        return guard.state(now,self.patrol_tuning) if guard is not None else "unmonitored"
-
-    def _remote_allows_motion(self,now):
-        return not base.ENABLE_MOTION or self._remote_state(now) in ("auto_switch","disabled","unmonitored")
-
-    def _hold_remote_if_needed(self,now):
-        if self._remote_allows_motion(now) or getattr(self,"_localization_wait",False):
-            return False
-        router=getattr(self.vision,"router",None)
-        if router is not None and router.phase in ("APPROACH","ENTRY","FOLLOW","EXIT","RING_WAIT_DEADLINE"):
-            router._release_ring(now,self.patrol_tuning,"remote_takeover_retry")
-            router.ring_recovery_until=None  # no old blind turn after manual relocation
-        self._wait_for_operator("遥控/信号接管："+self._remote_state(now)+"；当前未完成环岛作废，已完成圈凭据保留",localization=True)
-        return True
+        self.get_logger().warn(f"{reason}；已清零并保留任务阶段。1继续当前任务，3从起点重置新场，不会自动重启。")
 
     def _on_race_start_confirm(self, message):
-        if message.data and self._patrol_ready and not self._remote_allows_motion(time.monotonic()):
-            self.get_logger().warn(f"遥控保护：{self._remote_state(time.monotonic())}，SWA原值={getattr(self.remote_guard,'raw',None)}；本包ROS档门槛={self.patrol_tuning.remote_auto_channel_min}。请确认自动档及新鲜SBUS数据，再输入1；未恢复运动")
-            return
-        if getattr(self,"_localization_wait",False) and not message.data:
-            self.get_logger().warn("未收到有效继续确认，保持定位恢复等待")
-            return
         if self._patrol_ready and not self.patrol_tuning.enabled:
             self.get_logger().warn("enabled=0，先修改实时文件再确认开始")
             return
@@ -588,37 +480,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
             router=getattr(self.vision,"router",None)
             if router is not None:
                 router.resume(time.monotonic(),clear_fault=True)
-            if getattr(self,"_localization_wait",False):
-                self._localization_wait=False
-                self.patrol_controller.reset()
-                self.get_logger().warn("人工确认定位恢复，继续当前任务，不重复赛前站立")
-                return
         super()._on_race_start_confirm(message)
-
-    def _run_localization_preview(self,frame,tuning,now,draw):
-        """Independent perception only: never advance the paused task/router."""
-        self._publish_zero()
-        preview=self._recovery_preview
-        path=preview.estimate(frame,replace(tuning,roundabout_enabled=0,crosswalk_enabled=0),now,draw=draw)
-        fresh=self._recovery_preview_at is not None and 0<now-self._recovery_preview_at<=tuning.roundabout_path_max_gap_seconds
-        reliable=path.valid and path.route_observed and not path.rescue and not path.handoff
-        self._recovery_ready_frames=(self._recovery_ready_frames+1 if fresh else 1) if reliable else 0
-        self._recovery_preview_at=now
-        ready=self._recovery_ready_frames>=tuning.reacquire_confirm_frames
-        if ready and not self._recovery_ready_announced and now-self._recovery_ready_log_at>=1.:
-            self.get_logger().info("定位恢复：连续可靠路线已出现，输入1继续；小车仍保持停车")
-            self._recovery_ready_log_at=now
-        self._recovery_ready_announced=ready
-        if draw and self._debug_window_ready:
-            debug=preview.last_debug if preview.last_debug is not None else frame.copy()
-            cv2.putText(debug,"LOCALIZATION WAIT - press 1 to resume",(8,24),cv2.FONT_HERSHEY_SIMPLEX,.45,(0,180,255),1)
-            self._last_display_at=now
-            try:
-                cv2.imshow("WheelLeg Race Vision",debug)
-                if cv2.waitKey(1)&0xFF in (ord("q"),ord("Q"),27):
-                    self.request_exit()
-            except cv2.error:
-                self._debug_window_ready=False
 
     def _draw_stand_gate_debug(self, now):
         # Keep HDMI previews without drawing/encoding on every control tick.
@@ -664,8 +526,6 @@ class PatrolTestNode(base.WheelLegRaceNode):
             self._publish_zero()
             self.patrol_controller.reset()
             return
-        if self._hold_remote_if_needed(now):
-            return
         with self._frame_lock:
             healthy = self._camera_healthy and self._latest_frame is not None
             captured_at = self._latest_frame_time
@@ -684,9 +544,6 @@ class PatrolTestNode(base.WheelLegRaceNode):
             return
         self._last_processed_sequence = sequence
         draw = base.SHOW_DEBUG and now-self._last_display_at >= 1/tuning.display_fps
-        if getattr(self,"_localization_wait",False):
-            self._run_localization_preview(frame,tuning,now,draw)
-            return
         router = getattr(self.vision, "router", None)
         route_before = router.phase if router is not None else "SEEK"
         if router is not None:
@@ -698,49 +555,44 @@ class PatrolTestNode(base.WheelLegRaceNode):
         if router is not None and router.phase != route_before:
             self.get_logger().warn(f"ROUTE 阶段 {route_before}->{router.phase}；任务={router.task_name}，台阶位置={router.course.steps}，环岛凭据={router.course.rings}，横道凭据={router.course.zebras}；左路线锁定={int(router.left_lock)}，视觉完成环岛={router.completed}，时间释放={router.timed_releases}，来源={router.ring_release_source}")
         if router is not None and router.navigation_reset_serial!=getattr(self,"_navigation_reset_seen",0):
-            self.patrol_controller.reset()  # discard the failed ring search episode too
+            self.patrol_controller.reset_error()
+            self.patrol_controller.last_good_turn=0.
+            self.patrol_controller.last_curve_at=-float("inf")
             self._navigation_reset_seen=router.navigation_reset_serial
         age = done-captured_at
         if age > tuning.image_timeout_seconds:
             # A fresh-at-entry frame can become stale during a slow operation.
             self._fault_stop("processing_timeout", done)
             return
-        if self._hold_remote_if_needed(done):
-            return
         loss_age = 0. if path.valid else self.patrol_controller.loss_age(done)
         if router is not None and router.fault:
             self.get_logger().error(f"PATROL_ROUTE_FAULT {router.fault}：不靠超时假装出环，回站立等待人工")
-            self._wait_for_operator(router.fault,localization=True)
+            self._wait_for_operator(router.fault)
             return
-        override=router.motion_override(done,tuning,getattr(self.vision,"motion_pose",None),path=path) if router is not None else None
-        candidate=router is not None and router.candidate_active(done,tuning)
-        if not hasattr(self,"_corner_exit_guard"):
-            self._corner_exit_guard=CornerExitGuard()
-        self._corner_exit_guard.observe(path,self.patrol_controller,done,tuning,
-            allowed=override is None and not candidate and (router is None or router.phase=="SEEK"))
+        override=router.motion_override(done,tuning,getattr(self.vision,"motion_pose",None)) if router is not None else None
         if override is not None:
             target_v,target_w,mode=override
             planned_target=target_v
             linear,angular=self.patrol_controller.task_command(target_v,target_w,done,tuning,
-                immediate_stop=mode in ("crosswalk_stop","finished","ring_recovery_stop","unauthorized_finish"),
-                left_only=mode in ("roundabout_left_acquire","ring_curve_preview"))
-            if mode in ("roundabout_left_acquire","ring_curve_preview","gyro_exit_seek","ring_failure_recovery","ring_recovery_stop"):
-                linear=min(linear,target_v)  # no stale 0.65m/s during deceleration
+                immediate_stop=mode in ("crosswalk_stop","finished"),
+                left_only=mode=="roundabout_left_acquire")
         else:
             control_tuning=tuning
-            if router is not None and (candidate or router.phase in ("APPROACH","ENTRY","FOLLOW","EXIT")):
-                control_tuning=replace(tuning,fixed_speed_m_s=min(tuning.fixed_speed_m_s,tuning.roundabout_speed_m_s))
+            if (router is not None and router.follow_boost_allowed(path,done,tuning)
+                    and self.patrol_controller.loss_started_at is None):
+                factor=tuning.roundabout_follow_speed_multiplier
+                control_tuning=replace(tuning,fixed_speed_m_s=tuning.fixed_speed_m_s*factor)
+                if tuning.roundabout_scale_tracking_turn:
+                    # Preserve curvature approximately; saturation/physics
+                    # still limit the real path. Inertia is not steering.
+                    control_tuning=replace(control_tuning,steering_gain=tuning.steering_gain*factor,
+                                           steering_kd=tuning.steering_kd*factor,
+                                           angular_accel_rad_s2=tuning.angular_accel_rad_s2*factor)
             exit_turn=router.exit_search_turn(path,done,tuning,getattr(self.vision,"motion_heading",None)) if router is not None else None
             linear, angular, mode = self.patrol_controller.command(path, done, control_tuning,
                 search_direction=1 if router is not None and router.search_left and tuning.roundabout_enabled else None,
                 search_heading_turn=exit_turn)
             planned_target=min(control_tuning.fixed_speed_m_s,control_tuning.search_degraded_speed_m_s) if self.patrol_controller.degraded else control_tuning.fixed_speed_m_s
-            if self.patrol_controller.loss_started_at is not None and not control_tuning.maintain_cruise_during_search:
-                planned_target=min(planned_target,control_tuning.search_speed_m_s)
-        if router is not None and (candidate or router.phase in ("APPROACH","ENTRY","FOLLOW","EXIT")):
-            linear=min(linear,tuning.roundabout_speed_m_s)
-        if router is not None and (candidate or router.phase=="APPROACH"):
-            angular=float(np.clip(angular,-tuning.ring_candidate_turn_limit_rad_s,tuning.ring_candidate_turn_limit_rad_s))
         source = self.vision.source
         previous_source = getattr(self, "_previous_path_source", source)
         self._source_changes_total = getattr(self, "_source_changes_total", 0)+int(source != previous_source)
@@ -753,24 +605,14 @@ class PatrolTestNode(base.WheelLegRaceNode):
         if not base.ENABLE_MOTION:
             linear, angular = 0., 0.
         self._publish_command(linear, angular)
-        self.vision.final_control_status = f"mode={mode} published_v={linear:.3f} published_w={angular:.3f}"
         self._last_command = (linear, angular)
-        self.patrol_controller.last_command=self._last_command
         if mode == "localization_fault_latched":
             self.get_logger().error(
                 f"PATROL_LOCALIZATION_FAULT reason={self.patrol_controller.fault_reason} "
                 f"loss_age={self.patrol_controller.loss_age(done):.2f}s "
                 f"search_distance={self.patrol_controller.loss_distance:.2f}m；持续无定位，等待人工确认")
-            self._wait_for_operator("定位保护停车，节点未退出；持续无定位达到找线边界",localization=True)
+            self._wait_for_operator("定位保护停车，节点未退出；持续无定位达到找线边界")
             return
-        diagnostic_state=(mode, path.valid, router.phase if router is not None else "SEEK")
-        if diagnostic_state != getattr(self,"_last_control_diagnostic",None):
-            self.get_logger().info(
-                f"CONTROL_CHANGE mode={mode} phase={diagnostic_state[2]} valid={int(path.valid)} "
-                f"loss={self.patrol_controller.loss_age(done):.3f}s "
-                f"reacquire={self.patrol_controller.reacquire_streak}/{tuning.reacquire_confirm_frames} "
-                f"image_age={age:.3f}s v={linear:.3f} w={angular:.3f}")
-            self._last_control_diagnostic=diagnostic_state
         self._processed_count += 1
         elapsed = done-self._stats_at
         if elapsed >= 1:
@@ -785,13 +627,8 @@ class PatrolTestNode(base.WheelLegRaceNode):
             road_path = getattr(self.vision, "road_estimate", PathEstimate(False))
             reason = "_".join(path.reason.split())
             self.get_logger().info(
-                f"PATROL source={self.vision.source} mode={mode} version=23 baseline=077bb36 target={tuning.fixed_speed_m_s:.2f} "
-                f"ring_predict={int(getattr(self.vision,'ring_prediction_used',False))} ring_match={getattr(self.vision,'ring_match_reason','inactive')} "
-                f"ring_delta={getattr(self.vision,'ring_route_delta',0.):.3f} ring_ref_age={getattr(self.vision,'ring_reference_age',-1.):.3f} ring_points={getattr(self.vision,'ring_candidate_points',0)} "
-                f"authority={self._remote_state(done)} "
-                f"remote_raw={getattr(getattr(self,'remote_guard',None),'raw',None)} "
+                f"PATROL source={self.vision.source} mode={mode} version=16 target={tuning.fixed_speed_m_s:.2f} "
                 f"ring_multiplier={tuning.roundabout_follow_speed_multiplier:.2f} "
-                f"ring_cap={tuning.roundabout_speed_m_s:.2f} "
                 f"planned_target={planned_target:.3f} "
                 f"cmd_v={linear:.2f} cmd_w={angular:+.2f} conf={path.confidence:.2f} "
                 f"odom_v={getattr(self,'_patrol_odom_v',float('nan')) if done-getattr(self,'_last_odom_time',0.)<=.35 else float('nan'):.2f} "
@@ -815,9 +652,6 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 f"entry_ready={int(getattr(self.vision,'entry_ready',False))} "
                 f"entry_detector=vv entry_reason={router.entry_detection_reason if router is not None else 'none'} "
                 f"vv_reason={dash.reason} vv_blocks={dash.blocks} "
-                f"fork_gate={router.entry_detection_reason if router is not None else 'inactive'} "
-                f"entry_branch_reason={dash.branch.reason} exit_branch_reason={dash.exit_branch.reason} "
-                f"vv_raw={dash.raw_blocks} vv_white={dash.white_blocks} vv_column={dash.column_blocks} vv_branch={dash.branch_blocks} candidate={int(candidate)} "
                 f"vv_frames={router.vv_streak if router is not None else 0} "
                 f"vv_entry_frames={router.vv_entry_streak if router is not None else 0} "
                 f"vv_entry={int(dash.branch.valid)} vv_exit={int(dash.exit_branch.valid)} "
@@ -825,14 +659,12 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 f"marker_travel={router.distance-router.first_marker_distance if router is not None and router.phase=='APPROACH' else 0.:.2f} "
                 f"last_entry_proof={getattr(self.vision,'entry_trigger','none')} "
                 f"route_status={router.route_status if router is not None else 'none'} "
-                f"entry_limit={router.entry_acquire_limit(done,tuning) if router is not None else 0.:.2f} "
                 f"route_owned={int(router.branch_acquired) if router is not None else 0} "
                 f"exit_corner={int(path.exit_boundary is not None)} "
                 f"heading_source={router.measured_turn.source if router is not None else 'none'} "
                 f"heading_ok={int(router.measured_turn.fresh(done,tuning)) if router is not None else 0} "
                 f"heading_reason={router.measured_turn.reason if router is not None else 'none'} "
                 f"loop_candidate={int(router.loop_candidate_at is not None) if router is not None else 0} "
-                f"exit_seek_m={router.loop_seek_distance if router is not None else 0.:.3f} "
                 f"exit_commit={getattr(getattr(self.vision,'exit_commit',None),'reason','none')} "
                 f"measured_turn_deg={math.degrees(router.measured_turn.angle) if router is not None else 0.:+.1f} "
                 f"measured_travel={router.measured_turn.travel if router is not None else 0.:.2f} "
@@ -858,7 +690,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
         if draw and self.vision.last_debug is not None and self._debug_window_ready:
             self._last_display_at = done
             labels = [
-                (f"V17 第{router.course.lap+1 if router is not None else 1}圈 {router.phase if router is not None else 'SEEK'}；横道 {router.crosswalk_count if router is not None else 0}/2", (0, 220, 255)),
+                (f"V16 第{router.course.lap+1 if router is not None else 1}圈 {router.phase if router is not None else 'SEEK'}；横道 {router.crosswalk_count if router is not None else 0}/2", (0, 220, 255)),
                 (f"台阶本次跳过；任务{router.task_name if router is not None else 'none'}；环岛凭据{router.course.rings if router is not None else []}", (0,220,255)),
                 (f"横道分数{self.vision.crosswalk_score:.2f}；许可 {router.crosswalk_block_reason(done,tuning)}", (0, 220, 255)),
                 (f"路径：{self.vision.source}  {mode}  可信度{path.confidence:.2f}", (0, 255, 0)),

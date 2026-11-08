@@ -1,134 +1,75 @@
-# V29：回到V23基础，撤回叠加实验，仅保留必要稳定性修复
+# V16：新版 V15 基准 + VV 单帧环岛入口
 
-用户明确要求回到之前指定的V23，并直接分析取舍。当前不是V23逐字原样，而是V23巡线/视觉/任务基础加最小失线修复和只读自动第一视角。未完成V28已保存在本地debug/2026-10-25-V28未完成试验留档-01（c3ccc27），既有V26/V27历史不丢失；本目录移除实验模块和相应测试/说明文件，历史分支可恢复。
+## 修改边界
 
-## 保留与撤回
+以用户2026-10-23重新提供的Two为基准。普通黑线/轮廓提取、PathSelector、FixedSpeedController、速度参数、共享IMU修复、台阶源码和固件均保留。入口只调用patrol_dash_entry.py，不再运行旧完整/部分虚线跨帧跟踪与EntryApproachProof；旧辅助类/字段只作历史离线测试与参数表兼容，不构成另一条入口授权路径。
 
-- 恢复V23原图像预处理、黑线提取、ROI、PathSelector、环岛状态机及原有PID/转向公式。删除patrol_stability.py的暗蓝补充/宽块剔除、patrol_turn_posture.py及额外门槛；不再引入多套姿态/宽限状态。
-- 固定姿态posture_height_m=0.15、posture_pitch_deg=25，无按两弯/时间自动升腿；时间抬腿仍仅待办，不启用。普通目标0.65、环岛上限0.30不变。
-- V23的即时0.20限速可能让单帧掉线造成顿挫；现在maintain_cruise_during_search=1且search_slow_after_seconds=0.20：短掉帧保持已发速度/转向、不加速；持续丢线或重获不足3帧时，原同一搜索预算继续累计，到0.20秒后限速0.20，实际搜索转向上限search_max_turn_rad_s=0.60。平滑后再次夹紧，避免继承2rad/s残留。定位硬预算/相机/遥控保护保留。不保证身体能瞬时物理减速。
-- 没连续确认找回时不改写搜索方向记忆；可靠正常巡线转向上限仍原max_turn_rad_s=2.0，任务单独转向和实测出环航向控制不被普通搜索夹紧。
-- 保留同一采集源的后台只读FPV、自动X11电脑窗口；无需手动新终端/网页。MobaXterm须一次性启用X11 forwarding并运行X server，无转发会警告但不影响控制。关闭观看窗口不是急停。
+现有两圈任务顺序、实际取线、实测偏航、真实出环凭据、横道停车与终点许可保留。台阶1/2仍仅SKIPPED_TEST占位，不代表已执行跳跃。
 
-## 入口距离不再混用
+## 唯一入口流程
 
-入口roundabout_first_marker_pass_distance_m恢复V23基准0.12米、运动冷却0.5秒；只有5号标记后APPROACH才使用，不影响之前SEEK普通巡线。出环ring_gyro_exit_seek_distance_m仍独立0.73米/7秒寻找/8秒获取。新增回归对照0.12/0.30/0.73入口参数，普通巡线输出应完全一样。没有依据“增大入口距离”去更改普通速度/姿态/掩模。
+SEEK：原6秒/1米启用条件满足后，VV检测到当前纵向小黑块列，默认1个新帧确认；先记首次标记为需要通过的5号岔口，进入APPROACH，不立即左转。
 
-## 测试和部署
+APPROACH：继续现有巡线；若当前主虚线列有真实近端多行观测，沿它通过岔口，不追随返回的弯支线。没有该观测则按现有基础巡线/有界丢线保护，不造线、不倒车、不通过冷却命令停车，也不固定向左盲转。
 
-停止旧程序后复制E:/Two更新内容至/home/orangepi/Two_patrol，运行`sha256sum -c checksums/PATROL_TEST_ADDITIONS_SHA256SUMS.txt && bash tools/patrol_test_menu.sh`，确认V29，先1干跑后2实车。无需重编译C++。保留patrol_preview.py和patrol_pc_viewer.py，并更新launch/patrol_test.launch.py及两个菜单；未使用的旧实验.py即使留在Pi也不导入，可先不手动删除。
+默认经过1.0等效运动秒且至少前进0.20米，才允许当前左侧向前发散的弯曲虚线触发ENTRY。5号向前汇聚的返回支线即使再次出现也不能入环。方向由弯支线相对主虚线的近/中间距变化判断，不能仅看绝对屏幕倾斜方向。
 
-重点实测：初始黑线是否稳定、单帧掉线是否顿挫、持续掉线0.20秒是否降速/转向温和、重获与左右弯、S弯、环岛/横道顺序、遥控与相机超时。盲走宽限最多约0.13米(0.65*0.20)，仍有冲出风险；较小搜索角速度也可能找不回急弯，所以必须保留遥控急停。当前只有合成/代码回归，不能保证完赛或声称实物稳定。下文V23为历史说明。
+有新鲜odom时按实测位移/当前正向指令折算运动秒数，避免10Hz里程计与30Hz图像导致冷却被拉长；无odom沿用原命令估计，日志route_progress会区别来源。停车/倒车不累计运动时间，暂停不吃掉冷却，重复时间戳不计新帧；重试或第二圈清空首次标记。
 
-# V23：出口0.73米，丢线搜索限速与可靠反向消除
+ENTRY以后沿用V15：建立左转、实际取到环内路线后FOLLOW、确认真实出口后才发放本圈横道许可。当前真实弯支点仅初始化路线记忆，不等同已取线，更不能直接形成完成凭据。5号返回支线可作为FOLLOW的出口候选，但仍受原时间/行程/转角和真实EXIT路线确认约束。
 
-当前出口目标0.73米、低速直探仍0.12m/s（理论6.08秒）、寻找7秒、获取总期限8秒。普通有效路线目标仍0.65m/s，环岛上限0.30不变。
+单帧检测不等于任意一个黑点。仍要求同列小黑块、白路邻域、纵向白色间隙、近端弯支方向。二维几何不能绝对证明物理4/5位置；首次标记顺序与现场行驶方向必须正确，从入口中途开机可能先跳过它。
 
-`maintain_cruise_during_search: 0` 为当前安全设置；`search_speed_m_s: 0.20` 限制无路线和未连续确认恢复期间的实际输出，不等待减速斜坡。连续3帧有效后平滑恢复，不更改普通有效路线的转向公式。旧参数设1会启用旧的巡航搜索行为，不建议实车使用。退化搜索仍0.12，更严格的任务/遥控/相机保护优先。
+## 参数位置
 
-丢线恢复时，非补救/非交接、置信度达标且近处方向一致的大偏差观测，可立即将反向旧输出归零，再平滑建立新转向；不把噪点直接变为大角速度。日志增加 entry_branch_reason / exit_branch_reason，原vv_reason/fork_gate记录检测拒绝阶段。
-
-本次日志始终SEEK/L1_RING且exit_seek_m=0，因此该日志的右偏不是0.83米出口分支执行导致，缩距只是用户要求，主要修复的是普通丢线搜索速度。下文V22及更早均为历史记录。
-
-# V22：出口寻找目标0.83米，时间配套8秒/9秒
-
-用户实测0.43与0.63不足后明确要求改0.83米。V22只改出口寻找参数、合法范围及相应测试/提示；寻找仍0.12m/s，理论约6.92秒，寻找硬期限8秒、出口获取总期限9秒（阶段上限10秒不变）。默认及YAML同步0.83，距离合法范围(0,1.0]米，修复0.63触发旧0.50上限无法启动的问题。
-
-任何实际可靠出口路线仍立即接管，不要求走满；图像/航向/遥控/距离/期限保护保留，不能仅走够距离就算出环。较长无可靠路线行驶增加冲出赛道风险，实测清场并保留急停；不是所有停车都强制继续走0.83米。普通巡线、入环、FOLLOW预测、人行道速度与参数均不变。
-
-以下内容是V21及更早历史说明，以V22开头说明为准。
-
-出口低速寻找目标0.43米，保持0.12m/s，寻找硬期限4.5秒、出口获取总期限5秒。找到可靠路线立即接管，不强求走满，航向/图像/距离/遥控保护不变。普通0.65、环内上限0.30、人行道0.25米及停车3秒、4进5出入口均不改。
-
-只在现有FOLLOW当前匹配失败时，根据最近两次真实锁定且有近端观察的路线预测搜索参考，最长0.35秒、最大平移0.10图宽。预测本身不是路径，不延长有效观察时间；仍需匹配当前图像黑块，完全无像素不能伪造路线或出环凭据。暂停/重置/退出FOLLOW清空预测。
-
-新日志version=21，ring_predict/ring_match/ring_delta/ring_ref_age/ring_points分别用于观察是否尝试预测、匹配原因、路线偏差、原参考年龄和过滤前黑线点数。配置ring_prediction_seconds/max_shift_ratio。风险与清单见records/2026-10-24-V21-exit043-search-prediction.md。
-
-## 以下V20及更早内容为历史说明，以V21为准
-
-本轮不改普通0.65、环内上限0.30、虚线预引导0.12m/s；不改入口4进5出、人行道0.25米接近及停车3秒。仅gyro候选出环找线目标改0.22米，较旧1秒×0.12m/s名义距离多0.10米；2.3秒硬期限，航向偏离35度/过期保护仍在。优先用候选起点odom的前向投影，不把侧移/倒车算成向前；没odom时只受时间保护，不声称实测走够0.22米。任何情况下不靠该距离授权完成。
-
-FOLLOW原窄窗失败时可按已选曲线形状平移重定位当前白色两侧黑块；范围最多0.22图宽，拒绝单点、形状冲突和近似双候选，不覆盖已有可靠黑线/道路，不参与入环授权。参数ring_curve_reacquire_enabled/max_shift_ratio。
-
-遥控保护重要：已核对本包固件SelectTelecontrol=1，SWA是sbus[4]，原值>=1792对应上位机档；robot_mode不是这个标志。实车需要新鲜/sbus_channels；unknown/manual_switch/stale均不允许自动起跑。遥控介入时未完成环岛作废，已完成圈凭据保留；切回自动档后输入1继续，不能将人工摆位/转动计成自动完成。新日志authority/remote_raw/exit_seek_m和version=20。话题新鲜度不是射频failsafe，也不是底盘执行ROS的证明；实际固件映射不同须先核实，不能盲目降低门槛。
-
-启动方式与原来相同；先干跑再实车。详细参数、风险及测试见records/2026-10-24-V20-exit-distance-current-dashes-remote.md。
-
-## 以下为V19历史说明，以V20说明为准
-
-依据日志1043b9e6：第一次保护后重复赛前站立；第二次实际入环时被从起点计时的time_fallback打断。旧查找计时不再中断ENTRY/FOLLOW/EXIT，也不再让SEEK周期性触发恢复。入环仍无可靠虚线时维持原3秒获取边界；当前锁定虚线持续存在时最多延长到6秒，满足0.12m/s走0.45米所需时间，6秒仍未接管则保护。
-
-定位保护保持零速、原任务和图像检测，不重新站立倒计时、不退出、不自动开动；连续可靠路线出现会提示输入1。人工2停车和3重置仍保留原确认流程。出弯独立CornerExitGuard只在3帧近/中真实路线均居中时清除旧PD误差，不改变基础控制器/速度/急弯参数，不用于环岛阶段。
-
-新参数：ring_entry_progress_max_seconds=6、corner_exit_confirm_frames=3、corner_exit_error=0.12。继续使用本页启动命令；日志version=19、entry_limit可核对。完整测试风险见records/2026-10-23-V19-phase-timers-and-localization-wait.md。
-
-## 以下为V18及V17历史说明，以本页V19说明为准
-
-V18在V17基础上修复日志34da8771的问题。普通速度仍0.65；可信主虚线候选先限速0.30，消失0.6秒释放，候选/APPROACH角速度限制±0.6。候选不授权入环；5号/4号方向判断不变。已入环但尚未取得完整路线证明时，当前锁定虚线可用0.12低速视觉引导，而不是被固定左转覆盖。近端证明统一使用vv_dash_entry_near_ratio，仍需多块真实观察。最终失线停车保留。
-
-参数位于ros2_ws/src/wheel_robot/config/patrol_test.yaml：ring_candidate_hold_seconds、ring_candidate_turn_limit_rad_s；新日志vv_raw/vv_white/vv_column/vv_branch/candidate及version=18。详见records/2026-10-23-V18-candidate-and-current-curve.md。
-
-以下为保留的V17设计说明；“只有主虚线”在V18会先局部减速，但仍不认定5号。
-
-基准是E:/Two的V16（585823a）。普通巡线、黑线/轮廓预处理、PathSelector、FixedSpeedController、原比赛/台阶和C++底盘不改。只改环岛分支及失败后的有界恢复。
-
-## 这次对应日志929a5007
-
-第一趟物理左拐时程序一直APPROACH，未进入ENTRY；第一次普通主虚线被误当成需要通过的5号。第二趟启动ENTRY却始终route_owned=0，在55度后失去固定引导，最后约178度放弃，再以0.65m/s盲搜。日志没有FOLLOW/EXIT，环内1.3倍率未启用，不是360度误判完成。
-
-## 当前流程
-
-- 只有主虚线：候选，不认定已遇到5号、不启动冷却。
-- 明确5号向前汇聚：继续沿当前主路通过，冷却0.5等效运动秒，同时至少前进0.12米。
-- 明确4号向前发散：可直接接管，不把真实入口当成第一次应忽略的出口。几何仍是候选证据，不能声称二维画面绝不误判。
-- APPPROACH/ENTRY/FOLLOW/EXIT线速度统一硬上限0.30m/s。普通SEEK/非环岛巡线仍0.65m/s；旧1.3倍率不再突破环岛上限。
-- 入环以后沿当前已选弯曲小黑块跟踪，不再要求直行主虚线同时存在；每帧必须有真实黑块，记忆只用于关联，不绘制假线。
-- 当前真实同路虚线取得控制优先，55度不再是唯一交接条件。达到55度仍无可靠路线时，以0.12m/s、0.35rad/s温和左探；获取总期限3秒，即使IMU缺失也有期限。
-- 失败后清除旧搜索方向/速度，最多1秒低速恢复，3个连续真实路线新帧才回普通巡线；没有可靠路径则保护停车等人工，不再高速盲搜。人工1继续会解除过期恢复期限，但从未看见路径时原控制器仍不会盲起步。
-- 保留实际入环、真实EXIT、每圈环岛/横道完成凭据；不能靠时间或自旋假装完成。两圈台阶仍SKIPPED_TEST占位，不执行跳跃。
-
-## 唯一参数表
-
-ros2_ws/src/wheel_robot/config/patrol_test.yaml。完整覆盖Python/新脚本/YAML后重启一次；后续改表约0.5秒热加载。开关用0/1，非法整表不应用。
+唯一热加载表：ros2_ws/src/wheel_robot/config/patrol_test.yaml。必须将本版Python、全部YAML和新增脚本一起覆盖后重启一次，后续只调数值约0.5秒热加载。非法整表保留上一有效值；不混用旧参数表。
 
 | 参数 | 默认 | 含义 |
 |---|---:|---|
-| vv_dash_confirm_frames | 1 | 同类型当前虚线新帧确认数，主路/入口/出口不能互相预填 |
-| vv_dash_min_blocks | 4 | 新入口识别的主虚线最少独立黑块数；已选路线续跟不要求直行主线仍在 |
-| roundabout_first_marker_cooldown_seconds | 0.5 | 仅明确5号后的等效运动时间 |
-| roundabout_first_marker_pass_distance_m | 0.12 | 冷却同时满足的最小前进行程 |
-| roundabout_speed_m_s | 0.30 | 接近、入环、环内、出环的线速度上限，普通巡线不受影响 |
-| roundabout_entry_turn_rad_s | 1.20 | 建立入环的左探角速度rad/s，仍受全局最大角速度约束 |
-| ring_gyro_exit_enabled | 1 | 使用现有可靠IMU/odom偏航的保底开关，不新增第二套积分 |
-| ring_gyro_exit_degrees | 360 | 从ENTRY起的保底净转角，另需已实际取得环内路线 |
-| ring_gyro_min_distance_m | 0.80 | 保底所需实际行程；没有实测位移时原地转圈不能达标 |
-| ring_gyro_exit_seek_seconds | 1.0 | 达标后无可靠线时低速直探出口的最多时间 |
-| ring_recovery_speed_m_s | 0.12 | 未取线温和搜索、失败恢复、无路线找出口的速度 |
-| ring_recovery_turn_rad_s | 0.35 | 未取线温和左探与失败恢复角速度rad/s |
-| ring_recovery_seconds | 1.0 | 入环失败恢复的最多时间 |
+| vv_dash_confirm_frames | 1 | 首次标记/当前入口所需连续新帧；二者计数分开，出口帧不能预填入口计数 |
+| vv_dash_min_blocks | 4 | 同一纵向列最少黑块数 |
+| vv_dash_roi_top_ratio / bottom_ratio | 0.22 / 0.90 | 仅VV检测ROI，不改普通巡线ROI |
+| vv_dash_max_x_spread_px80 | 18 | 80列参考网格上的虚线列横向容差 |
+| vv_dash_min_gap_rows56 | 3 | 56行参考网格上的块间白色行数 |
+| vv_dash_entry_near_ratio | 0.66 | 当前左弯支线至少到达的整图高度比例 |
+| roundabout_first_marker_cooldown_seconds | 1.0 | 首次标记后的等效运动时间，非停车等待 |
+| roundabout_first_marker_pass_distance_m | 0.20 | 冷却同时要求的最少前进行程 |
 
-冷却用实测位移/当前正向指令折算运动秒，无odom沿用命令估计并打印来源；因此默认名义通过约0.30×0.5=0.15米，不是0.65米。0.12米只是同时要求的下限，不能保证准确物理位置，真实速度/惯性需实测。
+0.65m/s时1秒约前进0.65米；两个岔口间距更短时，1秒可能过长。先看cooldown_remaining、marker_travel与当前入口形态，不能一味加大冷却。
 
-旧roundabout_loop_min_turn_deg和roundabout_loop_min_distance_m只兼容读取，V17保底目标改调ring_gyro_*；回向容差与传感器新鲜度/一致性检查仍保留。旧入口跨帧证明参数不参与当前入口判定。
+速度不变：fixed_speed_m_s=0.65；roundabout_follow_speed_multiplier=1.30，仅满足原可靠FOLLOW/稳定/实测转角条件才可能目标0.845m/s。入环角速度roundabout_entry_turn_rad_s=1.20，建立角度roundabout_entry_acquire_yaw_deg=55；本次没有另叠加0.5秒强转。环内倍率偏快可另行对照1.0，但本次未擅自修改。
 
-## 保底不是直接判完成
+偏航参数保持：roundabout_heading_source=0自动选有效IMU/odom；roundabout_loop_min_turn_deg=300、loop_return_tolerance_deg=35、loop_min_distance_m=1.0；这些只参与环行进展证明，require_exit_route=1仍要求真实出环，不能拿原地自旋当完成。
 
-现有MeasuredRingTurn解绕实测偏航，必须已经FOLLOW、净转角达到360度、实测行程至少0.80米且同向性/新鲜度可靠，才提名EXIT。可靠视觉优先；没有可靠路径时以恢复速度直探最多1秒，偏航陈旧或到期仍无路线则保护停车。之后仍须真实出口路线确认与行程才能授权横道。
+## 日志排查
 
-## 复制与MobaXterm
+应出现version=16、entry_detector=vv。重点：
+- entry_reason=vv_first_marker_pass_5：首次标记；
+- vv_cooling_keep_tracking：冷却并巡线，不是停车命令；
+- vv_reject_return_or_no_left_fork：仍为5号返回形态，或当前没有可靠左弯分支；
+- vv_current_left_diverging_entry_4：当前4号入口触发；
+- vv_blocks、vv_entry、vv_exit、vv_entry_frames：结构与新帧计数；
+- cooldown_remaining、marker_travel、route_progress：通过进度及其来源；
+- route_status、heading_reason、ring_receipts、cw_block：取线/偏航/两圈许可。
 
-结束旧程序，备份车上可用目录，将E:/Two内容合并到/home/orangepi/Two_patrol，不能套Two/Two。务必复制patrol_dash_entry.py和完整新参数表。
+## 复制与MobaXterm运行
+
+先在原终端结束程序，备份车上可用目录，将E盘Two内容复制/合并到/home/orangepi/Two_patrol，不能多套一层Two。新增patrol_dash_entry.py必须复制，不能只传两个旧Python。
 
 ```bash
 bash /home/orangepi/Two_patrol/tools/robot_menu.sh
 ```
 
-先2视觉干跑，再3站立、4实测。已编译新基准且有IMU_QUATERNION_MAPPING_V12底盘标记时，本次无需重编C++。否则先1编译。进入测试后1开始/继续、2暂停、3重置起点、0退出；遥控急停保持可用。
+菜单2视觉干跑，检查路线和VV日志；再3站立检查、4实测。若首次部署该新包或驱动不含IMU_QUATERNION_MAPPING_V12，先菜单1编译。已经正确部署本次新基准的共享底盘，本次只改Python/YAML/说明，无需重编译C++。菜单1/2/3/4含义以屏幕为准。
 
-应见version=17、ring_cap=0.30。关注entry_reason、vv_reason、reason=vv_owned_curve、route_owned、route_frames、measured_turn_deg、ring_receipts、mode=ring_failure_recovery/gyro_exit_seek、PATROL_ROUTE_FAULT。
+启动后1开始/继续、2暂停、3重置起点任务、0退出；遥控急停保持可用。输入3后不会自行运动。
 
-## 测试边界与风险
+## 验证与风险清单
 
-依次测试普通直线/弯道/S弯不变，明确5号通过距离，4号直接接管，主线离开视野后的弯曲虚线，55度未取线的低速控制，3秒无路线退出，1秒失败恢复与人工继续，360度但无行程拒绝、偏航陈旧停车、真实出口和两圈横道顺序。
+离线需覆盖：普通类源码摘要不变；实际图像单帧4入口与5返回分离；主路倾斜仍保持相对分支判断；实线/横道/蓝区/少量噪点拒绝；冷却持续巡线；静止odom/倒车/重复帧/暂停不能绕过顺序；低频odom不拉长冷却；第二圈清标记；真实EXIT与横道/终点凭据不能越级。
 
-单帧仍可能误判复杂黑块/反光；连续虚线与其它线接近时可能串线；0.30/1.20的名义半径约0.25米，未标定地图半径或平衡能力；1秒恢复失败会停车，不承诺永不停车。离线合成图像与状态机测试不代表Orange Pi帧率、实车已完赛。校验使用PATROL_TEST_ADDITIONS_SHA256SUMS，历史SHA256SUMS的既有失败单独列明。
+实车依次测试直线、普通弯、S弯、5号通过、4号进入、弧顶短失线、5号驶出、第一横道停3秒、第二圈重识别及终点。另测反光、入口只闪1帧、缺odom、偏航不一致、帧率降低与相机断流。
+
+风险：1秒可能错过近距离入口；单帧误检风险高于多帧；首次标记误识别会错置顺序；中途放车不能当起点；环内0.845m/s可能仍太快；轮滑/人工搬车会损害里程计证据。保留相机超时、定位最终保护与人工急停，不保证永不停车、无限盲走或已实车完赛。
+
+原SHA256SUMS是新包继承的历史清单，基准本身已有不一致；当前增量以PATROL_TEST_ADDITIONS_SHA256SUMS核对。既有整包失败必须与未修改基准对照记录，不能把合成测试当实车验证。

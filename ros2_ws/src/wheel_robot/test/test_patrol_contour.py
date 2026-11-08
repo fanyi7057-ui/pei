@@ -111,7 +111,7 @@ def loop_candidate_router():
     r._phase("FOLLOW",0.)
     r.branch_acquired=True
     r.ring_route_acquired=True  # fixture for already-acquired FOLLOW
-    for i,deg in enumerate(np.arange(0,371,10)):
+    for i,deg in enumerate(np.arange(0,331,10)):
         now=i*.1
         yaw=(math.radians(deg)+math.pi)%(2*math.pi)-math.pi
         r.observe(False,0.,now,t,(.65,1.),pose=(i*.05,0.,yaw),heading=("imu",yaw,now))
@@ -131,7 +131,7 @@ def test_v12_full_turn_is_exit_candidate_not_immediate_success():
 
 def test_v12_unconfirmed_exit_has_bounded_non_successful_release():
     r,t,now=loop_candidate_router()
-    for dt in np.arange(.1,t.roundabout_exit_acquire_max_seconds+.4,.1):
+    for dt in np.arange(.1,2.9,.1):
         r.observe(False,0.,now+float(dt),t,(.65,.1))
     assert r.phase=="SEEK" and r.completed==0
     assert not r.crosswalk_armed(now+3.,t)
@@ -260,9 +260,9 @@ def test_v12_new_fields_reject_invalid_snapshot(changes):
 
 @pytest.mark.parametrize("name,expected",[
     ("PathSelector","8e5d914aff1fe47fd4039d05214dae936fbf56fd79d36ade94128af131015224"),
-    ("FixedSpeedController","24a087c1b84490cccf79faefe631310a81c5e2bcda34cf0ce966181ba314bd66"),
+    ("FixedSpeedController","dbc1fcb9ee7d518d5d5197fd3b77b0d488b1c6437e674a0e029c8a840d0fbe2f"),
 ])
-def test_v23_selector_baseline_and_approved_search_controller_snapshot(name,expected):
+def test_v13_ordinary_classes_exact_v11_source(name,expected):
     import ast
     import hashlib
     source=(SCRIPTS/"patrol_contour_runtime.py").read_text(encoding="utf-8-sig")
@@ -289,8 +289,8 @@ def test_v13_27_degree_candidate_cannot_release_entry_or_enable_boost(owned):
         now=.7+i*.03;r.measured_turn.stamp=now
         p=route_path(-.18,route_locked=True)
         r.accept_path(p,now,t)
-        assert r.phase in ("ENTRY","FOLLOW")
-        assert r.motion_override(now,t,path=p) is None
+        assert r.phase=="ENTRY"
+        assert r.motion_override(now,t)[2]=="roundabout_left_acquire"
         assert not r.follow_boost_allowed(p,now,t)
 
 
@@ -460,7 +460,7 @@ def test_visible_path_always_same_speed_even_with_large_turn(angle):
 
 
 def test_short_loss_keeps_issued_speed_then_final_timeout_stops():
-    controller, tuning = FixedSpeedController(), replace(PatrolTuning(),search_degraded_enabled=0,maintain_cruise_during_search=1)
+    controller, tuning = FixedSpeedController(), replace(PatrolTuning(),search_degraded_enabled=0)
     for now in np.arange(0, 2.01, .05):
         controller.command(PathEstimate(True, -.1, .9), now, tuning)
     v1, w1, mode = controller.command(PathEstimate(False), 2.1, tuning)
@@ -712,7 +712,7 @@ def test_sparse_and_dense_equivalent_paths_have_same_row_weighting():
 
 
 def test_many_single_frame_dropouts_never_chop_or_restart_speed():
-    controller, tuning = FixedSpeedController(), replace(PatrolTuning(),reacquire_confirm_frames=1,maintain_cruise_during_search=1)
+    controller, tuning = FixedSpeedController(), replace(PatrolTuning(),reacquire_confirm_frames=1)
     for now in np.arange(0, 2., .02):
         controller.command(PathEstimate(True, -.1, 1), now, tuning)
     for index, now in enumerate(np.arange(2., 5., .02)):
@@ -1031,7 +1031,6 @@ def test_road_observations_cannot_renew_expired_black_template(monkeypatch):
 
 
 def cruise_controller(error=-.5, **changes):
-    changes.setdefault('maintain_cruise_during_search', 1)  # explicit historical cruise-search contract
     controller, tuning = FixedSpeedController(), replace(PatrolTuning(), **changes)
     for now in np.arange(0, 2.01, 1/30):
         controller.command(PathEstimate(True,error,1,source="black"),now,tuning)
@@ -1124,7 +1123,7 @@ def test_v4_partial_road_does_not_allow_remote_white_island_or_all_white():
     assert not road_centerline(np.full((240,320,3),(0,0,255),np.uint8),PatrolTuning()).valid
 
 
-def test_v19_node_lost_localization_waits_without_repeating_stand_gate(node_module,monkeypatch):
+def test_v4_node_lost_localization_returns_to_manual_standing_gate(node_module,monkeypatch):
     node,commands=make_node(node_module,monkeypatch)
     node_module.base.STAND_SETTLE_SECONDS=2.
     node_module.base.StandGate=lambda **kw:types.SimpleNamespace(**kw)
@@ -1134,8 +1133,7 @@ def test_v19_node_lost_localization_waits_without_repeating_stand_gate(node_modu
     node.patrol_controller.fault_reason="time_limit"
     node._run_control_cycle()
     assert commands and all(cmd == (0.,0.) for cmd in commands)
-    assert node._localization_wait and node._start_cue_until == 0
-    assert not hasattr(node,"_stand_gate")  # no replacement of existing start gate
+    assert node._stand_gate.enabled and node._start_cue_until == 0
 
 
 @pytest.mark.parametrize("changes", [
@@ -1268,7 +1266,7 @@ def test_v5_left_route_still_allows_right_correction(monkeypatch):
 def vv_test_cue(entry=False):
     """State-only cue; actual image geometry is tested in test_patrol_vv_v16."""
     from patrol_dash_entry import DashObservation
-    return DashObservation(valid=True,blocks=4,branch=PathEstimate(entry,route_locked=entry),exit_branch=PathEstimate(not entry))
+    return DashObservation(valid=True,blocks=4,branch=PathEstimate(entry,route_locked=entry))
 
 
 def enter_router():
@@ -1277,7 +1275,7 @@ def enter_router():
     from patrol_dash_entry import DashObservation
     # These older tests isolate post-entry acquisition/exit contracts. Enter
     # APPROACH through the actual VV interface, not retired raw score evidence.
-    cue=DashObservation(valid=True,blocks=4,exit_branch=PathEstimate(True))
+    cue=DashObservation(valid=True,blocks=4)
     for now in (0.,.03,.06):
         r.observe(True,.9,now,t,(.5,0.),dash_cue=cue)
     assert r.phase == "APPROACH"
@@ -1407,10 +1405,10 @@ def test_v16_vv_replaces_old_entry_extractor(monkeypatch):
     vision.motion_command=(.65,0.)
     for now in (0.,.03,.06):
         vision.estimate(frame,tuning,now)
-    assert vision.gate_score > .82 and vision.router.phase == "SEEK"  # main-only is not a 5 marker
+    assert vision.gate_score > .82 and vision.router.phase == "APPROACH"
 
 
-def test_v19_node_route_fault_stops_without_rearming_standing_gate(node_module,monkeypatch):
+def test_v5_node_route_fault_stops_and_rearms_operator_gate(node_module,monkeypatch):
     node,commands=make_node(node_module,monkeypatch)
     node_module.base.STAND_SETTLE_SECONDS=2.
     node_module.base.StandGate=lambda **kw:types.SimpleNamespace(**kw)
@@ -1420,7 +1418,7 @@ def test_v19_node_route_fault_stops_without_rearming_standing_gate(node_module,m
     node.vision.reset_path=lambda:None
     node._run_control_cycle()
     assert commands == [(0.,0.)]
-    assert node._localization_wait and not hasattr(node,"_stand_gate")
+    assert node._stand_gate.enabled
 
 
 def test_v6_manual_stop_preserves_route_and_does_not_reset_course(node_module,monkeypatch):
@@ -1456,8 +1454,7 @@ def test_v5_left_right_oscillation_does_not_fake_net_entry_turn():
         now=.06+i*.1
         r.observe(False,0.,now,t,(.5,1. if i%2 else -1.))
         r.accept_path(PathEstimate(True,route_locked=True),now,t)
-    assert abs(r.left_yaw) < .11 and r.phase in ("ENTRY","SEEK")
-    assert r.completed==0  # bounded failed acquisition is not a completed ring
+    assert abs(r.left_yaw) < .11 and r.phase == "ENTRY"
 
 
 def test_v6_far_gate_only_approaches_does_not_turn_early():
@@ -1520,14 +1517,14 @@ def test_v7_left_entry_cancels_stale_right_command_without_dropping_cruise():
     c.last_command=(t.fixed_speed_m_s,-1.8)
     c.last_time=1.
     v,w,mode=r.motion_override(1.03,t)
-    assert v==t.roundabout_speed_m_s and w>0 and mode=="roundabout_left_acquire"
+    assert v==t.fixed_speed_m_s and w>0 and mode=="roundabout_left_acquire"
     for i in range(1,6):
         output=c.task_command(v,w,1.+i*.03,t,left_only=True)
-        assert 0<output[0]<=t.fixed_speed_m_s and output[1]>=0
+        assert output[0]==t.fixed_speed_m_s and output[1]>=0
     assert output[1]>0
     r.left_yaw=math.radians(t.roundabout_entry_acquire_yaw_deg)
     r.branch_acquired=True  # an observed owned route, not angle alone
-    assert r.motion_override(1.2,t,path=PathEstimate(True,route_observed=True,route_locked=True)) is None  # real route may correct right
+    assert r.motion_override(1.2,t) is None  # real route may correct right
     r._phase("APPROACH",1.3)
     assert r.motion_override(1.3,t) is None
 
@@ -1541,7 +1538,7 @@ def test_v7_actual_node_entry_overrides_right_path_not_normal_patrol(node_module
     node.patrol_controller.last_time=9.97
     node.vision.estimate=lambda *_args,**_kwargs: PathEstimate(True,.6,.9)
     node._run_control_cycle()
-    assert commands[-1]==(node.patrol_tuning.roundabout_speed_m_s,0.)  # cancel stale right
+    assert commands[-1]==(node.patrol_tuning.fixed_speed_m_s,0.)  # cancel stale right
     assert node.patrol_controller.last_command==commands[-1]
     r._phase("SEEK",10.)
     monkeypatch.setattr(node_module.time,"monotonic",lambda:10.03)
@@ -1744,7 +1741,7 @@ def test_v6_task_heading_ignores_zebra_lines_with_same_cruise_target():
 
 def test_v6_search_can_reach_cruise_not_freeze_low_start_speed():
     c=FixedSpeedController()
-    t=replace(PatrolTuning(),maintain_cruise_during_search=1)  # legacy opt-in
+    t=PatrolTuning()
     c.command(PathEstimate(True,-.1,.9,source="black"),0.,t)
     for now in np.arange(.03,1.2,.03):
         v,_,_=c.command(PathEstimate(False),now,t)
@@ -1889,26 +1886,21 @@ def test_v6_fresh_camera_does_not_silently_clear_task_fault():
 
 
 @pytest.mark.parametrize("phase",["SEEK","APPROACH","ENTRY","FOLLOW","EXIT","RING_WAIT_DEADLINE"])
-def test_v19_search_budget_never_interrupts_active_ring_or_seek(phase):
+def test_v14_first_budget_releases_control_but_never_ring_receipt(phase):
     r,t=RoundaboutRouter(),PatrolTuning()
     r.started_at=100.
     r._phase(phase,129.)
     assert not r.apply_time_fallback(129.999,t)
-    assert not r.apply_time_fallback(130.,t)
-    if phase not in ("APPROACH","RING_WAIT_DEADLINE"):
-        assert not r.apply_time_fallback(160.,t)
-        assert r.phase==phase and r.completed==0 and r.timed_releases==0
-        return
-    assert r.apply_time_fallback(159.,t)
+    assert r.apply_time_fallback(130.,t)
     assert r.phase=="SEEK" and not r.left_lock
     assert not r.crosswalk_armed(130.,t)  # timeout is not an exit receipt
     assert r.completed==0 and r.timed_releases==1
     assert r.crosswalk_count==0 and r.release_cycle==-1
     assert not r.apply_time_fallback(131.,t) and r.timed_releases==1
-    assert r.motion_override(159.,t)[2]=="ring_failure_recovery"  # bounded low-speed recovery
+    assert r.motion_override(130.,t) is None  # ordinary patrol, not an auto-stop
 
 
-def test_v19_second_entry_not_interrupted_by_first_zebra_deadline():
+def test_v8_second_deadline_is_first_zebra_plus_forty_five_not_ring_entry():
     r,t=RoundaboutRouter(),PatrolTuning()
     r.started_at=0.
     r.last_crosswalk_at=40.
@@ -1917,11 +1909,13 @@ def test_v19_second_entry_not_interrupted_by_first_zebra_deadline():
     r.release_cycle=0
     r._phase("ENTRY",80.)
     assert not r.apply_time_fallback(84.999,t)
-    assert not r.apply_time_fallback(85.,t)
-    assert r.phase=="ENTRY" and r.release_cycle==0
+    assert r.apply_time_fallback(85.,t)
+    assert r.phase=="SEEK" and r.release_cycle==0
     assert r.crosswalk_count==1 and not r.crosswalk_armed(85.,t)
-    assert r.completed==0 and r.timed_releases==0
-    assert r.motion_override(85.1,t)[2]=="roundabout_left_acquire"
+    for now in (85.03,85.06):
+        r.observe(False,0.,now,t,(.65,0.),crosswalk=True)
+    assert r.crosswalk_count==1 and r.phase=="SEEK"
+    assert r.motion_override(85.1,t) is None
 
 
 @pytest.mark.parametrize("count",[0,1])
@@ -1954,7 +1948,7 @@ def test_v8_second_deadline_cannot_interrupt_first_stop_or_clear():
         assert not r.apply_time_fallback(100.,t)
         assert r.phase==phase
     r._phase("SEEK",101.)  # only after the first stop/clear sequence completes
-    assert not r.apply_time_fallback(101.,t)
+    assert r.apply_time_fallback(101.,t)
 
 
 def test_v8_route_budget_releases_left_lock_but_waits_for_global_deadline():
@@ -1965,7 +1959,7 @@ def test_v8_route_budget_releases_left_lock_but_waits_for_global_deadline():
     assert r.phase=="SEEK" and not r.fault
     assert not r.left_lock and not r.crosswalk_armed(16.1,t)
     assert not r.gate_detection_allowed(20.,t)
-    assert r.motion_override(20.,t)==(0.,0.,"ring_recovery_stop")
+    assert r.motion_override(20.,t) is None
     assert not r.apply_time_fallback(30.,t)  # retry budget renewed at control release and r.phase=="SEEK_CROSSWALK"
 
 
@@ -1992,7 +1986,7 @@ def test_v8_second_deadline_pause_uses_shifted_first_zebra_time():
     r.resume(40.)
     assert r.ring_deadline(t)==80.
     assert not r.apply_time_fallback(79.99,t)
-    assert not r.apply_time_fallback(80.,t)  # SEEK is not an active ring to release
+    assert r.apply_time_fallback(80.,t)
 
 
 def test_v8_disabled_fallback_does_not_fake_exit_or_stop_clock():
@@ -2005,7 +1999,7 @@ def test_v8_disabled_fallback_does_not_fake_exit_or_stop_clock():
     assert r.fault=="roundabout_route_timeout"
 
 
-def test_v19_actual_vision_at_old_deadline_keeps_entry_without_accepting_zebra(monkeypatch):
+def test_v14_actual_vision_at_deadline_drops_lock_without_accepting_zebra(monkeypatch):
     module=load_actual_vision_module(monkeypatch)
     v=module.PatrolVision()
     r=v.router
@@ -2015,10 +2009,10 @@ def test_v19_actual_vision_at_old_deadline_keeps_entry_without_accepting_zebra(m
     v._detect_roundabout_gate=lambda *_: pytest.fail("entry detection after deadline")
     frame,_,_=zebra_frame()
     v.estimate(frame,PatrolTuning(),30.)
-    assert r.phase=="ENTRY" and r.crosswalk_frames==0
-    assert r.completed==0 and r.timed_releases==0 and r.left_lock
+    assert r.phase=="SEEK" and r.crosswalk_frames==0
+    assert r.completed==0 and r.timed_releases==1 and not r.left_lock
     v.estimate(frame,PatrolTuning(),30.03)
-    assert r.phase=="ENTRY" and r.crosswalk_count==0
+    assert r.phase=="SEEK" and r.crosswalk_count==0
 
 
 def test_v8_timeout_without_stripes_never_counts_zebra_or_finishes():
@@ -2027,10 +2021,10 @@ def test_v8_timeout_without_stripes_never_counts_zebra_or_finishes():
     for now in (30.,30.03,40.,80.):
         r.observe(False,0.,now,t,(.65,0.))
     assert r.phase=="SEEK" and r.crosswalk_count==0
-    assert r.timed_releases==0 and r.completed==0
+    assert r.timed_releases==2 and r.completed==0
 
 
-def test_v19_node_old_deadline_cannot_release_entry_to_fast_cruise(node_module,monkeypatch):
+def test_v8_node_deadline_handoff_keeps_cruise_and_clears_old_route_pd(node_module,monkeypatch):
     node,commands=make_node(node_module,monkeypatch,now=30.)
     r=RoundaboutRouter()
     r.started_at=0.
@@ -2044,9 +2038,9 @@ def test_v19_node_old_deadline_cannot_release_entry_to_fast_cruise(node_module,m
         return PathEstimate(True,0.,.9,source="black")
     node.vision.estimate=estimate
     node._run_control_cycle()
-    assert r.phase=="ENTRY" and r.ring_release_source=="none"
-    assert commands[-1][0]<=.30 and commands[-1][1]>0
-    assert getattr(node,"_navigation_reset_seen",0)==r.navigation_reset_serial
+    assert r.phase=="SEEK" and r.ring_release_source=="time_fallback"
+    assert commands[-1][0]==.65 and 0<=commands[-1][1]<.8
+    assert node._navigation_reset_seen==r.navigation_reset_serial
 
 
 def test_v8_hot_reload_applies_deadline_and_point_six_five_speed(tmp_path):
@@ -2062,7 +2056,6 @@ def test_v8_hot_reload_applies_deadline_and_point_six_five_speed(tmp_path):
     r=RoundaboutRouter()
     r.started_at=0.
     assert t is not None,message
-    r._phase("APPROACH",0.)
     assert r.apply_time_fallback(20.,t)
 
 
@@ -2074,7 +2067,7 @@ def test_v14_repeated_timeouts_and_stripes_cannot_advance_or_finish():
         assert r.phase=="SEEK" and r.crosswalk_count==0
         assert not any(r.course.rings) and not any(r.course.zebras)
         assert not r.finish_authorized
-    assert r.timed_releases==0 and r.motion_override(90.04,t) is None
+    assert r.timed_releases==3 and r.motion_override(90.04,t) is None
 
 
 
@@ -2446,7 +2439,7 @@ def test_v10_follow_search_uses_left_not_stale_right_command(node_module,monkeyp
     node.patrol_controller.last_good_turn=-.8
     node._run_control_cycle()
     assert node.patrol_controller.raw_angular>0
-    assert commands[-1][0]==.20  # V23 blind-search cap
+    assert commands[-1][0]==.65
     assert not node.patrol_controller.fault_latched
 
 
@@ -2627,7 +2620,7 @@ def test_v11_entry_rejects_the_right_road_that_cancelled_left_acquisition(monkey
     assert not p.valid and v.road_estimate.reason=="entry_unacquired_right_road"
     assert v.ring_memory.path is None
     speed,turn,mode=v.router.motion_override(.7,PatrolTuning())
-    assert speed==.30 and turn==1.2 and mode=="roundabout_left_acquire"
+    assert speed==.65 and turn==1.2 and mode=="roundabout_left_acquire"
 
 
 def test_v11_actual_near_bands_can_acquire_without_exact_middle_row():
@@ -2655,8 +2648,8 @@ def feed_measured_turn(monitor,degrees,tuning=None,source="imu",travel=.05):
 
 def test_v11_measured_yaw_unwraps_180_and_requires_real_full_turn():
     m,t=MeasuredRingTurn(),PatrolTuning()
-    now=feed_measured_turn(m,np.arange(170,541,10),t)
-    assert m.available and math.degrees(m.angle)==pytest.approx(370.)
+    now=feed_measured_turn(m,np.arange(170,521,10),t)
+    assert m.available and math.degrees(m.angle)==pytest.approx(350.)
     assert m.loop_ready(now,t)
 
 
@@ -2686,8 +2679,7 @@ def test_v11_loop_evidence_releases_ring_once_without_fake_visual_success():
     r,t=RoundaboutRouter(),replace(PatrolTuning(),roundabout_require_exit_route=0)
     r._phase("FOLLOW",0.)
     r.branch_acquired=True
-    r.ring_route_acquired=True
-    for i,deg in enumerate(np.arange(0,371,10)):
+    for i,deg in enumerate(np.arange(0,351,10)):
         now=i*.1
         yaw=(math.radians(deg)+math.pi)%(2*math.pi)-math.pi
         r.observe(False,0.,now,t,(.65,1.),pose=(i*.05,0.,yaw),heading=("imu",yaw,now))
@@ -2783,14 +2775,14 @@ def test_v11_follow_multiplier_applies_only_to_reliable_follow(node_module,monke
         node._frame_sequence=i+1
         node._latest_frame_time=clock[0]
         node._run_control_cycle()
-    assert commands[-1][0]==pytest.approx(.30)
+    assert commands[-1][0]==pytest.approx(.845)
     assert commands[-1][1]>0
     r._phase("SEEK",clock[0])
     clock[0]+=.04
     node._frame_sequence+=1
     node._latest_frame_time=clock[0]
     node._run_control_cycle()
-    assert .30<commands[-1][0]<=.65  # only confirmed FOLLOW, not the second lap generally
+    assert commands[-1][0]<.845  # only confirmed FOLLOW, not the second lap generally
 
 
 def test_v11_old_loss_boundary_degrades_instead_of_latching_and_can_recover():
@@ -2990,7 +2982,7 @@ def test_v14_control_release_never_creates_ring_zebra_or_finish_receipt(source):
     for now in (2.01,2.04,3.,20.):
         r.observe(False,0.,now,t,(.65,0.),crosswalk=True)
         assert r.crosswalk_count==0 and not r.crosswalk_armed(now,t)
-    assert not r.course.finish_allowed and r.motion_override(20.,t)==(0.,0.,"ring_recovery_stop")
+    assert not r.course.finish_allowed and r.motion_override(20.,t) is None
 
 
 def test_v14_receipts_require_ring_for_each_zebra_and_both_laps_for_finish():
@@ -3063,8 +3055,6 @@ def test_v14_retry_budget_and_blocks_use_latest_hot_values_without_restarting_ta
     r=RoundaboutRouter();t=replace(PatrolTuning(),roundabout_arm_seconds=0.,roundabout_arm_distance_m=0.)
     r.started_at=0.;r.distance=2.
     r._release_ring(5.,t,"entry_no_route_abort")
-    for now in (5.1,5.2,5.3):
-        r.motion_override(now,t,path=PathEstimate(True,route_observed=True))
     r.distance=2.3
     assert not r.gate_detection_allowed(6.,t)
     updated=replace(t,roundabout_retry_seconds=.5,roundabout_retry_distance_m=.2,roundabout_first_timeout_seconds=20.)
