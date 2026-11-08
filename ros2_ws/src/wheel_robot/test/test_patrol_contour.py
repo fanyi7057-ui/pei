@@ -260,7 +260,7 @@ def test_v12_new_fields_reject_invalid_snapshot(changes):
 
 @pytest.mark.parametrize("name,expected",[
     ("PathSelector","8e5d914aff1fe47fd4039d05214dae936fbf56fd79d36ade94128af131015224"),
-    ("FixedSpeedController","ec526d841637f92d362de810c1a59624c989ab10eb102c63708e344ed2e603b2"),
+    ("FixedSpeedController","24a087c1b84490cccf79faefe631310a81c5e2bcda34cf0ce966181ba314bd66"),
 ])
 def test_v23_selector_baseline_and_approved_search_controller_snapshot(name,expected):
     import ast
@@ -460,7 +460,7 @@ def test_visible_path_always_same_speed_even_with_large_turn(angle):
 
 
 def test_short_loss_keeps_issued_speed_then_final_timeout_stops():
-    controller, tuning = FixedSpeedController(), replace(PatrolTuning(),search_degraded_enabled=0,maintain_cruise_during_search=1,search_slow_after_seconds=0)
+    controller, tuning = FixedSpeedController(), replace(PatrolTuning(),search_degraded_enabled=0,maintain_cruise_during_search=1)
     for now in np.arange(0, 2.01, .05):
         controller.command(PathEstimate(True, -.1, .9), now, tuning)
     v1, w1, mode = controller.command(PathEstimate(False), 2.1, tuning)
@@ -712,7 +712,7 @@ def test_sparse_and_dense_equivalent_paths_have_same_row_weighting():
 
 
 def test_many_single_frame_dropouts_never_chop_or_restart_speed():
-    controller, tuning = FixedSpeedController(), replace(PatrolTuning(),reacquire_confirm_frames=1,maintain_cruise_during_search=1,search_slow_after_seconds=0)
+    controller, tuning = FixedSpeedController(), replace(PatrolTuning(),reacquire_confirm_frames=1,maintain_cruise_during_search=1)
     for now in np.arange(0, 2., .02):
         controller.command(PathEstimate(True, -.1, 1), now, tuning)
     for index, now in enumerate(np.arange(2., 5., .02)):
@@ -728,12 +728,11 @@ def test_loss_holds_actual_turn_not_unreached_requested_turn():
     before = controller.command(PathEstimate(True, -1, 1), 1.05, tuning)
     lost = controller.command(PathEstimate(False), 1.10, tuning)
     assert before[1] < tuning.max_turn_rad_s
-    assert lost[0] == pytest.approx(before[0])
-    assert lost[1] == pytest.approx(min(before[1],tuning.search_max_turn_rad_s))  # V29 caps inherited turn
+    assert lost[:2] == pytest.approx(before[:2])  # no blind acceleration, either
 
 
 def test_repeated_invalid_frames_do_not_extend_memory_deadline():
-    controller, tuning = FixedSpeedController(), replace(PatrolTuning(),search_max_seconds=.8,search_degraded_enabled=0,search_slow_after_seconds=0)
+    controller, tuning = FixedSpeedController(), replace(PatrolTuning(),search_max_seconds=.8,search_degraded_enabled=0)
     for now in np.arange(0, 2.01, .05):
         controller.command(PathEstimate(True, -.1, 1), now, tuning)
     for now in [2.1, 2.2, 2.4, 2.79]:
@@ -894,7 +893,7 @@ def test_near_single_band_rescue_confirms_opposite_jump_not_old_return_delay():
 
 
 @pytest.mark.parametrize("cutoff,expected_bands", [(190, 2), (200, 2), (210, 1)])
-def test_actual_near_only_black_requires_recent_trusted_turn(monkeypatch, cutoff, expected_bands):
+def test_actual_near_only_black_remains_usable(monkeypatch, cutoff, expected_bands):
     module = load_actual_vision_module(monkeypatch)
     frame = np.full((240, 320, 3), (255, 0, 0), np.uint8)
     frame[:, 40:280] = 245
@@ -904,46 +903,10 @@ def test_actual_near_only_black_requires_recent_trusted_turn(monkeypatch, cutoff
     extracted = vision._extract_line(frame, dark, hsv, False, use_dynamic_offset=False)
     assert extracted[0] and extracted[6] == expected_bands
     vision = module.PatrolVision()
-    result = vision.estimate(frame, replace(PatrolTuning(), contour_enabled=0), 1.)
-    if expected_bands == 1:
-        assert not result.valid and "rescue_no_trusted_black_history" in result.reason
-    else:
-        assert result.valid and vision.source == "black"
-        assert result.error == pytest.approx(extracted[1])
-        assert not result.rescue
-
-
-def test_single_edge_rescue_requires_fresh_same_direction_trusted_black(monkeypatch):
-    module = load_actual_vision_module(monkeypatch)
-    vision = module.PatrolVision()
-    points = np.array([[170., 205.], [175., 225.]])
-    older = PathEstimate(True, .12, .8, points=points, near_error=.12, mid_error=.12,
-                         route_observed=True)
-    newer = PathEstimate(True, .28, .8, points=points, near_error=.28, mid_error=.45,
-                         route_observed=True)
-    rescue = PathEstimate(True, .72, .31, points=points[:1], near_error=.72, mid_error=.72,
-                          rescue=True)
-    vision._remember_trusted_black(older, 1.00)
-    vision._remember_trusted_black(newer, 1.08)
-    assert vision._edge_rescue_reason(rescue, 1.14) == "line_edge_single_rescue"
-    assert vision._edge_rescue_reason(replace(rescue, near_error=-.72), 1.14) == "rescue_near_position_jump"
-    assert vision._edge_rescue_reason(rescue, 1.60) == "rescue_trusted_black_stale"
-
-
-def test_road_jump_only_passes_for_bounded_same_direction_turn(monkeypatch):
-    module = load_actual_vision_module(monkeypatch)
-    vision, tuning = module.PatrolVision(), PatrolTuning()
-    points = np.array([[170., 145.], [175., 225.]])
-    vision._remember_trusted_route(PathEstimate(True, .10, .8, points=points, near_error=.10,
-                                                    mid_error=.10, route_observed=True), 1.00)
-    vision._remember_trusted_route(PathEstimate(True, .30, .8, points=points, near_error=.30,
-                                                    mid_error=.30, route_observed=True), 1.08)
-    road = PathEstimate(True, .64, .8, near_error=.64, points=points+np.array([54.,0.]), route_observed=True)
-    blue = np.zeros((240,320), np.uint8)
-    assert vision._road_turn_is_continuous(road, 1.14, tuning, blue, 320, 240)
-    blue[:,190:200] = 255
-    assert not vision._road_turn_is_continuous(road, 1.14, tuning, blue, 320, 240)
-    assert not vision._road_turn_is_continuous(PathEstimate(True, -.20, .8, near_error=-.20), 1.14, tuning)
+    result = vision.estimate(frame, PatrolTuning(), 1.)
+    assert result.valid and vision.source == "black"
+    assert result.error == pytest.approx(extracted[1])
+    assert result.rescue == (expected_bands == 1)
 
 
 def test_reset_path_clears_all_black_and_road_history(monkeypatch):
@@ -953,52 +916,12 @@ def test_reset_path_clears_all_black_and_road_history(monkeypatch):
     vision._previous_band_x = [95.] * len(module.base.LOOKAHEAD_Y_RATIOS)
     vision.road_widths = np.array([[100,100],[100,220]])
     vision.last_dual_at = 1.
-    vision._trusted_black_history = [(1., PathEstimate(True))]
-    vision._trusted_route_history = [(1., .1)]
     vision.last_debug = np.zeros((2,2,3), np.uint8)
     vision.reset_path()
     assert all(x is None for x in vision._last_good_band_x)
     assert all(x is None for x in vision._previous_band_x)
     assert vision.road_widths is None and vision.last_dual_at is None
-    assert not vision._trusted_black_history and not vision._trusted_route_history
     assert vision.last_debug is None and vision.selector.source == "none"
-
-
-def test_diagnostic_changes_cannot_bypass_rate_limit(monkeypatch, capsys):
-    module = load_actual_vision_module(monkeypatch)
-    vision = module.PatrolVision()
-    for i in range(100):
-        vision._emit_diagnostic(str(i), i/100.)
-    assert capsys.readouterr().out.count("[patrol-vision]") == 2
-
-
-def test_rescue_allows_high_fps_small_motion_and_return_without_renewal(monkeypatch):
-    module = load_actual_vision_module(monkeypatch)
-    vision = module.PatrolVision()
-    for i in range(8):
-        value = .70+i*.001
-        p = PathEstimate(True, value, .8, points=np.array([[270.,180.],[273.,225.]]),
-                         near_error=value, mid_error=.60, route_observed=True)
-        vision._remember_trusted_black(p, 1.+i*.01)
-    rescue = replace(p, rescue=True, near_error=.64, points=p.points[:1])
-    assert vision._edge_rescue_reason(rescue, 1.10) == "line_edge_single_rescue"
-    before = list(vision._trusted_black_history)
-    vision._remember_trusted_black(rescue, 1.11)
-    assert vision._trusted_black_history == before
-    assert vision._edge_rescue_reason(rescue, 1.50) == "rescue_trusted_black_stale"
-
-
-def test_selector_wait_preserves_normal_tracking_without_creating_rescue_evidence(monkeypatch):
-    module = load_actual_vision_module(monkeypatch)
-    vision = module.PatrolVision()
-    frame = np.full((240,320,3), 245, np.uint8)
-    cv2.line(frame,(160,0),(160,239),(0,0,0),7)
-    monkeypatch.setattr(vision.selector, "select", lambda *args: (PathEstimate(False,reason="path_jump_confirm"), "none"))
-    for now in (1.,1.03,1.06):
-        assert not vision.estimate(frame, replace(PatrolTuning(),roundabout_enabled=0,crosswalk_enabled=0),now).valid
-        assert not vision._trusted_black_history
-        assert vision.last_black_at == now
-        assert any(x is not None for x in vision._last_good_band_x)
 
 
 @pytest.mark.parametrize("center", [.49, .50, .51])
@@ -1109,7 +1032,6 @@ def test_road_observations_cannot_renew_expired_black_template(monkeypatch):
 
 def cruise_controller(error=-.5, **changes):
     changes.setdefault('maintain_cruise_during_search', 1)  # explicit historical cruise-search contract
-    changes.setdefault('search_slow_after_seconds', 0.)  # explicitly exercise the historical cruise-search budget
     controller, tuning = FixedSpeedController(), replace(PatrolTuning(), **changes)
     for now in np.arange(0, 2.01, 1/30):
         controller.command(PathEstimate(True,error,1,source="black"),now,tuning)
@@ -1822,7 +1744,7 @@ def test_v6_task_heading_ignores_zebra_lines_with_same_cruise_target():
 
 def test_v6_search_can_reach_cruise_not_freeze_low_start_speed():
     c=FixedSpeedController()
-    t=replace(PatrolTuning(),maintain_cruise_during_search=1,search_slow_after_seconds=0)  # explicit legacy opt-in
+    t=replace(PatrolTuning(),maintain_cruise_during_search=1)  # legacy opt-in
     c.command(PathEstimate(True,-.1,.9,source="black"),0.,t)
     for now in np.arange(.03,1.2,.03):
         v,_,_=c.command(PathEstimate(False),now,t)
@@ -2524,7 +2446,7 @@ def test_v10_follow_search_uses_left_not_stale_right_command(node_module,monkeyp
     node.patrol_controller.last_good_turn=-.8
     node._run_control_cycle()
     assert node.patrol_controller.raw_angular>0
-    assert commands[-1][0]==.30  # V29 short gap keeps ring-capped speed, not ordinary .65
+    assert commands[-1][0]==.20  # V23 blind-search cap
     assert not node.patrol_controller.fault_latched
 
 

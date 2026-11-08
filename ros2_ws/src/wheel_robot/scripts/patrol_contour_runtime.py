@@ -54,7 +54,7 @@ class PatrolTuning:
     search_turn_rad_s: float = 0.80
     search_default_direction: int = 1
     reacquire_confirm_frames: int = 3
-    maintain_cruise_during_search: int = 1
+    maintain_cruise_during_search: int = 0
     search_speed_m_s: float = 0.20
     search_slow_after_seconds: float = 0.20
     search_max_turn_rad_s: float = 0.60
@@ -2241,11 +2241,6 @@ class FixedSpeedController:
         self.reset_error()
         return 0., 0., "localization_fault_latched"
 
-    def _search_direction(self, tuning):
-        # Use one deadband in normal AND degraded search. Tiny negative noise
-        # must not select left in one branch and right in the other.
-        return math.copysign(1., self.search_turn_goal) if abs(self.search_turn_goal) > .05 else tuning.search_default_direction
-
     def task_command(self, linear, angular, now, tuning, immediate_stop=False, left_only=False):
         """Explicit zebra/finish heading guidance, never an implicit speed cap."""
         elapsed=1/30 if self.last_time is None else max(0.,now-self.last_time)
@@ -2299,10 +2294,9 @@ class FixedSpeedController:
             angular = self._steer(path, now, tuning, elapsed, recovering)
             # A real new observation may correct the search DIRECTION at
             # once; only confirmed consecutive observations renew budgets.
-            if not recovering or confirmed:
-                self.last_good_turn = angular
-                if abs(path.error) >= tuning.corner_start_error or path.rescue:
-                    self.last_curve_turn, self.last_curve_at = angular, now
+            self.last_good_turn = angular
+            if abs(path.error) >= tuning.corner_start_error or path.rescue:
+                self.last_curve_turn, self.last_curve_at = angular, now
                 if recovering:
                     self.search_turn_goal = angular
         elif self.last_valid_at is None:
@@ -2332,7 +2326,7 @@ class FixedSpeedController:
                 # Freeze the chosen episode direction; elapsed time alone
                 # must not flip a right search into the default left turn.
                 direction = self.search_turn_goal
-                sign = self._search_direction(tuning)
+                sign = math.copysign(1., direction) if abs(direction) > .05 else tuning.search_default_direction
                 angular = sign*min(tuning.max_turn_rad_s, max(tuning.search_turn_rad_s, abs(direction)))
                 mode = "active_search"
                 self.raw_angular = angular
@@ -2355,7 +2349,7 @@ class FixedSpeedController:
                     self.degraded=True
                     linear=min(linear,tuning.search_degraded_speed_m_s)
                     if not path.valid and search_heading_turn is None:
-                        angular=self._search_direction(tuning)*min(tuning.search_turn_rad_s,tuning.max_turn_rad_s)
+                        angular=math.copysign(min(tuning.search_turn_rad_s,tuning.max_turn_rad_s),self.search_turn_goal or tuning.search_default_direction)
                         self.raw_angular=angular
                     mode="degraded_reacquire" if path.valid else "degraded_search"
             else:
@@ -2365,24 +2359,9 @@ class FixedSpeedController:
                     return self._fault("distance_limit", now)
         # Loss and unconfirmed reacquisition share a bounded search speed.
         # Do not slew down from cruise while blind: cap the issued value too.
-        search_capped = self.loss_started_at is not None and (not tuning.maintain_cruise_during_search or
-            (tuning.search_slow_after_seconds>0 and self.loss_age(now)>=tuning.search_slow_after_seconds))
+        search_capped = self.loss_started_at is not None and not tuning.maintain_cruise_during_search
         if search_capped:
             linear = min(linear, tuning.search_speed_m_s)
-        # During a brief missing-frame gap retain the issued speed, but never
-        # accelerate or strengthen steering using an old curve template.
-        short_gap = self.loss_started_at is not None and tuning.maintain_cruise_during_search and not search_capped and tuning.search_slow_after_seconds>0
-        if short_gap:
-            linear=min(linear,self.loss_command[0])
-            if not path.valid and search_direction is None and search_heading_turn is None:
-                angular=self.loss_command[1]
-                self.raw_angular=angular
-                mode='brief_loss_hold'
-        gentle=search_capped and search_heading_turn is None
-        search_limit=min(tuning.max_turn_rad_s,tuning.search_max_turn_rad_s)
-        if gentle:
-            angular=float(np.clip(angular,-search_limit,search_limit))
-            self.raw_angular=angular
         previous = self.last_command
         linear = self._approach(previous[0], linear, tuning.linear_accel_m_s2*dt)
         if search_capped:
@@ -2408,7 +2387,5 @@ class FixedSpeedController:
         else:
             angular = self._approach(previous[1], angular, rate*dt)
         angular = float(np.clip(angular, -tuning.max_turn_rad_s, tuning.max_turn_rad_s))
-        if gentle:
-            angular=float(np.clip(angular,-search_limit,search_limit))
         self.last_time, self.last_command = now, (linear, angular)
         return linear, angular, mode

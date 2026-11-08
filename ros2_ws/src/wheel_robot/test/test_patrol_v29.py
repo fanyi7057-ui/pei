@@ -1,4 +1,8 @@
-"""V23 baseline with short-gap hold, bounded sustained-loss search and FPV."""
+"""Retained preview/task checks; V29 hold tests retired by 077bb36 restoration.
+
+Baseline controller loss semantics are tested in test_patrol_contour and
+test_patrol_integrated_turns, rather than retaining removed V29 expectations.
+"""
 from dataclasses import replace,fields
 import ast
 import hashlib
@@ -13,35 +17,13 @@ from patrol_preview import FirstPersonPreview
 def current_cruise(error=-.1):
     return cruise_controller(error,maintain_cruise_during_search=1,search_slow_after_seconds=.2)
 
-def test_short_single_frame_loss_does_not_brake_or_accelerate():
-    c,t=current_cruise();old=c.last_command
-    assert c.command(PathEstimate(False),2.03,t)==(*old,'brief_loss_hold')
-    for now in (2.06,2.09,2.12):assert c.command(PathEstimate(True,-.1,.9,source='black'),now,t)[0]==pytest.approx(old[0])
 
-def test_repeated_short_dropouts_do_not_pulse_speed():
-    c,t=current_cruise();t=replace(t,reacquire_confirm_frames=3)
-    for i in range(100):
-        valid=i%5!=0
-        v,_,_=c.command(PathEstimate(valid,-.1,.9,source='black'),2.03+i*.03,t)
-        assert v==pytest.approx(.65)
 
-def test_sustained_loss_gently_caps_speed_and_turn_without_leakage():
-    c,t=current_cruise(-.9)
-    assert c.last_command[1]>1.5
-    assert c.command(PathEstimate(False),2.03,t)[1]>1.5
-    for now in (2.21,2.24,2.3,2.5):
-        v,w,_=c.command(PathEstimate(False),now,t)
-        assert v<=.2 and abs(w)<=.6
 
 def test_hard_budget_still_stops_without_faking_reacquisition():
     c,t=current_cruise();result=c.command(PathEstimate(False),11.,t)
     assert result==(0.,0.,'localization_fault_latched')
 
-def test_one_flash_does_not_change_search_direction_memory():
-    c,t=current_cruise(-.8);c.command(PathEstimate(False),2.21,t);goal=c.search_turn_goal
-    c.command(PathEstimate(True,.8,.9,near_error=.8,source='black'),2.24,t)
-    assert c.search_turn_goal==goal
-    assert c.command(PathEstimate(False),2.27,t)[1]>=0
 
 def test_entry_distance_cannot_change_ordinary_controller_outputs():
     commands=[]

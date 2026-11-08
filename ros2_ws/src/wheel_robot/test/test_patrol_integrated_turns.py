@@ -21,14 +21,15 @@ def test_heading_does_not_add_unvalidated_preview_to_baseline_steering():
     assert FixedSpeedController()._steer(opposite,1.,t,.03)==baseline
 
 
-def test_search_deadband_does_not_reverse_at_degradation():
+def test_restored_loss_strategy_caps_speed_without_short_gap_hold():
     c,t=FixedSpeedController(),PatrolTuning()
     c.last_valid_at=0.; c.last_time=0.; c.last_command=(.2,0.)
-    c.last_good_turn=-.01
+    c.last_good_turn=.20
     absent=PathEstimate(False)
     for now in np.arange(.1,3.5,.1):
-        _,w,_=c.command(absent,float(now),t)
-        assert w >= 0
+        speed,w,mode=c.command(absent,float(now),t)
+        assert speed <= t.search_speed_m_s and w >= 0
+        assert mode != 'brief_loss_hold'
 
 
 def test_first_visible_left_fork_cannot_bypass_marker_pass():
