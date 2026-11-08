@@ -988,7 +988,7 @@ def test_rescue_allows_high_fps_small_motion_and_return_without_renewal(monkeypa
     assert vision._edge_rescue_reason(rescue, 1.50) == "rescue_trusted_black_stale"
 
 
-def test_final_selection_rejection_does_not_create_black_evidence(monkeypatch):
+def test_selector_wait_preserves_normal_tracking_without_creating_rescue_evidence(monkeypatch):
     module = load_actual_vision_module(monkeypatch)
     vision = module.PatrolVision()
     frame = np.full((240,320,3), 245, np.uint8)
@@ -997,8 +997,8 @@ def test_final_selection_rejection_does_not_create_black_evidence(monkeypatch):
     for now in (1.,1.03,1.06):
         assert not vision.estimate(frame, replace(PatrolTuning(),roundabout_enabled=0,crosswalk_enabled=0),now).valid
         assert not vision._trusted_black_history
-        assert vision.last_black_at is None
-        assert all(x is None for x in vision._last_good_band_x)
+        assert vision.last_black_at == now
+        assert any(x is not None for x in vision._last_good_band_x)
 
 
 @pytest.mark.parametrize("center", [.49, .50, .51])

@@ -348,7 +348,14 @@ class PatrolVision(base.CourseVision):
                                  points, dark, extracted[9], *errors,
                                  rescue=bool(valid and extracted[9] == "line_edge_single_rescue"))
             black.route_observed=observed_route(black,width,height,tuning)
+            # Ordinary multi-band observations update the extractor exactly as
+            # in b3c879e, even while the selector confirms return from road.
+            # Only one-point rescue is forbidden from renewing this memory.
+            if valid and not black.rescue:
+                self.last_black_at = now
             if black.rescue:
+                self._previous_band_x = band_history_before
+                self._last_good_band_x = good_band_history_before
                 rescue_reason = self._edge_rescue_reason(black, now)
                 if rescue_reason != "line_edge_single_rescue":
                     # The baseline extractor already updated temporal bands. A rejected
@@ -494,11 +501,7 @@ class PatrolVision(base.CourseVision):
                           and black.valid and black.route_observed
                           and chosen.reason == extracted[9])
         if accepted_black:
-            self.last_black_at = now
             self._remember_trusted_black(black, now)
-        elif tuning.black_enabled:
-            self._previous_band_x = band_history_before
-            self._last_good_band_x = good_band_history_before
         if chosen.valid and chosen.points is not None and len(chosen.points):
             if not chosen.rescue:
                 self.previous_points = chosen.points.copy()
