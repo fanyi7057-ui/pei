@@ -2230,12 +2230,6 @@ class FixedSpeedController:
             (filtered-self.filtered_error)/dt, -tuning.max_error_derivative, tuning.max_error_derivative))
         self.filtered_error, self.previous_source = filtered, path.source
         normal = tuning.steering_gain*filtered
-        # Measured near/mid heading builds the turn before lateral error grows.
-        # Do not preview across S-bend reversal, rescue or task-owned routes.
-        if (path.route_observed and not path.rescue and not path.handoff
-                and not path.route_locked and path.near_error*path.mid_error >= 0):
-            heading = float(np.clip(path.mid_error-path.near_error, -.40, .40))
-            normal += tuning.steering_gain*.30*heading
         corner = math.copysign(tuning.max_turn_rad_s, filtered) if filtered else 0.
         self.raw_angular = -((1-self.corner_strength)*normal+self.corner_strength*corner+tuning.steering_kd*derivative)
         return float(np.clip(self.raw_angular, -tuning.max_turn_rad_s, tuning.max_turn_rad_s))

@@ -7,13 +7,13 @@ from patrol_contour_runtime import FixedSpeedController, PathEstimate, PatrolTun
 from patrol_dash_entry import DashObservation
 
 
-def test_heading_preview_builds_turn_without_changing_cruise_or_straight():
+def test_heading_does_not_add_unvalidated_preview_to_baseline_steering():
     t=PatrolTuning()
     curve=PathEstimate(True,-.15,.9,near_error=-.15,mid_error=-.4,route_observed=True)
     c=FixedSpeedController()
     turn=c._steer(curve,1.,t,.03)
     baseline=FixedSpeedController()._steer(replace(curve,route_observed=False),1.,t,.03)
-    assert turn > baseline > 0
+    assert turn == baseline > 0
     straight=replace(curve,near_error=-.15,mid_error=-.15)
     assert FixedSpeedController()._steer(straight,1.,t,.03)==baseline
     assert t.fixed_speed_m_s == .65 and t.max_turn_rad_s == 2.
