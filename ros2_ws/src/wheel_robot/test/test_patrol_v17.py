@@ -23,11 +23,11 @@ def test_short_pass_defaults_and_no_generic_dash_five_marker():
     assert r.phase=="SEEK" and r.first_marker_at is None
 
 
-def test_explicit_four_is_direct_entry_not_an_exit_to_ignore():
+def test_first_fork_is_observed_before_entry_is_authorized():
     r,t=armed()
     r.observe(False,0.,0.,t,(.3,0.))
     r.observe(True,1.,.04,t,(.3,0.),dash_cue=cue(t=t))
-    assert r.phase=="ENTRY" and not r.course.rings[0]
+    assert r.phase=="APPROACH" and not r.course.rings[0]
 
 
 def test_five_pass_is_about_fifteen_cm_not_sixtyfive_cm():

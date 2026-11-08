@@ -1731,11 +1731,7 @@ class RoundaboutRouter:
         self.vv_kind=kind
         if self.phase=="SEEK":
             if self.gate_detection_allowed(now,tuning) and self.vv_streak>=tuning.vv_dash_confirm_frames:
-                if cue.branch.valid:
-                    self._phase("ENTRY",now)
-                    self.entry_detection_reason="vv_direct_verified_entry_4"
-                    return
-                if not cue.exit_branch.valid:
+                if not (cue.exit_branch.valid or cue.branch.valid):
                     self.entry_detection_reason="vv_main_only_not_exit_5"
                     return
                 self.first_marker_at=now
@@ -2234,6 +2230,12 @@ class FixedSpeedController:
             (filtered-self.filtered_error)/dt, -tuning.max_error_derivative, tuning.max_error_derivative))
         self.filtered_error, self.previous_source = filtered, path.source
         normal = tuning.steering_gain*filtered
+        # Measured near/mid heading builds the turn before lateral error grows.
+        # Do not preview across S-bend reversal, rescue or task-owned routes.
+        if (path.route_observed and not path.rescue and not path.handoff
+                and not path.route_locked and path.near_error*path.mid_error >= 0):
+            heading = float(np.clip(path.mid_error-path.near_error, -.40, .40))
+            normal += tuning.steering_gain*.30*heading
         corner = math.copysign(tuning.max_turn_rad_s, filtered) if filtered else 0.
         self.raw_angular = -((1-self.corner_strength)*normal+self.corner_strength*corner+tuning.steering_kd*derivative)
         return float(np.clip(self.raw_angular, -tuning.max_turn_rad_s, tuning.max_turn_rad_s))
@@ -2244,6 +2246,11 @@ class FixedSpeedController:
         self.raw_angular = 0.
         self.reset_error()
         return 0., 0., "localization_fault_latched"
+
+    def _search_direction(self, tuning):
+        # Use one deadband in normal AND degraded search. Tiny negative noise
+        # must not select left in one branch and right in the other.
+        return math.copysign(1., self.search_turn_goal) if abs(self.search_turn_goal) > .05 else tuning.search_default_direction
 
     def task_command(self, linear, angular, now, tuning, immediate_stop=False, left_only=False):
         """Explicit zebra/finish heading guidance, never an implicit speed cap."""
@@ -2331,7 +2338,7 @@ class FixedSpeedController:
                 # Freeze the chosen episode direction; elapsed time alone
                 # must not flip a right search into the default left turn.
                 direction = self.search_turn_goal
-                sign = math.copysign(1., direction) if abs(direction) > .05 else tuning.search_default_direction
+                sign = self._search_direction(tuning)
                 angular = sign*min(tuning.max_turn_rad_s, max(tuning.search_turn_rad_s, abs(direction)))
                 mode = "active_search"
                 self.raw_angular = angular
@@ -2354,7 +2361,7 @@ class FixedSpeedController:
                     self.degraded=True
                     linear=min(linear,tuning.search_degraded_speed_m_s)
                     if not path.valid and search_heading_turn is None:
-                        angular=math.copysign(min(tuning.search_turn_rad_s,tuning.max_turn_rad_s),self.search_turn_goal or tuning.search_default_direction)
+                        angular=self._search_direction(tuning)*min(tuning.search_turn_rad_s,tuning.max_turn_rad_s)
                         self.raw_angular=angular
                     mode="degraded_reacquire" if path.valid else "degraded_search"
             else:

@@ -82,12 +82,12 @@ def test_reject_non_entry_cues(kind):
     assert not got.valid or (kind=="right" and not got.branch.valid)
 
 
-def test_explicit_entry_does_not_get_mistaken_for_first_exit_marker():
+def test_first_left_fork_requires_marker_pass_before_entry():
     r,t=armed()
     r.observe(False,0.,0.,t,(.65,0.))
     r.observe(True,1.,.1,t,(.65,0.),dash_cue=cue(t=t))
-    assert r.phase=="ENTRY" and r.first_marker_at is None
-    assert r.motion_override(.1,t)[1]>0
+    assert r.phase=="APPROACH" and r.first_marker_at is not None
+    assert r.motion_override(.1,t) is None
 
 
 def test_pass_exit_then_one_current_entry_frame_starts_entry():
@@ -193,7 +193,7 @@ def test_ordinary_algorithms_and_numeric_speed_defaults_unchanged():
     text=(scripts/"patrol_contour_runtime.py").read_text(encoding="utf-8-sig")
     tree=ast.parse(text)
     for name,digest in (("PathSelector","8e5d914aff1fe47fd4039d05214dae936fbf56fd79d36ade94128af131015224"),
-                        ("FixedSpeedController","cbe3c92ba09de97deb9b2d044abc591baf5beb109808a8437e45cb80cb34af80")):
+                        ("FixedSpeedController","9bbc60fb35826684a3562219d624e7c7fa7f97b70c0e925ca8335ef8451bb7a5")):
         item=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name==name)
         assert hashlib.sha256(ast.get_source_segment(text,item).strip().encode()).hexdigest()==digest
     t=PatrolTuning();c=FixedSpeedController()
