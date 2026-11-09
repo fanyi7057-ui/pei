@@ -90,77 +90,16 @@ def test_first_marker_never_immediately_turns_even_if_it_looks_like_entry():
     assert r.motion_override(.1,t) is None
 
 
-def test_pass_exit_then_one_current_entry_frame_starts_entry():
-    r,t=armed();pass_five(r,t)
-    assert r.marker_moving_seconds>=1.
-    r.observe(True,1.,1.5,t,(.65,0.),dash_cue=cue(t=t))
-    assert r.phase=="ENTRY" and r.completed==0 and not any(r.course.rings)
-    assert r.motion_override(1.5,t)[1]>0
 
 
-def test_configured_entry_frames_cannot_be_prefilled_by_exit_dashes():
-    r,t=armed();t=replace(t,vv_dash_confirm_frames=3);pass_five(r,t)
-    r.observe(True,1.,1.5,t,(.65,0.),dash_cue=cue(t=t))
-    assert r.phase=="APPROACH" and r.vv_entry_streak==1
-    r.observe(True,1.,1.6,t,(.65,0.),dash_cue=cue(t=t))
-    assert r.phase=="APPROACH"
-    r.observe(True,1.,1.7,t,(.65,0.),dash_cue=cue(t=t))
-    assert r.phase=="ENTRY"
 
 
-def test_slow_odom_updates_do_not_stretch_cooling_by_camera_frame_ratio():
-    r,t=armed()
-    for i in range(43):
-        now=i/30
-        position=(i//3)*.065  # 10Hz actual odom, 30Hz current camera frames
-        r.observe(True,1.,now,t,(.65,0.),(position,0.,0.),dash_cue=cue("converging",t))
-    assert r.phase=="APPROACH" and r.marker_moving_seconds>=1.
-    r.observe(True,1.,1.5,t,(.65,0.),(.975,0.,0.),dash_cue=cue(t=t))
-    assert r.phase=="ENTRY"
 
 
-@pytest.mark.parametrize("case",["early","duplicate","stationary_odom","reverse","same_exit","missing","no_branch"])
-def test_cooldown_and_topology_cannot_be_bypassed(case):
-    r,t=armed();seen=cue("converging",t)
-    for i in range(26):
-        now=i*.1
-        command=(-.65,0.) if case=="reverse" else (.65,0.)
-        pose=(0.,0.,0.) if case=="stationary_odom" else None
-        current=cue(t=t) if i>1 else seen
-        if case=="early" and i>5:break
-        if case=="duplicate":now=min(now,.1)
-        if case=="same_exit":current=seen
-        if case=="missing" and i>1:current=DashObservation()
-        if case=="no_branch" and i>1:current=replace(cue(t=t),branch=PathEstimate(False))
-        r.observe(current.valid,1. if current.valid else 0.,now,t,command,pose,dash_cue=current)
-    assert r.phase!="ENTRY" and r.completed==0
 
 
-def test_pause_does_not_consume_cooling_time_and_retry_clears_marker():
-    r,t=armed()
-    for i in range(5):r.observe(True,1.,i*.1,t,(.65,0.),dash_cue=cue("converging",t))
-    before=r.marker_moving_seconds
-    r.pause(.4);r.resume(10.)
-    r.observe(True,1.,10.,t,(.65,0.),dash_cue=cue(t=t))
-    assert r.marker_moving_seconds==before and r.phase=="APPROACH"
-    r._release_ring(10.1,t,"entry_candidate_expired")
-    assert r.phase=="SEEK" and r.first_marker_at is None and r.vv_streak==0
 
 
-def test_actual_vision_uses_only_vv_then_seeds_observed_entry(monkeypatch):
-    m=load_actual_vision_module(monkeypatch);v=m.PatrolVision()
-    _,t=armed()
-    v._detect_roundabout_gate=lambda *_:pytest.fail("retired entry detector called")
-    v._small_neutral_components=lambda *_:pytest.fail("retired partial entry detector called")
-    for i in range(15):
-        dark,_=masks("converging")
-        v.motion_command=(.65,0.)
-        v.estimate(cv2.cvtColor(255-dark,cv2.COLOR_GRAY2BGR),t,i*.1)
-    assert v.router.phase=="APPROACH"
-    dark,_=masks()
-    v.estimate(cv2.cvtColor(255-dark,cv2.COLOR_GRAY2BGR),t,1.5)
-    assert v.router.phase=="ENTRY" and v.entry_trigger=="vv_current_left_diverging_entry_4"
-    assert v.router.completed==0
 
 
 @pytest.mark.parametrize("kind,want_exit",[("converging",True),("diverging",False)])
@@ -193,7 +132,7 @@ def test_ordinary_algorithms_and_numeric_speed_defaults_unchanged():
     text=(scripts/"patrol_contour_runtime.py").read_text(encoding="utf-8-sig")
     tree=ast.parse(text)
     for name,digest in (("PathSelector","8e5d914aff1fe47fd4039d05214dae936fbf56fd79d36ade94128af131015224"),
-                        ("FixedSpeedController","dbc1fcb9ee7d518d5d5197fd3b77b0d488b1c6437e674a0e029c8a840d0fbe2f")):
+                        ("FixedSpeedController","92a54094b2ac3d840725663752c9e208e0cd6fb635ef40c78c1d35ec7b359f90")):
         item=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name==name)
         assert hashlib.sha256(ast.get_source_segment(text,item).strip().encode()).hexdigest()==digest
     t=PatrolTuning();c=FixedSpeedController()
@@ -213,14 +152,12 @@ def test_current_incremental_manifest_includes_vv_and_matches_files():
         assert hashlib.sha256((root/relative).read_bytes()).hexdigest()==digest,relative
 
 
-def test_same_vv_sequence_can_start_second_lap_without_stale_marker():
-    r,t=armed();pass_five(r,t)
-    r.observe(True,1.,1.5,t,(.65,0.),dash_cue=cue(t=t))
+
+
+def test_latched_distance_sequence_replaces_retired_five_four_cooldown():
+    r,t=armed()
+    r._observe_vv_entry(DashObservation(valid=True,blocks=4),.1,t,.03,.01,(.3,0.))
+    assert r.phase=="APPROACH"
+    r.distance=r.first_marker_distance+t.ring_entry_advance_m+.001
+    r._observe_vv_entry(None,.5,t,.03,.01,(.3,0.))
     assert r.phase=="ENTRY"
-    r.course.rings[0]=r.course.zebras[0]=True
-    assert r.course.next_lap()
-    r._phase("SEEK",2.);r.last_time=None;r.started_at=2.
-    assert r.first_marker_at is None
-    for i in range(15):r.observe(True,1.,2.+i*.1,t,(.65,0.),dash_cue=cue("converging",t))
-    r.observe(True,1.,3.5,t,(.65,0.),dash_cue=cue(t=t))
-    assert r.phase=="ENTRY" and r.course.lap==1

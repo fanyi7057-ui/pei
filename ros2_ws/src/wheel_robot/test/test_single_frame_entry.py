@@ -38,3 +38,13 @@ def test_stationary_detection_cannot_latch_entry():
     r=RoundaboutRouter();t=PatrolTuning();r.started_at=0.
     r._observe_vv_entry(SimpleNamespace(valid=True),.1,t,.03,0.,(0.,0.))
     assert r.phase=="SEEK"
+
+
+def test_locked_ordinary_line_cannot_confirm_follow_without_dash_evidence():
+    r,t=fixture();r.distance=.121
+    r._observe_vv_entry(None,.5,t,.03,.01,(.3,0.))
+    r.phase_distance=1.;r.left_yaw=1.2
+    p=PathEstimate(True,.1,.9,near_error=.1,mid_error=.1,route_locked=True,route_observed=True)
+    for now in (.6,.63,.66,.69,.72,.75,.78,.81):
+        r.accept_path(p,now,t)
+    assert r.phase=="ENTRY" and not r.ring_route_acquired

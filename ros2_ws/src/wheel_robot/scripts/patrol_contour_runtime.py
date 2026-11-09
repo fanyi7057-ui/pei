@@ -1637,6 +1637,7 @@ class RoundaboutRouter:
             if moving and self.distance-self.first_marker_distance>=tuning.ring_entry_advance_m:
                 self._phase("ENTRY",now)
                 self.entry_visual_tracking=False
+                self.entry_dash_proven=False
                 self.entry_detection_reason="vv_distance_complete_left_probe"
             else:
                 self.entry_detection_reason="vv_advancing_current_route"
@@ -1829,7 +1830,7 @@ class RoundaboutRouter:
             return
         good=bool(path.valid and path.route_locked)
         if self.phase=="ENTRY":
-            good=good and path.route_observed and not path.rescue
+            good=good and path.route_observed and not path.rescue and getattr(self,"entry_dash_proven",False)
             if tuning.roundabout_entry_commit_enabled:
                 turn=self.measured_turn.angle if self.measured_turn.fresh(now,tuning) else self.left_yaw
                 good=good and turn>=max(tuning.roundabout_entry_min_yaw_rad,math.radians(tuning.roundabout_entry_acquire_yaw_deg))
@@ -2019,6 +2020,7 @@ class FixedSpeedController:
         self.reset()
 
     def reset(self):
+        self.recovery_settle_until = -math.inf
         self.last_valid_at = None
         self.last_good_turn = 0.
         self.last_time = None
@@ -2117,14 +2119,13 @@ class FixedSpeedController:
 
         if path.valid:
             # Weak one-band rescue may steer briefly, but never renew recovery budgets.
-            near_geometry = (path.points is not None and len(path.points) >= 2
-                and path.near_gap_ratio <= .02 and path.confidence >= tuning.rescue_corner_confidence
-                and abs(path.near_error-path.mid_error) <= tuning.roundabout_path_agreement)
-            observed = not path.rescue and not path.handoff and (path.route_observed or near_geometry)
+            observed = not path.rescue and not path.handoff and path.confidence >= tuning.black_min_confidence
             eligible = observed if tuning.bounded_recovery_enabled else True
             self.reacquire_streak = (self.reacquire_streak+1 if eligible else 0) if recovering else 0
             confirmed = not recovering or self.reacquire_streak >= tuning.reacquire_confirm_frames
             if confirmed:
+                if recovering:
+                    self.recovery_settle_until = now+.35
                 self.last_valid_at = now
                 self.loss_started_at, self.loss_distance = None, 0.
                 self.loss_command = None
@@ -2188,7 +2189,7 @@ class FixedSpeedController:
                 return self._fault("search_disabled", now)
 
         # Ordinary recovery is bounded; explicit ring guidance keeps its own control.
-        if tuning.bounded_recovery_enabled and self.loss_started_at is not None and search_direction is None and search_heading_turn is None:
+        if tuning.bounded_recovery_enabled and (self.loss_started_at is not None or now < self.recovery_settle_until or path.rescue):
             linear = min(linear, tuning.search_recovery_speed_m_s)
             angular = float(np.clip(angular, -tuning.search_turn_rad_s, tuning.search_turn_rad_s))
 

@@ -87,21 +87,26 @@ class PatrolVision(base.CourseVision):
         self.black_estimate = PathEstimate(False, reason="reset")
         self.road_estimate = PathEstimate(False, reason="reset")
 
-    def _snapshot_if_missing(self, frame, dark, road, chosen, now):
+    def _snapshot_if_missing(self, frame, dark, road, chosen, now, force=False):
         directory = getattr(self, "snapshot_directory", None)
-        if chosen.valid or directory is None or now-getattr(self,"_last_snapshot_at",-float("inf")) < 5.:
+        clock="_last_trigger_snapshot_at" if force else "_last_snapshot_at"
+        if (chosen.valid and not force) or directory is None or now-getattr(self,clock,-float("inf")) < 5.:
             return
         worker = getattr(self,"_snapshot_worker",None)
         if worker is not None and worker.is_alive():
             return
-        self._last_snapshot_at = now
+        setattr(self,clock,now)
         slot = getattr(self,"_snapshot_slot",0) % 24
         self._snapshot_slot = slot+1
         raw = frame.copy()
         black_view = cv2.cvtColor(dark,cv2.COLOR_GRAY2BGR)
+        points=self.dash_observation.main.points
+        if points is not None:
+            for x,y in points:
+                cv2.circle(black_view,(int(round(x)),int(round(y))),3,(0,0,255),1)
         road_view = np.zeros_like(raw) if road.mask is None else cv2.cvtColor(road.mask,cv2.COLOR_GRAY2BGR)
         canvas = np.hstack((raw,black_view,road_view))
-        metadata = f"time={now:.3f} source={self.source} selected={chosen.reason} road={road.reason}"
+        metadata = f"time={now:.3f} phase={self.router.phase} trigger={force} cue={self.dash_observation.reason} blocks={self.dash_observation.blocks} source={self.source} selected={chosen.reason} road={road.reason}"
         def write():
             try:
                 directory.mkdir(parents=True,exist_ok=True)
@@ -148,7 +153,7 @@ class PatrolVision(base.CourseVision):
         self.gate_near=self.crosswalk_score=self.exit_solid_score=0.
         self.entry_ready=False
         self.dash_observation=DashObservation()
-        if self.router.gate_detection_allowed(now,tuning):
+        if self.router.gate_detection_allowed(now,tuning) or self.router.phase=="ENTRY":
             self.dash_observation=detect_vv_dashes(events,_white,tuning,self.seed_x_ratio)
             cue=self.dash_observation
             self.gate_chain_count=cue.blocks
@@ -157,6 +162,9 @@ class PatrolVision(base.CourseVision):
             gate=cue.valid and (cue.exit_branch.valid if self.router.phase=="FOLLOW" else True)
             self.gate_score=1. if gate else 0.
             self.entry_ready=cue.branch.valid
+        if (self.router.phase=="ENTRY" and self.dash_observation.valid
+                and self.dash_observation.main.route_observed):
+            self.router.entry_dash_proven=True
         self.entry_chain_n=self.dash_observation.blocks
         exit_solid=False
         if tuning.roundabout_enabled and self.router.phase=="FOLLOW" and not gate:
@@ -220,8 +228,6 @@ class PatrolVision(base.CourseVision):
             black = PathEstimate(bool(valid), float(np.clip(error-shift, -1., 1.)), confidence,
                                  points, dark, extracted[9], *errors,
                                  rescue=bool(valid and extracted[9] == "line_edge_single_rescue"))
-            if len(points):
-                black.near_gap_ratio=max(0.,tuning.road_near_y_ratio-float(np.max(points[:,1]))/height)
             black.route_observed=observed_route(black,width,height,tuning)
         road = PathEstimate(False, reason="contour_not_needed")
         # While returning from road fallback, compute both until black is
@@ -360,9 +366,10 @@ class PatrolVision(base.CourseVision):
             self._last_vision_diagnostic_at = now
             print(f"VISION bands={len(black.points) if black.points is not None else 0} "
                   f"black={black.reason} road={road.reason} source={self.source} "
+                  f"dash_raw={self.dash_observation.raw_blocks} dash_sided={self.dash_observation.sided_blocks} dash={self.dash_observation.reason} "
                   f"rescue={int(chosen.rescue)} observed={int(chosen.route_observed)} "
                   f"near={chosen.near_error:+.3f} mid={chosen.mid_error:+.3f}", flush=True)
-        self._snapshot_if_missing(work,dark,road,chosen,now)
+        self._snapshot_if_missing(work,dark,road,chosen,now,force=self.router.entry_detection_reason=="vv_latched_advance_current_route")
         return chosen
 
 

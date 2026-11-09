@@ -260,7 +260,7 @@ def test_v12_new_fields_reject_invalid_snapshot(changes):
 
 @pytest.mark.parametrize("name,expected",[
     ("PathSelector","8e5d914aff1fe47fd4039d05214dae936fbf56fd79d36ade94128af131015224"),
-    ("FixedSpeedController","6c042df42f2fc287ffadc85b7e25a1fe3cde7143de435601e33ee6baa3121137"),
+    ("FixedSpeedController","92a54094b2ac3d840725663752c9e208e0cd6fb635ef40c78c1d35ec7b359f90"),
 ])
 def test_v13_ordinary_classes_exact_v11_source(name,expected):
     import ast
@@ -296,6 +296,7 @@ def test_v13_27_degree_candidate_cannot_release_entry_or_enable_boost(owned):
 
 def test_v13_after_55_degrees_stable_route_still_required():
     r,t=RoundaboutRouter(),PatrolTuning();r._phase("ENTRY",0.)
+    r.entry_dash_proven=True
     r.phase_distance=.7;r.left_yaw=math.radians(60.)
     p=route_path(-.15,route_locked=True)
     r.accept_path(p,1.,t)
@@ -1280,6 +1281,7 @@ def enter_router():
         r.observe(True,.9,now,t,(.5,0.),dash_cue=cue)
     assert r.phase == "APPROACH"
     r._phase("ENTRY",.06)  # remaining tests isolate post-approach ring stages
+    r.entry_dash_proven=True
     return r,t
 
 
@@ -1344,6 +1346,8 @@ def test_v5_exit_reacquires_selected_path_before_unlock_and_cooldown():
     r.last_time=1.
     for now in np.arange(1.1,2.2,.1):
         r.observe(False,0.,now,t,(.5,0.))
+        if r.phase=="ENTRY":
+            r.entry_dash_proven=True  # state-only full-course fixture supplies dash evidence
         r.accept_path(PathEstimate(True,route_locked=True,route_observed=True),now,t)
     assert r.phase == "SEEK_CROSSWALK" and r.completed == 1
     for now in np.arange(2.2,20.,.1):
@@ -1825,6 +1829,8 @@ def test_v6_two_lap_task_order_without_timer_reentry_or_speed_drop():
         cmd=(0.,0.) if phase=="CW_STOP" else (.5,.5)
         r.observe(gate,.95 if gate else 0.,now,t,cmd,gate_near=.8,dash_cue=vv_test_cue(entry=phase=="APPROACH") if gate else None,
                   exit_solid=phase=="FOLLOW",crosswalk=phase=="SEEK_CROSSWALK")
+        if r.phase=="ENTRY":
+            r.entry_dash_proven=True  # measured dash acquisition supplied by fixture
         r.accept_path(PathEstimate(True,route_locked=True,route_observed=True),now,t)
         if not phases or phases[-1]!=r.phase:
             phases.append(r.phase)
@@ -2370,6 +2376,7 @@ def enter_actual_black_without_blue(monkeypatch):
     v=module.PatrolVision()
     t=PatrolTuning()
     v.router._phase("ENTRY",0.)
+    v.router.entry_dash_proven=True  # prior measured dash acquisition fixture
     v.router.phase_distance=1.
     v.router.left_yaw=1.1  # V13 actual acquisition progress, not the former 20-degree release
     frame=np.full((240,320,3),245,np.uint8)
@@ -3225,14 +3232,15 @@ def test_bounded_recovery_slows_and_retains_confirmed_direction():
     for now in (2.86,2.89,2.92):
         v,w,mode=c.command(PathEstimate(True,.3,.8,source="black",route_observed=True),now,t)
     assert mode=="fixed_speed" and c.loss_started_at is None
-    assert v>t.search_recovery_speed_m_s
+    assert v==pytest.approx(t.search_recovery_speed_m_s)
+    assert c.command(PathEstimate(True,.3,.8,source="black",route_observed=True),3.4,t)[0]>v
 
 
-def test_bounded_recovery_preserves_explicit_ring_search():
+def test_bounded_recovery_caps_explicit_ring_search():
     c,t=cruise_controller(-.6,bounded_recovery_enabled=1)
-    for now in np.arange(2.03,2.50,.03):
+    for now in np.arange(2.03,2.90,.03):
         v,w,mode=c.command(PathEstimate(False),float(now),t,search_direction=1)
-    assert v==pytest.approx(t.fixed_speed_m_s)
+    assert v==pytest.approx(t.search_recovery_speed_m_s) and w>0
 
 
 def test_current_geometry_changes_search_without_renewing_budget():

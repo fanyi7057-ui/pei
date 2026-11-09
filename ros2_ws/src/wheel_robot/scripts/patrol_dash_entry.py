@@ -17,6 +17,8 @@ from patrol_contour_runtime import PathEstimate, path_errors, observed_route
 class DashObservation:
     valid: bool = False
     blocks: int = 0
+    raw_blocks: int = 0
+    sided_blocks: int = 0
     near_ratio: float = 0.
     main: PathEstimate = field(default_factory=lambda: PathEstimate(False))
     branch: PathEstimate = field(default_factory=lambda: PathEstimate(False))
@@ -48,6 +50,7 @@ def detect_vv_dashes(events,white,tuning,reference_x_ratio=None):
     black[:int(56*tuning.vv_dash_roi_top_ratio)]=False
     black[int(56*tuning.vv_dash_roi_bottom_ratio):]=False
     count,_,stats,centers=cv2.connectedComponentsWithStats(black.astype(np.uint8),8)
+    result.raw_blocks=count-1
     candidates=[]
     for i in range(1,count):
         x,y,bw,bh,area=stats[i]
@@ -60,6 +63,7 @@ def detect_vv_dashes(events,white,tuning,reference_x_ratio=None):
         if left<0 or right>=80 or not road[row,left] or not road[row,right]:
             continue
         candidates.append((float(cx),float(cy),int(bh)))
+    result.sided_blocks=len(candidates)
     candidates=sorted(candidates,key=lambda c:c[1],reverse=True)[:40]
     if len(candidates)<tuning.vv_dash_min_blocks:
         result.reason="vv_few_white_sided_blocks"
@@ -93,6 +97,26 @@ def detect_vv_dashes(events,white,tuning,reference_x_ratio=None):
     result.main=_path(main,width,height,tuning,"vv_main_dashes")
     result.blocks=len(rows)
     result.near_ratio=max((y+h/2)/56 for _,y,h in rows)
+    # Verify gaps on source pixels: low-resolution aliasing of a solid line
+    # must not manufacture independent dash blocks.
+    source_gaps=0
+    for first,second in zip(rows,rows[1:]):
+        y0=int((first[1]+first[2]/2)*height/56)+1
+        y1=int((second[1]-second[2]/2)*height/56)
+        if y1<=y0:
+            continue
+        xs=np.linspace(first[0],second[0],y1-y0)*width/80
+        gaps=[]
+        for y,x in zip(range(y0,y1),xs):
+            x=int(round(x));lo=max(0,x-1);hi=min(width,x+2)
+            gaps.append(np.mean(events[y,lo:hi]>0)<.25 and np.mean(white[y,lo:hi]>0)>.5)
+        source_gaps+=bool(gaps and np.mean(gaps)>=.5)
+    if source_gaps*2<len(rows)-1:
+        result.reason="vv_source_gaps_reject"
+        return result
+    if result.near_ratio<tuning.vv_dash_entry_near_ratio:
+        result.reason="vv_dashes_not_near"
+        return result
     result.valid=True
     result.reason="vv_dash_hit"
     # Curved LEFT guide is an actual observation, not a fabricated connector.
