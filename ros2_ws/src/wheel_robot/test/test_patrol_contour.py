@@ -260,7 +260,7 @@ def test_v12_new_fields_reject_invalid_snapshot(changes):
 
 @pytest.mark.parametrize("name,expected",[
     ("PathSelector","8e5d914aff1fe47fd4039d05214dae936fbf56fd79d36ade94128af131015224"),
-    ("FixedSpeedController","dbc1fcb9ee7d518d5d5197fd3b77b0d488b1c6437e674a0e029c8a840d0fbe2f"),
+    ("FixedSpeedController","1a41d0fc088e986f631c8e1ce9752fd352c8ba34e1f8e208114edd01c98c78fd"),
 ])
 def test_v13_ordinary_classes_exact_v11_source(name,expected):
     import ast
@@ -533,7 +533,7 @@ def test_file_reload_atomic_replace_reject_and_recover(tmp_path):
 def test_shipped_config_has_all_documented_values():
     path = SCRIPTS.parent / "config" / "patrol_test.yaml"
     tuning, message = PatrolFileWatcher(path).poll()
-    assert tuning == PatrolTuning(), message
+    assert tuning == replace(PatrolTuning(), bounded_recovery_enabled=1), message
 
 
 @pytest.fixture
@@ -2520,7 +2520,7 @@ def test_v10_new_tuning_snapshot_validation(changes):
 def test_v10_complete_live_yaml_has_all_fields_and_preserves_non_ring_values():
     current,message=PatrolFileWatcher(SCRIPTS.parent/"config/patrol_test.yaml").poll()
     assert current is not None,message
-    assert current==PatrolTuning()
+    assert current==replace(PatrolTuning(), bounded_recovery_enabled=1)
     assert current.fixed_speed_m_s==.65
     assert (current.crosswalk_stop_seconds,current.crosswalk_clear_seconds)==(3.,3.)
 
@@ -3211,3 +3211,25 @@ def test_v15_two_observed_exits_authorize_zebras_in_order_and_distance_finish():
             assert r.phase=="FINISH_RUN" and r.finish_authorized
             r.phase_distance=1.01;now+=.03;r.observe(False,0.,now,t,(.65,0.))
             assert r.phase=="FINISHED" and r.motion_override(now,t)==(0.,0.,"finished")
+
+
+def test_bounded_recovery_slows_and_retains_confirmed_direction():
+    c,t=cruise_controller(-.6, bounded_recovery_enabled=1)
+    original=c.last_good_turn
+    for now in np.arange(2.03,2.80,.03):
+        v,w,mode=c.command(PathEstimate(False),float(now),t)
+    assert v==pytest.approx(.30) and abs(w)<=t.search_turn_rad_s
+    c.command(PathEstimate(True,.8,.8,source="black"),2.83,t)
+    assert c.last_good_turn==original
+    assert c.loss_started_at is not None
+    for now in (2.86,2.89,2.92):
+        v,w,mode=c.command(PathEstimate(True,.3,.8,source="black"),now,t)
+    assert mode=="fixed_speed" and c.loss_started_at is None
+    assert v>t.search_recovery_speed_m_s
+
+
+def test_bounded_recovery_preserves_explicit_ring_search():
+    c,t=cruise_controller(-.6,bounded_recovery_enabled=1)
+    for now in np.arange(2.03,2.50,.03):
+        v,w,mode=c.command(PathEstimate(False),float(now),t,search_direction=1)
+    assert v==pytest.approx(t.fixed_speed_m_s)

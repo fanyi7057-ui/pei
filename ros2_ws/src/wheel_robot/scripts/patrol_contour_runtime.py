@@ -51,6 +51,8 @@ class PatrolTuning:
     search_degraded_speed_m_s: float = 0.12
     search_hard_max_seconds: float = 8.0
     search_hard_max_distance_m: float = 2.6
+    bounded_recovery_enabled: int = 0
+    search_recovery_speed_m_s: float = 0.30
     search_turn_rad_s: float = 0.80
     search_default_direction: int = 1
     reacquire_confirm_frames: int = 3
@@ -291,7 +293,7 @@ class PatrolTuning:
                 raise ValueError(f"{name} 必须为0或1")
         if self.roundabout_heading_source not in (0,1,2):
             raise ValueError("roundabout_heading_source必须为0自动/1IMU/2odom")
-        for name in ("search_degraded_speed_m_s", "roundabout_entry_turn_rad_s", "roundabout_entry_check_seconds", "roundabout_entry_acquire_max_seconds", "roundabout_heading_timeout_seconds", "roundabout_heading_max_rate_rad_s", "roundabout_follow_speed_multiplier", "roundabout_yaw_exit_heading_gain"):
+        for name in ("search_recovery_speed_m_s", "search_degraded_speed_m_s", "roundabout_entry_turn_rad_s", "roundabout_entry_check_seconds", "roundabout_entry_acquire_max_seconds", "roundabout_heading_timeout_seconds", "roundabout_heading_max_rate_rad_s", "roundabout_follow_speed_multiplier", "roundabout_yaw_exit_heading_gain"):
             if getattr(self,name)<=0:
                 raise ValueError(f"{name} 必须大于0")
         if self.search_hard_max_seconds<=self.search_max_seconds or self.search_hard_max_distance_m<=self.search_max_distance_m:
@@ -324,6 +326,8 @@ class PatrolTuning:
             raise ValueError("跨帧入口确认数必须为2..20整数")
         if self.roundabout_entry_stable_seconds >= self.roundabout_route_max_seconds:
             raise ValueError("入环稳定观察时间必须小于入环超时")
+        if self.bounded_recovery_enabled not in (0, 1):
+            raise ValueError("bounded_recovery_enabled must be 0 or 1")
         if not self.black_enabled and not self.contour_enabled:
             raise ValueError("黑线与轮廓不能同时关闭；停车请设enabled=0")
         for name in ("fixed_speed_m_s", "max_turn_rad_s", "steering_gain", "steering_kd", "max_error_derivative", "handoff_seconds", "loss_hold_seconds", "road_single_edge_hold_seconds", "search_turn_rad_s", "roundabout_arm_seconds", "roundabout_arm_distance_m", "roundabout_entry_min_seconds", "roundabout_entry_distance_m", "roundabout_entry_min_yaw_rad", "roundabout_follow_min_seconds", "roundabout_exit_distance_m", "roundabout_rearm_seconds", "roundabout_rearm_distance_m", "roundabout_search_turn_rad_s"):
@@ -2091,8 +2095,12 @@ class FixedSpeedController:
             angular = self._steer(path, now, tuning, elapsed, recovering)
             # A real new observation may correct the search DIRECTION at
             # once; only confirmed consecutive observations renew budgets.
-            self.last_good_turn = angular
-            if abs(path.error) >= tuning.corner_start_error or path.rescue:
+            if confirmed or not tuning.bounded_recovery_enabled:
+                self.last_good_turn = angular
+                if tuning.bounded_recovery_enabled and path.route_observed and abs(path.near_error) < .12 and abs(path.mid_error) < .18 and not path.rescue:
+                    self.last_curve_at = -math.inf
+                    self.last_curve_turn = 0.
+            if (confirmed or not tuning.bounded_recovery_enabled) and (abs(path.error) >= tuning.corner_start_error or path.rescue):
                 self.last_curve_turn, self.last_curve_at = angular, now
                 if recovering:
                     self.search_turn_goal = angular
@@ -2133,6 +2141,11 @@ class FixedSpeedController:
                 mode = "path_memory_bridge"
             else:
                 return self._fault("search_disabled", now)
+
+        # Ordinary recovery is bounded; explicit ring guidance keeps its own control.
+        if tuning.bounded_recovery_enabled and self.loss_started_at is not None and search_direction is None and search_heading_turn is None:
+            linear = min(linear, tuning.search_recovery_speed_m_s)
+            angular = float(np.clip(angular, -tuning.search_turn_rad_s, tuning.search_turn_rad_s))
 
         if self.loss_started_at is not None:
             soft_time=self.loss_age(now)>=tuning.search_max_seconds

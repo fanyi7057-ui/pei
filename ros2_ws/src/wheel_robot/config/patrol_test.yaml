@@ -105,6 +105,9 @@ patrol_test:
   search_hard_max_distance_m: 2.6
   # 主动找线最小转向强度，rad/s，>=0；默认0.80。沿近期明确弯向，仍受max_turn_rad_s约束。
   # 有明确更强弯向时保留强度；线速度是否继续趋近目标由maintain开关决定。
+  # Ordinary lost-path/reacquisition speed cap; normal cruise is unchanged.
+  bounded_recovery_enabled: 1
+  search_recovery_speed_m_s: 0.30
   search_turn_rad_s: 0.80
   # 没有近期明确转向证据时的默认方向：1左、-1右；默认左。
   # 初始完全没看到路径时不会盲起步，这个方向只用于已经开始巡线后的找线。
