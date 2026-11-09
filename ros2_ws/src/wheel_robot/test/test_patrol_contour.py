@@ -260,7 +260,7 @@ def test_v12_new_fields_reject_invalid_snapshot(changes):
 
 @pytest.mark.parametrize("name,expected",[
     ("PathSelector","8e5d914aff1fe47fd4039d05214dae936fbf56fd79d36ade94128af131015224"),
-    ("FixedSpeedController","91929368408fccb6d297bdbda4b1c047b6ffa64c2f6e7409a3b77e835fc2104e"),
+    ("FixedSpeedController","6c042df42f2fc287ffadc85b7e25a1fe3cde7143de435601e33ee6baa3121137"),
 ])
 def test_v13_ordinary_classes_exact_v11_source(name,expected):
     import ast
@@ -3254,3 +3254,40 @@ def test_active_and_degraded_search_keep_same_direction():
     for now in (2.9,3.1,4.0,5.1):
         v,w,mode=c.command(PathEstimate(False),now,t)
         assert w>=0
+
+
+def test_local_v23_corner_guard_needs_three_real_centered_frames():
+    from patrol_contour_runtime import CornerExitGuard
+    c,t=cruise_controller(-.6,bounded_recovery_enabled=1)
+    g=CornerExitGuard()
+    path=PathEstimate(True,0,.9,near_error=0,mid_error=0,route_observed=True)
+    before=c.last_command
+    g.observe(path,c,2.03,t);g.observe(path,c,2.06,t)
+    assert c.filtered_error is not None
+    g.observe(path,c,2.09,t)
+    assert c.filtered_error is None and c.last_command==before
+
+
+def test_entry_candidate_left_search_is_bounded_and_not_exit_marker():
+    from patrol_contour_runtime import RingCandidateSearch
+    from types import SimpleNamespace
+    t=PatrolTuning();g=RingCandidateSearch()
+    entry=PathEstimate(True,route_observed=True)
+    cue=SimpleNamespace(valid=True,blocks=4,branch=entry)
+    missing=PathEstimate(False)
+    assert g.update(cue,missing,"SEEK",1.,t)
+    blank=SimpleNamespace(valid=False,blocks=0,branch=PathEstimate(False))
+    assert g.update(blank,missing,"SEEK",1.3,t)
+    assert not g.update(blank,missing,"SEEK",1.61,t)
+    assert not g.update(cue,missing,"FOLLOW",2.,t)
+    assert not g.update(cue,missing,"SEEK",2.1,t,allowed=False)
+
+
+def test_reliable_opposite_path_cancels_stale_turn_before_new_turn():
+    c,t=cruise_controller(-.6,bounded_recovery_enabled=1)
+    c.command(PathEstimate(False),2.03,t)
+    assert c.last_command[1]>0
+    path=PathEstimate(True,.6,.9,near_error=.6,mid_error=.6,route_observed=True)
+    v,w,mode=c.command(path,2.06,t)
+    assert w==0 and mode=="reacquire_confirm"
+    assert c.command(path,2.09,t)[1]<0

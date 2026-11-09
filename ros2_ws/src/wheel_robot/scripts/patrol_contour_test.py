@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 import icn as base
 from patrol_contour_runtime import (
-    FixedSpeedController, PathEstimate, PathSelector, PatrolFileWatcher,
+    FixedSpeedController, CornerExitGuard, RingCandidateSearch, PathEstimate, PathSelector, PatrolFileWatcher,
     PatrolTuning, RoundaboutRouter, ExitRouteCommit, RingRouteMemory, observed_route,
     black_usable, road_centerline, road_masks, path_errors, detect_crosswalk,
 )
@@ -25,6 +25,7 @@ class PatrolVision(base.CourseVision):
     def __init__(self):
         super().__init__()
         self.selector = PathSelector()
+        self.ring_candidate_search = RingCandidateSearch()
         self.seed_x_ratio = None
         self.source = "none"
         self.last_debug = None
@@ -66,6 +67,7 @@ class PatrolVision(base.CourseVision):
         self.motion_heading=None
 
     def reset_path(self,preserve_approach=False):
+        self.ring_candidate_search = RingCandidateSearch()
         self.dash_observation = DashObservation()
         self.entry_ready = False
         self.exit_commit.reset()
@@ -84,6 +86,31 @@ class PatrolVision(base.CourseVision):
         self.last_debug = None
         self.black_estimate = PathEstimate(False, reason="reset")
         self.road_estimate = PathEstimate(False, reason="reset")
+
+    def _snapshot_if_missing(self, frame, dark, road, chosen, now):
+        directory = getattr(self, "snapshot_directory", None)
+        if chosen.valid or directory is None or now-getattr(self,"_last_snapshot_at",-float("inf")) < 5.:
+            return
+        worker = getattr(self,"_snapshot_worker",None)
+        if worker is not None and worker.is_alive():
+            return
+        self._last_snapshot_at = now
+        slot = getattr(self,"_snapshot_slot",0) % 24
+        self._snapshot_slot = slot+1
+        raw = frame.copy()
+        black_view = cv2.cvtColor(dark,cv2.COLOR_GRAY2BGR)
+        road_view = np.zeros_like(raw) if road.mask is None else cv2.cvtColor(road.mask,cv2.COLOR_GRAY2BGR)
+        canvas = np.hstack((raw,black_view,road_view))
+        metadata = f"time={now:.3f} source={self.source} selected={chosen.reason} road={road.reason}"
+        def write():
+            try:
+                directory.mkdir(parents=True,exist_ok=True)
+                cv2.imwrite(str(directory/f"loss_{slot:02d}.jpg"),canvas)
+                (directory/f"loss_{slot:02d}.txt").write_text(metadata,encoding="utf-8")
+            except (OSError, cv2.error) as exc:
+                print(f"VISION snapshot_failed={exc}",flush=True)
+        self._snapshot_worker = threading.Thread(target=write,daemon=True)
+        self._snapshot_worker.start()
 
     def estimate(self, frame, tuning, now, draw=False):
         release_before=self.router.release_serial
@@ -193,6 +220,8 @@ class PatrolVision(base.CourseVision):
             black = PathEstimate(bool(valid), float(np.clip(error-shift, -1., 1.)), confidence,
                                  points, dark, extracted[9], *errors,
                                  rescue=bool(valid and extracted[9] == "line_edge_single_rescue"))
+            if len(points):
+                black.near_gap_ratio=max(0.,tuning.road_near_y_ratio-float(np.max(points[:,1]))/height)
             black.route_observed=observed_route(black,width,height,tuning)
         road = PathEstimate(False, reason="contour_not_needed")
         # While returning from road fallback, compute both until black is
@@ -339,6 +368,7 @@ class PatrolVision(base.CourseVision):
                   f"black={black.reason} road={road.reason} source={self.source} "
                   f"rescue={int(chosen.rescue)} observed={int(chosen.route_observed)} "
                   f"near={chosen.near_error:+.3f} mid={chosen.mid_error:+.3f}", flush=True)
+        self._snapshot_if_missing(work,dark,road,chosen,now)
         return chosen
 
 
@@ -360,6 +390,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
         self._capture_fps = self._process_fps = self._display_fps = 0.
         self._last_patrol_log = 0.
         self._patrol_ready = True
+        self.vision.snapshot_directory = Path.home()/"Two_patrol"/"log"/"vision_snapshots"
         self._set_patrol_posture()
         self.create_subscription(base.Bool, "/patrol_test_stop", self._on_patrol_stop, 10)
         self.create_subscription(base.Bool, "/patrol_test_reset_course", self._on_patrol_reset_course, 10)
@@ -576,6 +607,15 @@ class PatrolTestNode(base.WheelLegRaceNode):
             self._wait_for_operator(router.fault)
             return
         override=router.motion_override(done,tuning,getattr(self.vision,"motion_pose",None)) if router is not None else None
+        if not hasattr(self, "_corner_exit_guard"):
+            self._corner_exit_guard = CornerExitGuard()
+        self._corner_exit_guard.observe(path,self.patrol_controller,done,tuning,
+            allowed=override is None and (router is None or router.phase=="SEEK"))
+        if not hasattr(self.vision, "ring_candidate_search"):
+            self.vision.ring_candidate_search = RingCandidateSearch()
+        candidate_left = self.vision.ring_candidate_search.update(
+            getattr(self.vision,"dash_observation",DashObservation()),path,router.phase if router is not None else "",done,tuning,
+            allowed=bool(tuning.roundabout_enabled and router is not None and router.gate_detection_allowed(done,tuning)))
         if override is not None:
             target_v,target_w,mode=override
             planned_target=target_v
@@ -594,9 +634,11 @@ class PatrolTestNode(base.WheelLegRaceNode):
                     control_tuning=replace(control_tuning,steering_gain=tuning.steering_gain*factor,
                                            steering_kd=tuning.steering_kd*factor,
                                            angular_accel_rad_s2=tuning.angular_accel_rad_s2*factor)
+            if candidate_left:
+                control_tuning=replace(control_tuning,fixed_speed_m_s=min(control_tuning.fixed_speed_m_s,tuning.search_recovery_speed_m_s))
             exit_turn=router.exit_search_turn(path,done,tuning,getattr(self.vision,"motion_heading",None)) if router is not None else None
             linear, angular, mode = self.patrol_controller.command(path, done, control_tuning,
-                search_direction=1 if router is not None and router.search_left and tuning.roundabout_enabled else None,
+                search_direction=1 if (candidate_left or (router is not None and router.search_left and tuning.roundabout_enabled)) else None,
                 search_heading_turn=exit_turn)
             planned_target=min(control_tuning.fixed_speed_m_s,control_tuning.search_degraded_speed_m_s) if self.patrol_controller.degraded else control_tuning.fixed_speed_m_s
         source = self.vision.source
@@ -655,7 +697,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 f"ring_receipts={''.join(str(int(v)) for v in router.course.rings) if router is not None else '00'} "
                 f"zebra_receipts={''.join(str(int(v)) for v in router.course.zebras) if router is not None else '00'} "
                 f"finish_authorized={int(router.finish_authorized) if router is not None else 0} "
-                f"entry_ready={int(getattr(self.vision,'entry_ready',False))} "
+                f"candidate_left={int(candidate_left)} entry_ready={int(getattr(self.vision,'entry_ready',False))} "
                 f"entry_detector=vv entry_reason={router.entry_detection_reason if router is not None else 'none'} "
                 f"vv_reason={dash.reason} vv_blocks={dash.blocks} "
                 f"vv_frames={router.vv_streak if router is not None else 0} "

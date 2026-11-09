@@ -51,6 +51,9 @@ class PatrolTuning:
     search_degraded_speed_m_s: float = 0.12
     search_hard_max_seconds: float = 8.0
     search_hard_max_distance_m: float = 2.6
+    corner_exit_confirm_frames: int = 3
+    corner_exit_error: float = 0.12
+    ring_candidate_hold_seconds: float = 0.60
     bounded_recovery_enabled: int = 0
     search_recovery_speed_m_s: float = 0.30
     search_turn_rad_s: float = 0.80
@@ -326,6 +329,10 @@ class PatrolTuning:
             raise ValueError("跨帧入口确认数必须为2..20整数")
         if self.roundabout_entry_stable_seconds >= self.roundabout_route_max_seconds:
             raise ValueError("入环稳定观察时间必须小于入环超时")
+        if int(self.corner_exit_confirm_frames) != self.corner_exit_confirm_frames or not 2 <= self.corner_exit_confirm_frames <= 10:
+            raise ValueError("corner_exit_confirm_frames must be integer 2..10")
+        if not 0 < self.corner_exit_error <= .25 or not 0 < self.ring_candidate_hold_seconds <= 1:
+            raise ValueError("invalid corner/candidate limits")
         if self.bounded_recovery_enabled not in (0, 1):
             raise ValueError("bounded_recovery_enabled must be 0 or 1")
         if not self.black_enabled and not self.contour_enabled:
@@ -1978,6 +1985,41 @@ class PathSelector:
         return replace(estimate, error=error, source=source, handoff=ratio < 1.), source
 
 
+class RingCandidateSearch:
+    """Short LEFT search permission from measured diverging entry geometry only."""
+    def __init__(self):
+        self.until = -math.inf
+
+    def update(self, cue, path, phase, now, tuning, allowed=True):
+        if not allowed or phase != "SEEK":
+            self.until = -math.inf
+            return False
+        entry = cue.branch
+        qualified = (cue.valid and cue.blocks >= tuning.vv_dash_min_blocks
+                     and entry.valid and entry.route_observed)
+        if qualified:
+            self.until = now+tuning.ring_candidate_hold_seconds
+        elif path.valid and path.route_observed and not path.rescue:
+            self.until = -math.inf
+        return not path.valid and now < self.until
+
+
+class CornerExitGuard:
+    """Three fresh centered near/mid observations clear only stale PD."""
+    def __init__(self):
+        self.streak=0
+        self.last_at=None
+
+    def observe(self,path,controller,now,tuning,allowed=True):
+        fresh=self.last_at is None or 0<now-self.last_at<=tuning.roundabout_path_max_gap_seconds
+        centered=(allowed and path.valid and path.route_observed and not path.rescue and not path.handoff
+                  and max(abs(path.near_error),abs(path.mid_error),abs(path.error))<=tuning.corner_exit_error)
+        self.streak=(self.streak+1 if fresh else 1) if centered else 0
+        self.last_at=now
+        if self.streak==tuning.corner_exit_confirm_frames:
+            controller.reset_error()  # preserve actual previous speed/turn and smooth unwind
+
+
 class FixedSpeedController:
     """Fixed cruise, explicit bounded active recovery, no automatic stop/go."""
 
@@ -2083,7 +2125,10 @@ class FixedSpeedController:
 
         if path.valid:
             # Weak one-band rescue may steer briefly, but never renew recovery budgets.
-            observed = not path.rescue and not path.handoff and path.route_observed
+            near_geometry = (path.points is not None and len(path.points) >= 2
+                and path.near_gap_ratio <= .02 and path.confidence >= tuning.rescue_corner_confidence
+                and abs(path.near_error-path.mid_error) <= tuning.roundabout_path_agreement)
+            observed = not path.rescue and not path.handoff and (path.route_observed or near_geometry)
             eligible = observed if tuning.bounded_recovery_enabled else True
             self.reacquire_streak = (self.reacquire_streak+1 if eligible else 0) if recovering else 0
             confirmed = not recovering or self.reacquire_streak >= tuning.reacquire_confirm_frames
@@ -2186,7 +2231,10 @@ class FixedSpeedController:
         if unwinding:
             brake_rate = max(rate, tuning.unwind_angular_accel_rad_s2)
             if previous[1]*angular < 0:
-                angular = self._approach(previous[1], 0., brake_rate*dt)
+                reliable_opposite = (tuning.bounded_recovery_enabled and recovering
+                    and path.valid and eligible and path.confidence >= tuning.rescue_corner_confidence
+                    and abs(path.error) >= tuning.corner_start_error and path.near_error*path.error > 0)
+                angular = 0. if reliable_opposite else self._approach(previous[1], 0., brake_rate*dt)
             else:
                 angular = self._approach(previous[1], angular, brake_rate*dt)
         else:
