@@ -1,3 +1,5 @@
+# Entry: one qualified dash frame while moving -> ENTRY left acquisition.
+# first_marker cooldown/distance fields below are retired compatibility values.
 # V16：仅将入口切换为VV单帧/先过5后进4；普通巡线、速度、实测出环与两圈顺序保留V15。
 # 首次部署新基准且无IMU_QUATERNION_MAPPING_V12标记时，先菜单1编译底盘；本次仅Python/YAML无需重编C++。
 # 此后仅修改本YAML保存，无需反复编译/重启；旧V11表缺字段会被整套拒绝。
@@ -196,9 +198,9 @@ patrol_test:
   roundabout_enabled: 1
   # 从本次输入1后首次处理新图开始计时，s>=0；默认6。前6秒不运行入口检测、不累计入口证据。
   # 与下方距离同时满足；暂停时间不计入。本参数可保存实时调整。
-  roundabout_arm_seconds: 6.0
+  roundabout_arm_seconds: 0.0
   # 开始后至少前行多少米才找入口，m>=0；默认1。优先用新鲜odom，无odom则用已发速度积分，日志明确来源。
-  roundabout_arm_distance_m: 1.0
+  roundabout_arm_distance_m: 0.0
   # 环岛控制预算开关：0关闭本计时器，1到期解除接管并重找本圈环岛，不再授权横道。
   # 真正出环后取消本圈计时；未成功则重开一次预算，普通巡线/最终安全保护保留。
   roundabout_timeout_enabled: 1

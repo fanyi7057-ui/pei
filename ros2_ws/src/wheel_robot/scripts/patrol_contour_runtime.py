@@ -1615,49 +1615,24 @@ class RoundaboutRouter:
         return self.crosswalk_block_reason(now,tuning)=="armed"
 
     def _observe_vv_entry(self,cue,now,tuning,elapsed,travel,command):
-        """Only entrance authorizer: pass first junction, then current left fork.
+        """A single qualified dash frame while moving authorizes LEFT entry.
 
-        Cooling is moving-time, not a stop/forced-yaw command. With odometry,
-        actual forward progress is required; command estimation is explicitly
-        the existing fallback, never a measured-distance claim.
+        No first-marker classification, moving cooldown or fork proof.
+        Existing retry, acquisition and measured exit protections remain.
         """
         if self.vv_last_at is not None and now<=self.vv_last_at:
             return
-        fresh=self.vv_last_at is None or now-self.vv_last_at<=tuning.roundabout_path_max_gap_seconds
         self.vv_last_at=now
         moving=command[0]>1e-4 and travel>1e-6
-        if self.phase=="APPROACH" and moving:
-            # Odom can update more slowly than image processing: using one
-            # image dt per changed pose would stretch a 1s pass into 2..3s.
-            # Accumulate equivalent forward-command time from measured travel.
-            self.marker_moving_seconds+=travel/command[0] if self.progress_source=="odom" else elapsed
         hit=cue is not None and cue.valid
-        self.vv_streak=(self.vv_streak+1 if fresh else 1) if hit and moving else 0
-        if self.phase=="SEEK":
-            if self.gate_detection_allowed(now,tuning) and self.vv_streak>=tuning.vv_dash_confirm_frames:
-                self.first_marker_at=now
-                self.first_marker_distance=self.distance
-                self.marker_moving_seconds=0.
-                self._phase("APPROACH",now)
-                self.entry_detection_reason="vv_first_marker_pass_5"
-            return
-        passed=(self.marker_moving_seconds>=tuning.roundabout_first_marker_cooldown_seconds
-                and self.distance-self.first_marker_distance>=tuning.roundabout_first_marker_pass_distance_m)
-        entry_hit=passed and hit and cue.branch.valid and moving
-        self.vv_entry_streak=(self.vv_entry_streak+1 if fresh else 1) if entry_hit else 0
-        if not passed:
-            self.entry_detection_reason="vv_cooling_keep_tracking"
-        elif not hit:
-            self.entry_detection_reason="vv_wait_current_dashes"
-        elif not cue.branch.valid:
-            self.entry_detection_reason="vv_reject_return_or_no_left_fork"
-        elif not moving:
-            self.entry_detection_reason="vv_wait_forward_progress"
-        elif self.vv_entry_streak>=tuning.vv_dash_confirm_frames:
-            self._phase("ENTRY",now)
-            self.entry_detection_reason="vv_current_left_diverging_entry_4"
-        if self.phase=="APPROACH" and now-self.phase_at>=tuning.roundabout_approach_max_seconds:
-            self._release_ring(now,tuning,"entry_candidate_expired")
+        self.vv_streak=1 if hit and moving else 0
+        if self.phase in ("SEEK","APPROACH"):
+            if hit and moving and self.gate_detection_allowed(now,tuning):
+                self.vv_entry_streak=1
+                self._phase("ENTRY",now)
+                self.entry_detection_reason="vv_single_frame_left_entry"
+            else:
+                self.entry_detection_reason="vv_wait_dash_frame" if not hit else "vv_wait_forward_progress"
 
     def observe(self,gate,score,now,tuning,command=(0.,0.),pose=None,
                 gate_near=0.,exit_solid=False,crosswalk=False,gate_tracked=False,heading=None,entry_ready=False,dash_cue=None):
