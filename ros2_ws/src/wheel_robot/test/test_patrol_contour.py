@@ -290,7 +290,7 @@ def test_v13_27_degree_candidate_cannot_release_entry_or_enable_boost(owned):
         p=route_path(-.18,route_locked=True)
         r.accept_path(p,now,t)
         assert r.phase=="ENTRY"
-        assert r.motion_override(now,t)[2]=="roundabout_left_acquire"
+        assert r.motion_override(now,t,path=p) is None
         assert not r.follow_boost_allowed(p,now,t)
 
 
@@ -533,7 +533,7 @@ def test_file_reload_atomic_replace_reject_and_recover(tmp_path):
 def test_shipped_config_has_all_documented_values():
     path = SCRIPTS.parent / "config" / "patrol_test.yaml"
     tuning, message = PatrolFileWatcher(path).poll()
-    assert tuning == replace(PatrolTuning(), bounded_recovery_enabled=1), message
+    assert tuning == replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0.), message
 
 
 @pytest.fixture
@@ -1457,14 +1457,14 @@ def test_v5_left_right_oscillation_does_not_fake_net_entry_turn():
     assert abs(r.left_yaw) < .11 and r.phase == "ENTRY"
 
 
-def test_v6_far_gate_only_approaches_does_not_turn_early():
+def test_v6_single_dash_advances_then_probes_without_far_gate_recheck():
     r=RoundaboutRouter()
     t=replace(PatrolTuning(),roundabout_arm_seconds=0.,roundabout_arm_distance_m=0.)
-    for now in np.arange(0.,1.5,.03):
+    for now in np.arange(0.,.16,.03):
         r.observe(True,.95,now,t,(.5,0.),gate_near=.45,dash_cue=vv_test_cue())
     assert r.phase=="APPROACH" and not r.left_lock
-    for now in (1.5,1.53,1.56):
-        r.observe(True,.95,now,t,(.5,0.),gate_near=.75,dash_cue=vv_test_cue(entry=True))
+    for now in np.arange(.18,.55,.03):
+        r.observe(False,0.,now,t,(.5,0.))
     assert r.phase=="ENTRY" and r.left_lock
 
 
@@ -1485,14 +1485,13 @@ def test_v7_first_six_seconds_skip_actual_gate_extractor(monkeypatch):
     assert len(calls)==1
 
 
-def test_v16_missing_vv_cue_cannot_launch_entry_but_new_cue_can():
+def test_v16_missing_cue_after_latch_does_not_cancel_distance_advance():
     r,t=RoundaboutRouter(),replace(PatrolTuning(),roundabout_arm_seconds=0.,roundabout_arm_distance_m=0.)
-    for i in range(15):
-        r.observe(False,0.,i*.1,t,(.5,0.),dash_cue=vv_test_cue())
+    for i in range(4):
+        r.observe(False,0.,i*.03,t,(.5,0.),dash_cue=vv_test_cue())
     assert r.phase=="APPROACH"
-    r.observe(False,0.,1.5,t,(.5,0.))
-    assert r.phase=="APPROACH"
-    r.observe(False,0.,1.6,t,(.5,0.),dash_cue=vv_test_cue(entry=True))
+    for i in range(4,18):
+        r.observe(False,0.,i*.03,t,(.5,0.))
     assert r.phase=="ENTRY"
 
 
@@ -1517,14 +1516,14 @@ def test_v7_left_entry_cancels_stale_right_command_without_dropping_cruise():
     c.last_command=(t.fixed_speed_m_s,-1.8)
     c.last_time=1.
     v,w,mode=r.motion_override(1.03,t)
-    assert v==t.fixed_speed_m_s and w>0 and mode=="roundabout_left_acquire"
+    assert v==t.search_recovery_speed_m_s and w>0 and mode=="roundabout_left_acquire"
     for i in range(1,6):
         output=c.task_command(v,w,1.+i*.03,t,left_only=True)
-        assert output[0]==t.fixed_speed_m_s and output[1]>=0
+        assert 0 < output[0] <= t.fixed_speed_m_s and output[1]>=0
     assert output[1]>0
     r.left_yaw=math.radians(t.roundabout_entry_acquire_yaw_deg)
     r.branch_acquired=True  # an observed owned route, not angle alone
-    assert r.motion_override(1.2,t) is None  # real route may correct right
+    assert r.motion_override(1.2,t,path=PathEstimate(True,route_locked=True,route_observed=True)) is None  # real route may correct right
     r._phase("APPROACH",1.3)
     assert r.motion_override(1.3,t) is None
 
@@ -1538,7 +1537,7 @@ def test_v7_actual_node_entry_overrides_right_path_not_normal_patrol(node_module
     node.patrol_controller.last_time=9.97
     node.vision.estimate=lambda *_args,**_kwargs: PathEstimate(True,.6,.9)
     node._run_control_cycle()
-    assert commands[-1]==(node.patrol_tuning.fixed_speed_m_s,0.)  # cancel stale right
+    assert 0 < commands[-1][0] <= node.patrol_tuning.fixed_speed_m_s and commands[-1][1]==0.  # cancel stale right
     assert node.patrol_controller.last_command==commands[-1]
     r._phase("SEEK",10.)
     monkeypatch.setattr(node_module.time,"monotonic",lambda:10.03)
@@ -2520,7 +2519,7 @@ def test_v10_new_tuning_snapshot_validation(changes):
 def test_v10_complete_live_yaml_has_all_fields_and_preserves_non_ring_values():
     current,message=PatrolFileWatcher(SCRIPTS.parent/"config/patrol_test.yaml").poll()
     assert current is not None,message
-    assert current==replace(PatrolTuning(), bounded_recovery_enabled=1)
+    assert current==replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0.)
     assert current.fixed_speed_m_s==.65
     assert (current.crosswalk_stop_seconds,current.crosswalk_clear_seconds)==(3.,3.)
 
@@ -2619,8 +2618,8 @@ def test_v11_entry_rejects_the_right_road_that_cancelled_left_acquisition(monkey
     p=v.estimate(frame,PatrolTuning(),.7)
     assert not p.valid and v.road_estimate.reason=="entry_unacquired_right_road"
     assert v.ring_memory.path is None
-    speed,turn,mode=v.router.motion_override(.7,PatrolTuning())
-    assert speed==.65 and turn==1.2 and mode=="roundabout_left_acquire"
+    assert v.router.motion_override(.7,PatrolTuning()) is None
+    assert v.router.phase=="SEEK" and v.router.ring_release_source=="entry_probe_no_route"
 
 
 def test_v11_actual_near_bands_can_acquire_without_exact_middle_row():
@@ -2897,7 +2896,8 @@ def test_v11_entry_uses_fresh_measured_heading_over_command_progress():
     r.measured_turn.source="imu"
     r.measured_turn.stamp=.5
     r.measured_turn.angle=.1
-    assert r.motion_override(.5,t)[1]==1.2
+    assert r.motion_override(.5,t) is None
+    assert r.ring_release_source=="entry_probe_no_route"
 
 
 def test_v11_multiplier_arithmetic_overflow_is_rejected_not_silently_clipped():

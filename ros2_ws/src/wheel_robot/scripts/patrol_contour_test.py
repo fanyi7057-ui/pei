@@ -306,12 +306,6 @@ class PatrolVision(base.CourseVision):
                     candidate.error = float(np.clip(candidate.near_error+tuning.roundabout_heading_gain*(candidate.mid_error-candidate.near_error), -1., 1.))
         self.black_estimate, self.road_estimate = black, road
         committed=self.exit_commit.select(black,road,now,self.motion_command[0],tuning)
-        if (committed is None and self.router.phase=="APPROACH"
-                and self.dash_observation.main.valid
-                and self.dash_observation.main.route_observed):
-            # Current main dash chain, not a fabricated remembered path.
-            # No fixed yaw or cooldown stop; ordinary controller still steers.
-            committed=replace(self.dash_observation.main,source="black")
         if committed is None:
             chosen, self.source = self.selector.select(black, road, now, tuning)
         else:
@@ -606,7 +600,16 @@ class PatrolTestNode(base.WheelLegRaceNode):
             self.get_logger().error(f"PATROL_ROUTE_FAULT {router.fault}：不靠超时假装出环，回站立等待人工")
             self._wait_for_operator(router.fault)
             return
-        override=router.motion_override(done,tuning,getattr(self.vision,"motion_pose",None)) if router is not None else None
+        override=router.motion_override(done,tuning,getattr(self.vision,"motion_pose",None),path=path) if router is not None else None
+        if router is not None and router.ring_release_source=="entry_probe_no_route" and getattr(self,"_probe_release_seen",-1)!=router.release_serial:
+            self._probe_release_seen=router.release_serial
+            self.patrol_controller.last_good_turn=0.
+            self.patrol_controller.last_curve_at=-float("inf")
+            self.patrol_controller.search_turn_goal=0.
+            self.patrol_controller.last_command=(self.patrol_controller.last_command[0],0.)
+            if self.patrol_controller.loss_command is not None:
+                self.patrol_controller.loss_command=(self.patrol_controller.loss_command[0],0.)
+            self.patrol_controller.reset_error()
         if not hasattr(self, "_corner_exit_guard"):
             self._corner_exit_guard = CornerExitGuard()
         self._corner_exit_guard.observe(path,self.patrol_controller,done,tuning,

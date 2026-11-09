@@ -1,16 +1,40 @@
 from types import SimpleNamespace
-from patrol_contour_runtime import PatrolTuning, RoundaboutRouter
 from dataclasses import replace
+from patrol_contour_runtime import PatrolTuning, RoundaboutRouter, PathEstimate
 
-def test_single_frame_needs_no_branch_or_first_marker():
+def fixture():
     t=replace(PatrolTuning(),roundabout_arm_seconds=0.,roundabout_arm_distance_m=0.)
     r=RoundaboutRouter();r.started_at=0.
     r._observe_vv_entry(SimpleNamespace(valid=True),.1,t,.03,.01,(.3,0.))
-    assert r.phase=="ENTRY" and r.entry_detection_reason=="vv_single_frame_left_entry"
+    return r,t
 
-def test_invalid_or_stationary_cue_does_not_enter():
-    t=replace(PatrolTuning(),roundabout_arm_seconds=0.,roundabout_arm_distance_m=0.)
-    for valid,travel,cmd in [(False,.01,(.3,0.)),(True,0.,(0.,0.))]:
-        r=RoundaboutRouter();r.started_at=0.
-        r._observe_vv_entry(SimpleNamespace(valid=valid),.1,t,.03,travel,cmd)
-        assert r.phase=="SEEK"
+def test_one_frame_latches_advance_without_second_cue():
+    r,t=fixture()
+    assert r.phase=="APPROACH"
+    r.distance=.119
+    r._observe_vv_entry(None,.4,t,.03,.01,(.3,0.))
+    assert r.phase=="APPROACH" and r.motion_override(.4,t) is None
+    r.distance=.121
+    r._observe_vv_entry(None,.5,t,.03,.002,(.3,0.))
+    assert r.phase=="ENTRY"
+    assert r.motion_override(.51,t)[1]>0
+
+def test_probe_timeout_does_not_award_ring_or_continue_forced_turn():
+    r,t=fixture();r.distance=.121
+    r._observe_vv_entry(None,.5,t,.03,.01,(.3,0.))
+    assert r.motion_override(.81,t) is None
+    assert r.phase=="SEEK" and not any(r.course.rings)
+    assert r.ring_release_source=="entry_probe_no_route"
+
+def test_probe_hands_to_real_owned_route_before_timeout():
+    r,t=fixture();r.distance=.121
+    r._observe_vv_entry(None,.5,t,.03,.01,(.3,0.))
+    p=PathEstimate(True,route_locked=True,route_observed=True)
+    assert r.motion_override(.6,t,path=p) is None
+    assert r.motion_override(.9,t,path=PathEstimate(False)) is None
+    assert r.phase=="ENTRY"
+
+def test_stationary_detection_cannot_latch_entry():
+    r=RoundaboutRouter();t=PatrolTuning();r.started_at=0.
+    r._observe_vv_entry(SimpleNamespace(valid=True),.1,t,.03,0.,(0.,0.))
+    assert r.phase=="SEEK"

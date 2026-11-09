@@ -1,4 +1,4 @@
-# Entry: one qualified dash frame while moving -> ENTRY left acquisition.
+# Entry: one qualified dash frame -> 0.12m current-route advance -> <=0.30s LEFT probe.
 # first_marker cooldown/distance fields below are retired compatibility values.
 # V16：仅将入口切换为VV单帧/先过5后进4；普通巡线、速度、实测出环与两圈顺序保留V15。
 # 首次部署新基准且无IMU_QUATERNION_MAPPING_V12标记时，先菜单1编译底盘；本次仅Python/YAML无需重编C++。
@@ -109,6 +109,9 @@ patrol_test:
   # 有明确更强弯向时保留强度；线速度是否继续趋近目标由maintain开关决定。
   # Ordinary lost-path/reacquisition speed cap; normal cruise is unchanged.
   # Local V23 corner unwind; measured entry cue permits at most 0.6s left search.
+  # One qualified dash frame -> current-route advance -> bounded left probe.
+  ring_entry_advance_m: 0.12
+  ring_entry_probe_seconds: 0.30
   corner_exit_confirm_frames: 3
   corner_exit_error: 0.12
   ring_candidate_hold_seconds: 0.60

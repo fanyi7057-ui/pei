@@ -51,6 +51,8 @@ class PatrolTuning:
     search_degraded_speed_m_s: float = 0.12
     search_hard_max_seconds: float = 8.0
     search_hard_max_distance_m: float = 2.6
+    ring_entry_advance_m: float = 0.12
+    ring_entry_probe_seconds: float = 0.30
     corner_exit_confirm_frames: int = 3
     corner_exit_error: float = 0.12
     ring_candidate_hold_seconds: float = 0.60
@@ -333,6 +335,8 @@ class PatrolTuning:
             raise ValueError("corner_exit_confirm_frames must be integer 2..10")
         if not 0 < self.corner_exit_error <= .25 or not 0 < self.ring_candidate_hold_seconds <= 1:
             raise ValueError("invalid corner/candidate limits")
+        if not 0 < self.ring_entry_advance_m <= 1 or not 0 < self.ring_entry_probe_seconds <= 2:
+            raise ValueError("invalid entry advance/probe limits")
         if self.bounded_recovery_enabled not in (0, 1):
             raise ValueError("bounded_recovery_enabled must be 0 or 1")
         if not self.black_enabled and not self.contour_enabled:
@@ -1615,24 +1619,29 @@ class RoundaboutRouter:
         return self.crosswalk_block_reason(now,tuning)=="armed"
 
     def _observe_vv_entry(self,cue,now,tuning,elapsed,travel,command):
-        """A single qualified dash frame while moving authorizes LEFT entry.
-
-        No first-marker classification, moving cooldown or fork proof.
-        Existing retry, acquisition and measured exit protections remain.
-        """
+        """Latch one dash frame, follow current route for distance, then LEFT probe."""
         if self.vv_last_at is not None and now<=self.vv_last_at:
             return
         self.vv_last_at=now
         moving=command[0]>1e-4 and travel>1e-6
         hit=cue is not None and cue.valid
         self.vv_streak=1 if hit and moving else 0
-        if self.phase in ("SEEK","APPROACH"):
+        if self.phase=="SEEK":
             if hit and moving and self.gate_detection_allowed(now,tuning):
-                self.vv_entry_streak=1
+                self.first_marker_at=now
+                self.first_marker_distance=self.distance
+                self._phase("APPROACH",now)
+                self.entry_detection_reason="vv_latched_advance_current_route"
+            return
+        if self.phase=="APPROACH":
+            if moving and self.distance-self.first_marker_distance>=tuning.ring_entry_advance_m:
                 self._phase("ENTRY",now)
-                self.entry_detection_reason="vv_single_frame_left_entry"
+                self.entry_visual_tracking=False
+                self.entry_detection_reason="vv_distance_complete_left_probe"
             else:
-                self.entry_detection_reason="vv_wait_dash_frame" if not hit else "vv_wait_forward_progress"
+                self.entry_detection_reason="vv_advancing_current_route"
+            if self.phase=="APPROACH" and now-self.phase_at>=tuning.roundabout_approach_max_seconds:
+                self._release_ring(now,tuning,"entry_advance_timeout")
 
     def observe(self,gate,score,now,tuning,command=(0.,0.),pose=None,
                 gate_near=0.,exit_solid=False,crosswalk=False,gate_tracked=False,heading=None,entry_ready=False,dash_cue=None):
@@ -1863,16 +1872,24 @@ class RoundaboutRouter:
               and abs(path.near_error-path.mid_error)<=tuning.roundabout_path_agreement):
             self._release_ring(now,tuning,"visual_exit")
 
-    def motion_override(self,now,tuning,pose=None):
+    def motion_override(self,now,tuning,pose=None,path=None):
         if self.phase=="FINISH_RUN" and (not self.course.finish_allowed or not self.finish_authorized):
             self.fault="finish_without_ordered_receipts"
             return 0.,0.,"unauthorized_finish"
         turn_progress=self.measured_turn.angle if tuning.roundabout_heading_enabled and self.measured_turn.fresh(now,tuning) else self.left_yaw
         establish=turn_progress<tuning.roundabout_entry_min_yaw_rad or ((tuning.roundabout_entry_commit_enabled or not self.branch_acquired) and turn_progress<math.radians(tuning.roundabout_entry_acquire_yaw_deg))
-        if self.phase=="ENTRY" and establish:
-            # Establish the verified LEFT entry before any outside/right line
-            # may take over. Bounded by route timeout, not perpetual blind yaw.
-            return tuning.fixed_speed_m_s,min(tuning.roundabout_entry_turn_rad_s,tuning.max_turn_rad_s),"roundabout_left_acquire"
+        if self.phase=="ENTRY":
+            visual=bool(path is not None and path.valid and path.route_locked
+                        and path.route_observed and not path.rescue and not path.handoff)
+            if visual:
+                self.entry_visual_tracking=True
+                return None
+            if getattr(self,"entry_visual_tracking",False):
+                return None  # never restart the forced probe after visual acquisition
+            if now-self.phase_at>=tuning.ring_entry_probe_seconds:
+                self._release_ring(now,tuning,"entry_probe_no_route")
+                return None
+            return min(tuning.fixed_speed_m_s,tuning.search_recovery_speed_m_s),min(tuning.roundabout_entry_turn_rad_s,tuning.max_turn_rad_s),"roundabout_left_acquire"
         if self.phase in ("CW_STOP","FINISHED"):
             return 0.,0.,"crosswalk_stop" if self.phase=="CW_STOP" else "finished"
         if self.phase=="CW_CLEAR":
