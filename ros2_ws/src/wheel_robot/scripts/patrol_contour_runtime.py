@@ -2082,7 +2082,10 @@ class FixedSpeedController:
             self.loss_distance += abs(self.last_command[0])*elapsed
 
         if path.valid:
-            self.reacquire_streak = self.reacquire_streak+1 if recovering else 0
+            # Weak one-band rescue may steer briefly, but never renew recovery budgets.
+            observed = not path.rescue and not path.handoff and path.route_observed
+            eligible = observed if tuning.bounded_recovery_enabled else True
+            self.reacquire_streak = (self.reacquire_streak+1 if eligible else 0) if recovering else 0
             confirmed = not recovering or self.reacquire_streak >= tuning.reacquire_confirm_frames
             if confirmed:
                 self.last_valid_at = now
@@ -2093,6 +2096,10 @@ class FixedSpeedController:
                 mode = "reacquire_confirm"
                 linear = tuning.fixed_speed_m_s if tuning.maintain_cruise_during_search else min(self.loss_command[0], tuning.fixed_speed_m_s)
             angular = self._steer(path, now, tuning, elapsed, recovering)
+            # Current measured geometry can correct direction immediately without
+            # making it a confirmed route or restarting time/distance budgets.
+            if tuning.bounded_recovery_enabled and recovering and eligible:
+                self.search_turn_goal = angular
             # A real new observation may correct the search DIRECTION at
             # once; only confirmed consecutive observations renew budgets.
             if confirmed or not tuning.bounded_recovery_enabled:
@@ -2132,6 +2139,7 @@ class FixedSpeedController:
                 # must not flip a right search into the default left turn.
                 direction = self.search_turn_goal
                 sign = math.copysign(1., direction) if abs(direction) > .05 else tuning.search_default_direction
+                self.search_turn_goal = sign*max(abs(direction), tuning.search_turn_rad_s)
                 angular = sign*min(tuning.max_turn_rad_s, max(tuning.search_turn_rad_s, abs(direction)))
                 mode = "active_search"
                 self.raw_angular = angular

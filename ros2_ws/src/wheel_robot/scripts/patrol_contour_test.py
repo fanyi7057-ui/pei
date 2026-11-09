@@ -333,6 +333,12 @@ class PatrolVision(base.CourseVision):
                 small = cv2.resize(preview, (width//3, height//3), interpolation=cv2.INTER_NEAREST)
                 debug[-small.shape[0]:, -small.shape[1]:] = cv2.cvtColor(small, cv2.COLOR_GRAY2BGR)
             self.last_debug = cv2.resize(debug, (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_NEAREST)
+        if now-getattr(self, "_last_vision_diagnostic_at", -float("inf")) >= .5:
+            self._last_vision_diagnostic_at = now
+            print(f"VISION bands={len(black.points) if black.points is not None else 0} "
+                  f"black={black.reason} road={road.reason} source={self.source} "
+                  f"rescue={int(chosen.rescue)} observed={int(chosen.route_observed)} "
+                  f"near={chosen.near_error:+.3f} mid={chosen.mid_error:+.3f}", flush=True)
         return chosen
 
 

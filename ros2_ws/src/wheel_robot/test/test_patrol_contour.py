@@ -260,7 +260,7 @@ def test_v12_new_fields_reject_invalid_snapshot(changes):
 
 @pytest.mark.parametrize("name,expected",[
     ("PathSelector","8e5d914aff1fe47fd4039d05214dae936fbf56fd79d36ade94128af131015224"),
-    ("FixedSpeedController","1a41d0fc088e986f631c8e1ce9752fd352c8ba34e1f8e208114edd01c98c78fd"),
+    ("FixedSpeedController","91929368408fccb6d297bdbda4b1c047b6ffa64c2f6e7409a3b77e835fc2104e"),
 ])
 def test_v13_ordinary_classes_exact_v11_source(name,expected):
     import ast
@@ -3223,7 +3223,7 @@ def test_bounded_recovery_slows_and_retains_confirmed_direction():
     assert c.last_good_turn==original
     assert c.loss_started_at is not None
     for now in (2.86,2.89,2.92):
-        v,w,mode=c.command(PathEstimate(True,.3,.8,source="black"),now,t)
+        v,w,mode=c.command(PathEstimate(True,.3,.8,source="black",route_observed=True),now,t)
     assert mode=="fixed_speed" and c.loss_started_at is None
     assert v>t.search_recovery_speed_m_s
 
@@ -3233,3 +3233,24 @@ def test_bounded_recovery_preserves_explicit_ring_search():
     for now in np.arange(2.03,2.50,.03):
         v,w,mode=c.command(PathEstimate(False),float(now),t,search_direction=1)
     assert v==pytest.approx(t.fixed_speed_m_s)
+
+
+def test_current_geometry_changes_search_without_renewing_budget():
+    c,t=cruise_controller(-.6,bounded_recovery_enabled=1)
+    c.command(PathEstimate(False),2.03,t)
+    started=c.loss_started_at
+    old=c.last_good_turn
+    c.command(PathEstimate(True,.4,.9,source="black",route_observed=True),2.06,t)
+    assert c.search_turn_goal<0 and c.last_good_turn==old
+    assert c.loss_started_at==started
+    for now in (2.09,2.12,2.15,2.18):
+        c.command(PathEstimate(True,-.8,.31,source="black",rescue=True),now,t)
+    assert c.loss_started_at==started and c.reacquire_streak==0
+
+
+def test_active_and_degraded_search_keep_same_direction():
+    c,t=cruise_controller(0,bounded_recovery_enabled=1,search_default_direction=1)
+    c.last_good_turn=-.01
+    for now in (2.9,3.1,4.0,5.1):
+        v,w,mode=c.command(PathEstimate(False),now,t)
+        assert w>=0
