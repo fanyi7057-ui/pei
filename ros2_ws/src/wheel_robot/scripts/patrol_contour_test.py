@@ -87,19 +87,7 @@ class PatrolVision(base.CourseVision):
         self.black_estimate = PathEstimate(False, reason="reset")
         self.road_estimate = PathEstimate(False, reason="reset")
 
-    def _snapshot_if_missing(self, frame, dark, road, chosen, now, force=False, road_top=0):
-        # Optional diagnostics must never escape into the control exception path.
-        try:
-            self._prepare_snapshot(frame, dark, road, chosen, now, force, road_top)
-        except Exception as exc:
-            self._snapshot_warning(exc, now)
-
-    def _snapshot_warning(self, exc, now):
-        if now-getattr(self, "_last_snapshot_warning_at", -float("inf")) >= 5.:
-            self._last_snapshot_warning_at = now
-            print(f"VISION snapshot_failed={type(exc).__name__}: {exc}")
-
-    def _prepare_snapshot(self, frame, dark, road, chosen, now, force, road_top):
+    def _snapshot_if_missing(self, frame, dark, road, chosen, now, force=False):
         directory = getattr(self, "snapshot_directory", None)
         clock="_last_trigger_snapshot_at" if force else "_last_snapshot_at"
         if (chosen.valid and not force) or directory is None or now-getattr(self,clock,-float("inf")) < 5.:
@@ -110,38 +98,22 @@ class PatrolVision(base.CourseVision):
         setattr(self,clock,now)
         slot = getattr(self,"_snapshot_slot",0) % 24
         self._snapshot_slot = slot+1
-        # Own the input buffers; perform conversion/composition off control thread.
-        raw, black_mask = frame.copy(), dark.copy()
-        road_mask = None if road.mask is None else road.mask.copy()
+        raw = frame.copy()
+        black_view = cv2.cvtColor(dark,cv2.COLOR_GRAY2BGR)
         points=self.dash_observation.main.points
-        points=None if points is None else points.copy()
+        if points is not None:
+            for x,y in points:
+                cv2.circle(black_view,(int(round(x)),int(round(y))),3,(0,0,255),1)
+        road_view = np.zeros_like(raw) if road.mask is None else cv2.cvtColor(road.mask,cv2.COLOR_GRAY2BGR)
+        canvas = np.hstack((raw,black_view,road_view))
         metadata = f"time={now:.3f} phase={self.router.phase} trigger={force} cue={self.dash_observation.reason} blocks={self.dash_observation.blocks} source={self.source} selected={chosen.reason} road={road.reason}"
         def write():
             try:
-                height,width=raw.shape[:2]
-                if black_mask.shape != (height,width):
-                    raise ValueError("black snapshot mask does not match frame")
-                black_view = cv2.cvtColor(black_mask,cv2.COLOR_GRAY2BGR)
-                if points is not None:
-                    for x,y in points:
-                        cv2.circle(black_view,(int(round(x)),int(round(y))),3,(0,0,255),1)
-                road_view=np.zeros_like(raw)
-                label="road not computed"
-                if road_mask is not None:
-                    rh,rw=road_mask.shape
-                    top=0 if rh==height else road_top
-                    if rw!=width or top<0 or top+rh>height:
-                        raise ValueError("road snapshot ROI outside frame")
-                    road_view[top:top+rh]=cv2.cvtColor(road_mask,cv2.COLOR_GRAY2BGR)
-                    label=f"road ROI y={top}:{top+rh}"
-                cv2.putText(road_view,label,(4,16),cv2.FONT_HERSHEY_SIMPLEX,.4,(0,255,255),1)
-                canvas=np.hstack((raw,black_view,road_view))
                 directory.mkdir(parents=True,exist_ok=True)
-                if not cv2.imwrite(str(directory/f"loss_{slot:02d}.jpg"),canvas):
-                    raise OSError("snapshot image write returned false")
+                cv2.imwrite(str(directory/f"loss_{slot:02d}.jpg"),canvas)
                 (directory/f"loss_{slot:02d}.txt").write_text(metadata,encoding="utf-8")
-            except Exception as exc:
-                self._snapshot_warning(exc, now)
+            except (OSError, cv2.error) as exc:
+                print(f"VISION snapshot_failed={exc}",flush=True)
         self._snapshot_worker = threading.Thread(target=write,daemon=True)
         self._snapshot_worker.start()
 
@@ -397,7 +369,7 @@ class PatrolVision(base.CourseVision):
                   f"dash_raw={self.dash_observation.raw_blocks} dash_sided={self.dash_observation.sided_blocks} dash={self.dash_observation.reason} color_stats={self.dash_observation.diagnostics} "
                   f"rescue={int(chosen.rescue)} observed={int(chosen.route_observed)} "
                   f"near={chosen.near_error:+.3f} mid={chosen.mid_error:+.3f}", flush=True)
-        self._snapshot_if_missing(work,dark,road,chosen,now,force=self.router.entry_detection_reason=="vv_latched_advance_current_route",road_top=int(height*tuning.roi_top_ratio))
+        self._snapshot_if_missing(work,dark,road,chosen,now,force=self.router.entry_detection_reason=="vv_latched_advance_current_route")
         return chosen
 
 
