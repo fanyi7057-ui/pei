@@ -1480,7 +1480,7 @@ def test_v7_first_six_seconds_skip_actual_gate_extractor(monkeypatch):
     v.router.distance=2.
     calls=[]
     from patrol_dash_entry import DashObservation
-    monkeypatch.setattr(module,"detect_vv_dashes",lambda *_:(calls.append(1) or DashObservation()))
+    monkeypatch.setattr(module,"detect_vv_dashes_compatible",lambda *_:(calls.append(1) or DashObservation()))
     frame=cv2.cvtColor(scene(),cv2.COLOR_HSV2BGR)
     for now in (10.,12.,15.99):
         v.estimate(frame,t,now)

@@ -24,6 +24,7 @@ class DashObservation:
     branch: PathEstimate = field(default_factory=lambda: PathEstimate(False))
     exit_branch: PathEstimate = field(default_factory=lambda: PathEstimate(False))
     reason: str = "no_dash_blocks"
+    mask_source: str = "corrected"
 
 
 def _path(points,width,height,tuning,reason):
@@ -145,4 +146,15 @@ def detect_vv_dashes(events,white,tuning,reference_x_ratio=None):
             elif near_gap>mid_gap+.02:
                 result.exit_branch=curve
                 result.reason="vv_exit_converging_left"
+    return result
+
+
+def detect_vv_dashes_compatible(events,white,tuning,reference_x_ratio=None,legacy_events=None):
+    """Try corrected pixels first; retain valid legacy chain when needed."""
+    result=detect_vv_dashes(events,white,tuning,reference_x_ratio)
+    if not result.valid and legacy_events is not None:
+        legacy=detect_vv_dashes(legacy_events,white,tuning,reference_x_ratio)
+        if legacy.valid:
+            legacy.mask_source="legacy_compatible"
+            return legacy
     return result

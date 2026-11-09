@@ -13,7 +13,7 @@ import yaml
 import icn as base
 from stand_only import WheellegStandOnly
 from patrol_contour_runtime import PatrolTuning, road_masks
-from patrol_dash_entry import detect_vv_dashes
+from patrol_dash_entry import detect_vv_dashes_compatible
 
 
 def build_capture(frame, tuning):
@@ -24,7 +24,8 @@ def build_capture(frame, tuning):
     guard=cv2.dilate(blue,np.ones((3,3),np.uint8))
     dark_before=dark.copy();events_before=events.copy()
     dark[guard>0]=0;events[guard>0]=0
-    cue=detect_vv_dashes(events,white,tuning)
+    legacy=vision._legacy_event_dark.copy();legacy[guard>0]=0
+    cue=detect_vv_dashes_compatible(events,white,tuning,legacy_events=legacy)
     # Independent COLOR proposal for offline comparison only, never controls motors.
     value=hsv[:,:,2];saturation=hsv[:,:,1];hue=hsv[:,:,0]
     local=cv2.GaussianBlur(value,(31,31),0).astype(np.int16)-value.astype(np.int16)
@@ -44,14 +45,14 @@ def build_capture(frame, tuning):
             cv2.putText(annotated,f'{i}:{reason}',(x,max(10,y)),cv2.FONT_HERSHEY_SIMPLEX,.28,color,1)
     images={'raw':frame,'processed_color':work,'black_before_guard':dark_before,'events_before_guard':events_before,
             'black_actual':dark,'events_actual':events,'blue_guard':guard,'white_road':white,
-            'color_proposal':proposal,'candidate_labels':annotated}
+            'events_legacy':legacy,'color_proposal':proposal,'candidate_labels':annotated}
     panels=[]
     for label in ('processed_color','black_actual','events_actual','blue_guard','color_proposal','candidate_labels'):
         panel=images[label]
         if panel.ndim==2:panel=cv2.cvtColor(panel,cv2.COLOR_GRAY2BGR)
         panel=panel.copy();cv2.putText(panel,label,(4,16),0,.45,(0,0,255),1);panels.append(panel)
     images['comparison']=np.vstack((np.hstack(panels[:3]),np.hstack(panels[3:])))
-    metadata=f'height_m=0.15 pitch_deg=25\ndash_reason={cue.reason} raw={cue.raw_blocks} sided={cue.sided_blocks} accepted={cue.blocks} valid={cue.valid}\nCOLOR proposal is diagnostic only, not validated ring detection.\n'
+    metadata=f'height_m=0.15 pitch_deg=25\ndash_mask={cue.mask_source} dash_reason={cue.reason} raw={cue.raw_blocks} sided={cue.sided_blocks} accepted={cue.blocks} valid={cue.valid}\nCOLOR proposal is diagnostic only, not validated ring detection.\n'
     return images,metadata,'id,x,y,width,height,area,reason\n'+'\n'.join(rows)
 
 

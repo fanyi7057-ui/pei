@@ -1046,6 +1046,19 @@ class CourseVision:
             iterations=1,
         )
 
+        # Dark tape has unstable HSV hue. Only spatial blue regions containing
+        # sufficiently bright, chromatic blue evidence may seed the guard.
+        legacy_blue=blue
+        weak_blue=((hue>=BLUE_H_MIN)&(hue<=BLUE_H_MAX)&(sat>=BLUE_S_MIN)&(val>=BLUE_V_MIN)).astype(np.uint8)
+        b_channel,_,r_channel=cv2.split(frame.astype(np.int16))
+        blue_seed=(weak_blue>0)&(sat>=max(BLUE_S_MIN,70))&(val>=max(BLUE_V_MIN,45))&(b_channel-r_channel>=12)
+        weak_blue=cv2.morphologyEx(weak_blue,cv2.MORPH_CLOSE,np.ones((5,5),dtype=np.uint8))
+        count,labels,stats,_=cv2.connectedComponentsWithStats(weak_blue,8)
+        seed_counts=np.bincount(labels[blue_seed],minlength=count)
+        keep=(stats[:,cv2.CC_STAT_AREA]>=max(32,.002*val.size))&(seed_counts>=8)
+        keep[0]=False
+        blue=cv2.dilate(keep[labels].astype(np.uint8)*255,np.ones((guard_k,guard_k),dtype=np.uint8))
+
         normalized = self._clahe.apply(val)
         adaptive = cv2.adaptiveThreshold(
             normalized,
@@ -1101,6 +1114,12 @@ class CourseVision:
         event_dark = cv2.morphologyEx(
             event_dark, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8), iterations=1
         )
+        # Compatibility candidate for dash-chain fragmentation only. It is
+        # never substituted for the corrected normal-line mask.
+        legacy_event=(val<=EVENT_DARK_V_MAX).astype(np.uint8)*255
+        legacy_event[legacy_blue>0]=0
+        legacy_event=cv2.morphologyEx(legacy_event,cv2.MORPH_OPEN,np.ones((3,3),dtype=np.uint8))
+        self._legacy_event_dark=cv2.morphologyEx(legacy_event,cv2.MORPH_CLOSE,np.ones((3,3),dtype=np.uint8))
         return dark, event_dark, hsv, blue
 
     def _update_roundabout_blue_guard(
