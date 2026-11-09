@@ -24,6 +24,40 @@ class DashObservation:
     branch: PathEstimate = field(default_factory=lambda: PathEstimate(False))
     exit_branch: PathEstimate = field(default_factory=lambda: PathEstimate(False))
     reason: str = "no_dash_blocks"
+    diagnostics: dict = field(default_factory=dict)
+
+
+def detect_color_dashes(frame, tuning, reference_x_ratio=None):
+    """Independent colour evidence for tasks; never modifies patrol masks.
+
+    Relative darkness recovers reflective tape, while neutral colour, local
+    contrast and a dark core reject blue and broad shadows. No open/close is
+    applied to small blocks. Geometry and source-gap proof remain shared.
+    """
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    hue, sat, val = cv2.split(hsv)
+    blue = ((hue >= tuning.blue_h_min) & (hue <= tuning.blue_h_max)
+            & (sat >= tuning.blue_weak_s_min))
+    local = cv2.blur(val.astype(np.float32), (21, 21))
+    neutral = (sat <= 100) & ~blue
+    candidate = neutral & ((val <= 85) | ((val <= 175) & (local-val >= 25)))
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(candidate.astype(np.uint8), 8)
+    accepted = np.zeros(count, dtype=np.uint8)
+    rejected_core = 0
+    for index in range(1, count):
+        x,y,w,h,area = stats[index]
+        pixels = labels[y:y+h,x:x+w] == index
+        if np.mean(val[y:y+h,x:x+w][pixels] <= 110) < .06:
+            rejected_core += 1
+            continue
+        accepted[index] = 255
+    events = accepted[labels]
+    white = ((sat <= tuning.white_s_max) & (val >= tuning.white_v_min)
+             & ~blue & ~candidate).astype(np.uint8)*255
+    result = detect_vv_dashes(events, white, tuning, reference_x_ratio)
+    result.diagnostics.update(color_components=count-1, core_rejected=rejected_core,
+                              blue_pixels=int(np.count_nonzero(blue)))
+    return result
 
 
 def _path(points,width,height,tuning,reason):
@@ -51,16 +85,19 @@ def detect_vv_dashes(events,white,tuning,reference_x_ratio=None):
     black[int(56*tuning.vv_dash_roi_bottom_ratio):]=False
     count,_,stats,centers=cv2.connectedComponentsWithStats(black.astype(np.uint8),8)
     result.raw_blocks=count-1
+    result.diagnostics = {"shape_rejected": 0, "white_sides_rejected": 0}
     candidates=[]
     for i in range(1,count):
         x,y,bw,bh,area=stats[i]
         if not (3<=area<=70 and 1<=bw<=12 and 1<=bh<=14):
+            result.diagnostics["shape_rejected"] += 1
             continue
         cx,cy=centers[i]
         left=int(np.floor(cx-bw/2-2))
         right=int(np.ceil(cx+bw/2+2))
         row=int(round(cy))
         if left<0 or right>=80 or not road[row,left] or not road[row,right]:
+            result.diagnostics["white_sides_rejected"] += 1
             continue
         candidates.append((float(cx),float(cy),int(bh)))
     result.sided_blocks=len(candidates)

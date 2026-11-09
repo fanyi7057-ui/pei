@@ -17,7 +17,7 @@ from patrol_contour_runtime import (
     black_usable, road_centerline, road_masks, path_errors, detect_crosswalk,
 )
 
-from patrol_dash_entry import DashObservation, detect_vv_dashes
+from patrol_dash_entry import DashObservation, detect_color_dashes
 
 
 class PatrolVision(base.CourseVision):
@@ -154,7 +154,7 @@ class PatrolVision(base.CourseVision):
         self.entry_ready=False
         self.dash_observation=DashObservation()
         if self.router.gate_detection_allowed(now,tuning) or self.router.phase=="ENTRY":
-            self.dash_observation=detect_vv_dashes(events,_white,tuning,self.seed_x_ratio)
+            self.dash_observation=detect_color_dashes(work,tuning,self.seed_x_ratio)
             cue=self.dash_observation
             self.gate_chain_count=cue.blocks
             self.gate_near=cue.near_ratio
@@ -366,7 +366,7 @@ class PatrolVision(base.CourseVision):
             self._last_vision_diagnostic_at = now
             print(f"VISION bands={len(black.points) if black.points is not None else 0} "
                   f"black={black.reason} road={road.reason} source={self.source} "
-                  f"dash_raw={self.dash_observation.raw_blocks} dash_sided={self.dash_observation.sided_blocks} dash={self.dash_observation.reason} "
+                  f"dash_raw={self.dash_observation.raw_blocks} dash_sided={self.dash_observation.sided_blocks} dash={self.dash_observation.reason} color_stats={self.dash_observation.diagnostics} "
                   f"rescue={int(chosen.rescue)} observed={int(chosen.route_observed)} "
                   f"near={chosen.near_error:+.3f} mid={chosen.mid_error:+.3f}", flush=True)
         self._snapshot_if_missing(work,dark,road,chosen,now,force=self.router.entry_detection_reason=="vv_latched_advance_current_route")
