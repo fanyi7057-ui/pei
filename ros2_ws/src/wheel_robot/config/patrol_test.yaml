@@ -133,6 +133,10 @@ patrol_test:
 
   # ===== D. 白赛道二值化：轮廓不对才调，黑线提取仍沿用基线 =====
   # 道路ROI上/下边界，占整图高度0..1；小=更远，大=更近，必须top<bottom。左右不裁剪避免漏急弯。
+  # Source-image crop, before resize and all patrol/ring masks. Bottom retained.
+  crop_left_ratio: 0.12
+  crop_right_ratio: 0.12
+  crop_top_ratio: 0.22
   roi_top_ratio: 0.25
   roi_bottom_ratio: 0.98
   # 蓝背景HSV阈值；H范围0..179，S/V范围0..255；扩大H范围可接纳更多蓝色，但可能误排道路。

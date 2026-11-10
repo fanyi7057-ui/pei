@@ -63,6 +63,9 @@ class PatrolTuning:
     reacquire_confirm_frames: int = 3
     maintain_cruise_during_search: int = 1
     image_timeout_seconds: float = 0.35
+    crop_left_ratio: float = 0.0
+    crop_right_ratio: float = 0.0
+    crop_top_ratio: float = 0.0
     roi_top_ratio: float = 0.25
     roi_bottom_ratio: float = 0.98
     blue_h_min: int = 90
@@ -350,6 +353,8 @@ class PatrolTuning:
         for name in ("target_x_ratio", "black_min_confidence", "roi_top_ratio", "roi_bottom_ratio", "min_road_area_ratio", "seed_bottom_ratio", "seed_half_width_ratio", "min_road_width_ratio", "min_observed_rows_ratio", "road_near_y_ratio", "road_mid_y_ratio", "road_far_y_ratio", "road_max_row_step_ratio", "road_history_weight", "road_max_near_jump_ratio", "error_filter_alpha"):
             if not 0 <= getattr(self, name) <= 1:
                 raise ValueError(f"{name} 必须在0..1")
+        if not (0 <= self.crop_left_ratio < 1 and 0 <= self.crop_right_ratio < 1 and 0 <= self.crop_top_ratio < 1) or self.crop_left_ratio+self.crop_right_ratio >= .9 or self.crop_top_ratio >= .9:
+            raise ValueError("crop must retain at least 10% of width and height")
         if not 0 <= self.roi_top_ratio < self.roi_bottom_ratio <= 1:
             raise ValueError("ROI上下界必须有序且有面积")
         if not self.roi_top_ratio <= self.road_far_y_ratio < self.road_mid_y_ratio < self.road_near_y_ratio <= self.roi_bottom_ratio:
@@ -943,6 +948,17 @@ def _repair_short_gaps(values, max_gap):
         if 0 < gap <= max_gap:
             result[start:end + 1] = np.linspace(values[start], values[end], end-start+1)
     return result
+
+
+def crop_patrol_frame(frame, tuning):
+    """Crop source pixels once; all following coordinates belong to this view."""
+    h,w=frame.shape[:2]
+    left=int(w*tuning.crop_left_ratio)
+    right=w-int(w*tuning.crop_right_ratio)
+    top=int(h*tuning.crop_top_ratio)
+    if right-left<2 or h-top<2:
+        raise ValueError("crop leaves no usable image")
+    return frame[top:h,left:right]
 
 
 def road_masks(hsv, tuning):

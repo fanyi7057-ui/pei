@@ -5,7 +5,7 @@ import types
 import cv2
 import numpy as np
 from test_patrol_contour import load_actual_vision_module
-from patrol_contour_runtime import PatrolTuning, road_masks
+from patrol_contour_runtime import PatrolTuning, road_masks, crop_patrol_frame
 from patrol_dash_entry import detect_vv_dashes_compatible
 
 
@@ -13,7 +13,7 @@ def test_capture_uses_same_masks_and_preserves_original(monkeypatch):
     module=load_actual_vision_module(monkeypatch)
     source=(Path(__file__).resolve().parents[1]/'scripts/camera_capture_diag.py').read_text(encoding='utf-8')
     function=next(n for n in ast.parse(source).body if isinstance(n,ast.FunctionDef) and n.name=='build_capture')
-    ns=dict(cv2=cv2,np=np,base=module.base,road_masks=road_masks,detect_vv_dashes_compatible=detect_vv_dashes_compatible)
+    ns=dict(cv2=cv2,np=np,base=module.base,road_masks=road_masks,crop_patrol_frame=crop_patrol_frame,detect_vv_dashes_compatible=detect_vv_dashes_compatible)
     exec(compile(ast.Module(body=[function],type_ignores=[]),'capture','exec'),ns)
     frame=np.full((480,640,3),245,np.uint8)
     for y in range(80,420,60):cv2.rectangle(frame,(300,y),(320,y+25),(0,0,0),-1)
@@ -47,3 +47,19 @@ def test_blue_cast_dark_tape_survives_but_connected_blue_stays_blocked(monkeypat
     assert np.mean(events[83:97,143:157]>0)>.9
     assert np.all(events[50:190,240:300]==0)
     assert np.all(blue[150:180,250:290]>0)
+
+
+def test_source_crop_is_symmetric_and_keeps_bottom():
+    from dataclasses import replace
+    f=np.arange(480*640*3,dtype=np.int32).reshape(480,640,3)
+    t=replace(PatrolTuning(),crop_left_ratio=.12,crop_right_ratio=.12,crop_top_ratio=.22)
+    actual=crop_patrol_frame(f,t)
+    assert actual.shape==(375,488,3)
+    assert np.array_equal(actual,f[105:,76:564])
+
+
+def test_crop_rejects_empty_or_reversed_area():
+    from dataclasses import replace
+    import pytest
+    for changes in ({"crop_left_ratio":.6,"crop_right_ratio":.5},{"crop_top_ratio":1.},{"crop_left_ratio":-.1}):
+        with pytest.raises(ValueError):replace(PatrolTuning(),**changes).validate()

@@ -14,7 +14,7 @@ import icn as base
 from patrol_contour_runtime import (
     FixedSpeedController, CornerExitGuard, RingCandidateSearch, PathEstimate, PathSelector, PatrolFileWatcher,
     PatrolTuning, RoundaboutRouter, ExitRouteCommit, RingRouteMemory, observed_route,
-    black_usable, road_centerline, road_masks, path_errors, detect_crosswalk,
+    black_usable, road_centerline, road_masks, crop_patrol_frame, path_errors, detect_crosswalk,
 )
 
 from patrol_dash_entry import DashObservation, detect_vv_dashes, detect_vv_dashes_compatible
@@ -131,7 +131,7 @@ class PatrolVision(base.CourseVision):
         navigation_serial=self.router.navigation_reset_serial
         if self.last_path_at is not None and now-self.last_path_at >= tuning.loss_hold_seconds:
             self.reset_path(preserve_approach=self.router.phase in ("SEEK","APPROACH"))
-        work = cv2.resize(frame, (base.PROCESS_WIDTH, base.PROCESS_HEIGHT), interpolation=cv2.INTER_AREA)
+        work = cv2.resize(crop_patrol_frame(frame,tuning), (base.PROCESS_WIDTH, base.PROCESS_HEIGHT), interpolation=cv2.INTER_AREA)
         height, width = work.shape[:2]
         # Share masks across tracking and ordered ring/zebra tasks. Never run
         # depth or jump methods; the validated original step files stay frozen.
@@ -427,7 +427,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 self._set_patrol_posture()
             # Saving speed/gain/display changes must not throw away a trusted
             # path and manufacture a new dropout. Reset only geometry/masks.
-            geometry = ("target_x_ratio", "black_enabled", "contour_enabled", "roi_top_ratio", "roi_bottom_ratio", "blue_h_min", "blue_h_max", "blue_s_min", "blue_v_min", "blue_weak_s_min", "blue_weak_br_delta", "blue_weak_min_area_ratio", "blue_context_radius_ratio", "road_blue_contrast_gray", "white_s_max", "white_v_min", "close_kernel_px", "black_gap_fill_px", "road_max_row_step_ratio", "min_road_area_ratio", "min_observed_rows_ratio", "seed_bottom_ratio", "seed_half_width_ratio", "min_road_width_ratio", "max_repair_gap_rows", "road_near_y_ratio", "road_mid_y_ratio", "road_far_y_ratio", "road_near_gap_ratio")
+            geometry = ("crop_left_ratio", "crop_right_ratio", "crop_top_ratio", "target_x_ratio", "black_enabled", "contour_enabled", "roi_top_ratio", "roi_bottom_ratio", "blue_h_min", "blue_h_max", "blue_s_min", "blue_v_min", "blue_weak_s_min", "blue_weak_br_delta", "blue_weak_min_area_ratio", "blue_context_radius_ratio", "road_blue_contrast_gray", "white_s_max", "white_v_min", "close_kernel_px", "black_gap_fill_px", "road_max_row_step_ratio", "min_road_area_ratio", "min_observed_rows_ratio", "seed_bottom_ratio", "seed_half_width_ratio", "min_road_width_ratio", "max_repair_gap_rows", "road_near_y_ratio", "road_mid_y_ratio", "road_far_y_ratio", "road_near_gap_ratio")
             if posture_changed or any(getattr(old, key) != getattr(updated, key) for key in geometry):
                 self.vision.reset_path()
                 self.patrol_controller.reset_error()
