@@ -10,7 +10,7 @@ export QT_X11_NO_MITSHM=1
 
 while true; do
   printf '\n===== V16 本包机器人菜单（普通巡线V11）=====\n工程：%s\n' "$TWO_ROOT"
-  printf '1. 编译并检查本包环境（未编译偏航修复时必须先选）\n2. 视觉干跑：巡线/环岛/横道，不启动底盘\n3. 原地站立检查（沿用原站立程序）\n4. V16巡线＋环岛＋横道/终点测试（不跳台阶）\n5. 原比赛流程（含原台阶；共享底盘偏航发布修复）\n6. 查看本包环境与设备\n7. 低腿低头拍照（零轮速，彩图与检测掩膜）\n0. 退出\n'
+  printf '1. 编译并检查本包环境（未编译偏航修复时必须先选）\n2. 视觉干跑：巡线/环岛/横道，不启动底盘\n3. 原地站立检查（沿用原站立程序）\n4. V16巡线＋环岛＋横道/终点测试（不跳台阶）\n5. 原比赛流程（含原台阶；共享底盘偏航发布修复）\n6. 查看本包环境与设备\n7. 视觉采集（原地定时拍照／行驶记录）\n0. 退出\n'
   read -r -p '请选择：' two_option || break
   case "$two_option" in
     1) two_build_workspace ;;
@@ -33,7 +33,7 @@ while true; do
       printf '当前根目录：%s\n自有编译安装目录：%s\n实时参数：%s\n' "$TWO_ROOT" "$TWO_INSTALL" "$TWO_WS/src/wheel_robot/config/patrol_test.yaml"
       xset q >/dev/null 2>&1 && printf '小车屏幕连接正常。\n' || printf '小车屏幕暂不可用。\n'
       printf '串口设备：\n'; compgen -G '/dev/ttyUSB*' || true ;;
-    7) bash "$TWO_TOOLS/camera_capture_menu.sh" ;;
+    7) bash "$TWO_TOOLS/vision_collection_menu.sh" ;;
     0) break ;;
     *) printf '请输入菜单中的编号。\n' ;;
   esac

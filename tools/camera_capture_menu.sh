@@ -15,7 +15,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT TERM
 setsid ros2 launch "$TWO_WS/src/wheel_robot/launch/camera_capture.launch.py" &
 capture_pid=$!
-printf '站立拍照：零轮速，腿高0.15m，低头25度。5秒后自动拍照。1再拍一组，0退出。\n'
+printf '站立拍照：零轮速，腿高0.15m，低头25度。每5秒自动拍照。1再拍一组，0退出。\n'
 while kill -0 "$capture_pid" 2>/dev/null; do
   capture_command=""
   if read -r -t 1 capture_command; then

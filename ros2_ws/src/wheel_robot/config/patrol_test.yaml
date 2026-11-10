@@ -61,6 +61,8 @@ patrol_test:
   black_min_confidence: 0.26
   # 蓝背景白赛道轮廓补线开关，0/1；0仅黑线，1黑线失效时启用轮廓法。
   contour_enabled: 1
+  # Ordered contour boundaries first; legacy row tracing remains fallback.
+  contour_order_enabled: 1
   # 从轮廓切回黑线前连续确认的新帧数，1..20；减少切换抖动，不重复计旧图。
   black_return_frames: 3
   # 换源有界交接时间，s，>=0；0立即切换，不叠加差值放大误差。

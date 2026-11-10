@@ -38,6 +38,7 @@ class PatrolTuning:
     black_enabled: int = 1
     black_min_confidence: float = 0.26
     contour_enabled: int = 1
+    contour_order_enabled: int = 0
     black_return_frames: int = 3
     handoff_seconds: float = 0.15
     road_max_near_jump_ratio: float = 0.25
@@ -340,6 +341,8 @@ class PatrolTuning:
             raise ValueError("invalid corner/candidate limits")
         if not 0 < self.ring_entry_advance_m <= 1 or not 0 < self.ring_entry_probe_seconds <= 2:
             raise ValueError("invalid entry advance/probe limits")
+        if self.contour_order_enabled not in (0,1):
+            raise ValueError("contour_order_enabled must be 0 or 1")
         if self.bounded_recovery_enabled not in (0, 1):
             raise ValueError("bounded_recovery_enabled must be 0 or 1")
         if not self.black_enabled and not self.contour_enabled:
@@ -1063,6 +1066,65 @@ def exit_corner_guide(road, blue, starts, ends, offsets, seed, full_height, tuni
     return empty, None
 
 
+def contour_order_reference(mask, blue, full_h, y0, tuning):
+    """Ordered boundary arcs from a bottom-connected, hole-free component.
+
+    Document adaptation: pair rows, interpolate only short bounded gaps,
+    never replace missing sides by the image border. Invalid topology falls
+    back to the pre-existing row tracer.
+    """
+    h,w=mask.shape
+    runs=np.flatnonzero(np.diff(np.pad((mask[-1]>0).astype(np.int8),(1,1))))
+    if len(runs)!=2 or runs[1]-runs[0]<tuning.min_road_width_ratio*w:
+        return None
+    contours,hierarchy=cv2.findContours(mask,cv2.RETR_CCOMP,cv2.CHAIN_APPROX_NONE)
+    if hierarchy is None:return None
+    candidates=[i for i,c in enumerate(contours) if hierarchy[0,i,3]==-1 and np.any(c[:,0,1]==h-1)]
+    if len(candidates)!=1 or hierarchy[0,candidates[0],2]!=-1:return None
+    pts=contours[candidates[0]][:,0,:];n=len(pts)
+    bottom=np.flatnonzero(pts[:,1]==h-1);top=np.flatnonzero(pts[:,1]==pts[:,1].min())
+    if not len(bottom) or not len(top):return None
+    il=int(bottom[np.argmin(pts[bottom,0])]);ir=int(bottom[np.argmax(pts[bottom,0])])
+    fl=int(top[np.argmin(pts[top,0])]);fr=int(top[np.argmax(pts[top,0])])
+    def arc(a,b,avoid):
+        forward=np.arange(a,a+(b-a)%n+1)%n
+        backward=np.arange(a,a-(a-b)%n-1,-1)%n
+        choices=[v for v in (forward,backward) if avoid not in v[1:-1]]
+        return pts[min(choices,key=len)] if choices else None
+    left,right=arc(il,fl,ir),arc(ir,fr,il)
+    if left is None or right is None:return None
+    l=np.full(h,np.nan);rr=np.full(h,np.nan)
+    for x,y in left:l[y]=max(l[y],float(x)) if np.isfinite(l[y]) else x
+    for x,y in right:rr[y]=min(rr[y],float(x)) if np.isfinite(rr[y]) else x
+    observed=np.isfinite(l)&np.isfinite(rr)
+    l=_repair_short_gaps(l,tuning.max_repair_gap_rows);rr=_repair_short_gaps(rr,tuning.max_repair_gap_rows)
+    ys=np.arange(h)
+    valid=np.isfinite(l)&np.isfinite(rr)&(l>0)&(rr<w-1)&(rr-l>=tuning.min_road_width_ratio*w)
+    valid[:int(pts[top,1].max())+1]=False
+    yi=np.flatnonzero(valid)
+    if len(yi)<max(3,int(h*tuning.min_observed_rows_ratio)):return None
+    xs=(l[yi]+rr[yi])/2
+    # Check whole row segment, not only center, to preserve forbidden blue holes.
+    safe=np.array([np.all(mask[y,int(l[y]):int(rr[y])+1]>0) and not np.any(blue[y,int(l[y]):int(rr[y])+1]>0) for y in yi])
+    yi,xs=yi[safe],xs[safe]
+    if len(yi)<max(3,int(h*tuning.min_observed_rows_ratio)):return None
+    if np.max(np.diff(yi),initial=0)>tuning.max_repair_gap_rows+1:return None
+    points=np.column_stack((xs,yi+y0));near_gap=max(0.,tuning.road_near_y_ratio-float(points[-1,1])/full_h)
+    if near_gap>.02:return None
+    # Multi-row local aggregation reduces single-row jitter while preserving
+    # existing near/mid/far normalized error semantics and controller units.
+    smooth=points.copy()
+    for i,y in enumerate(points[:,1]):
+        selected=np.abs(points[:,1]-y)<=2
+        smooth[i,0]=np.mean(points[selected,0])
+    errors=path_errors(smooth,w,full_h,tuning)
+    if errors is None:return None
+    widths=np.column_stack((rr[yi]-l[yi],yi+y0))
+    return PathEstimate(True,errors[0],min(1.,np.count_nonzero(observed[yi])/h),smooth,mask,
+                        "road_contour_order",*errors[1:],widths=widths,dual_fraction=len(yi)/h,
+                        route_observed=True,near_gap_ratio=near_gap)
+
+
 def road_centerline(hsv, tuning, seed_x_ratio=None, previous_points=None, previous_widths=None, branch="nearest", masks=None, exit_guide=False):
     """Preserve blue holes; trace ONE continuous white run per row.
 
@@ -1136,6 +1198,10 @@ def road_centerline(hsv, tuning, seed_x_ratio=None, previous_points=None, previo
             best, best_score = filled, score
     if best is None:
         return PathEstimate(False, mask=binary, reason="no_near_connected_road")
+    if tuning.contour_order_enabled and branch=="nearest" and not exit_guide:
+        ordered=contour_order_reference(best,blue,full_h,y0,tuning)
+        if ordered is not None:
+            return ordered
     # Precompute all row runs in one vectorized pass. Taking the extrema of
     # two separate white runs would put their average INSIDE a blue island.
     delta = np.diff(np.pad((best > 0).astype(np.int8), ((0, 0), (1, 1))), axis=1)

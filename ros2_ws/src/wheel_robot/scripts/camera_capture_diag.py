@@ -78,8 +78,8 @@ def main():
     from std_msgs.msg import Bool
     subscription=node.create_subscription(Bool,"/camera_capture/request",lambda msg: requests.append("1") if msg.data and not requests else None,1)
     topic_mode=os.environ.get("CAPTURE_TOPIC_MODE")=="1"
-    started=time.monotonic();auto_done=False;preview=bool(os.environ.get('DISPLAY'))
-    print('原地拍照：腿高0.15m，低头25度；持续零轮速，不巡线、不入环。5秒后自动拍一组；输入1再拍，0退出；Ctrl+C退出。',flush=True)
+    started=time.monotonic();next_auto=started+5;preview=bool(os.environ.get('DISPLAY'))
+    print('原地拍照：腿高0.15m，低头25度；持续零轮速，不巡线、不入环。每5秒自动拍一组；输入1再拍，0退出；Ctrl+C退出。',flush=True)
     def save(frame):
         try:
             images,metadata,csv=build_capture(frame,tuning)
@@ -106,7 +106,7 @@ def main():
                     cv2.imshow('Stationary capture - ZERO WHEEL SPEED',frame)
                     if cv2.waitKey(1)&255 in (27,ord('q')):break
                 except cv2.error:preview=False
-            if command=='1' or (not auto_done and time.monotonic()-started>=5):
+            if command=='1' or (time.monotonic()>=next_auto):
                 if frame is None or time.monotonic()-stamp>.35:
                     if command=='1':print('没有新鲜相机画面，未保存。',flush=True)
                     continue
@@ -114,7 +114,7 @@ def main():
                     print('正在保存上一组，请稍候。',flush=True);continue
                 if time.monotonic()-started<3:
                     print('等待姿态稳定3秒后再拍。',flush=True);continue
-                auto_done=True;worker=threading.Thread(target=save,args=(frame.copy(),),daemon=True);worker.start()
+                next_auto=time.monotonic()+5;worker=threading.Thread(target=save,args=(frame.copy(),),daemon=True);worker.start()
     except KeyboardInterrupt:pass
     finally:
         stop.set()

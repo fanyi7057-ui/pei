@@ -243,7 +243,8 @@ class PatrolVision(base.CourseVision):
         if tuning.contour_enabled and (self.router.phase=="APPROACH" or routing or committing or not black_usable(black, tuning) or self.selector.source == "road" or width_probe):
             self.last_width_probe_at=now
             widths = self.road_widths if self.last_dual_at is not None and now-self.last_dual_at < tuning.road_single_edge_hold_seconds else None
-            road = road_centerline(hsv, tuning, self.seed_x_ratio, self.previous_points, widths,
+            road_tuning=replace(tuning,contour_order_enabled=0) if routing or committing else tuning
+            road = road_centerline(hsv, road_tuning, self.seed_x_ratio, self.previous_points, widths,
                                    branch="left" if self.router.left_lock and routing else "nearest", masks=(blue, _white),
                                    exit_guide=self.router.phase=="EXIT")
             if road.valid and road.single_edge and widths is None:
@@ -393,6 +394,12 @@ class PatrolTestNode(base.WheelLegRaceNode):
         self._processed_count = self._displayed_count = 0
         self._capture_fps = self._process_fps = self._display_fps = 0.
         self._last_patrol_log = 0.
+        self._patrol_recorder=None
+        directory=os.environ.get("PATROL_RECORD_DIR")
+        if directory:
+            from patrol_recorder import PatrolRecorder
+            self._patrol_recorder=PatrolRecorder(directory,Path(__file__).resolve().parents[1])
+            self.get_logger().warn("行驶采集目录："+directory)
         self._patrol_ready = True
         self.vision.snapshot_directory = Path.home()/"Two_patrol"/"log"/"vision_snapshots"
         self._set_patrol_posture()
@@ -427,7 +434,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 self._set_patrol_posture()
             # Saving speed/gain/display changes must not throw away a trusted
             # path and manufacture a new dropout. Reset only geometry/masks.
-            geometry = ("crop_left_ratio", "crop_right_ratio", "crop_top_ratio", "target_x_ratio", "black_enabled", "contour_enabled", "roi_top_ratio", "roi_bottom_ratio", "blue_h_min", "blue_h_max", "blue_s_min", "blue_v_min", "blue_weak_s_min", "blue_weak_br_delta", "blue_weak_min_area_ratio", "blue_context_radius_ratio", "road_blue_contrast_gray", "white_s_max", "white_v_min", "close_kernel_px", "black_gap_fill_px", "road_max_row_step_ratio", "min_road_area_ratio", "min_observed_rows_ratio", "seed_bottom_ratio", "seed_half_width_ratio", "min_road_width_ratio", "max_repair_gap_rows", "road_near_y_ratio", "road_mid_y_ratio", "road_far_y_ratio", "road_near_gap_ratio")
+            geometry = ("crop_left_ratio", "crop_right_ratio", "crop_top_ratio", "target_x_ratio", "black_enabled", "contour_enabled", "contour_order_enabled", "roi_top_ratio", "roi_bottom_ratio", "blue_h_min", "blue_h_max", "blue_s_min", "blue_v_min", "blue_weak_s_min", "blue_weak_br_delta", "blue_weak_min_area_ratio", "blue_context_radius_ratio", "road_blue_contrast_gray", "white_s_max", "white_v_min", "close_kernel_px", "black_gap_fill_px", "road_max_row_step_ratio", "min_road_area_ratio", "min_observed_rows_ratio", "seed_bottom_ratio", "seed_half_width_ratio", "min_road_width_ratio", "max_repair_gap_rows", "road_near_y_ratio", "road_mid_y_ratio", "road_far_y_ratio", "road_near_gap_ratio")
             if posture_changed or any(getattr(old, key) != getattr(updated, key) for key in geometry):
                 self.vision.reset_path()
                 self.patrol_controller.reset_error()
@@ -667,6 +674,16 @@ class PatrolTestNode(base.WheelLegRaceNode):
             linear, angular = 0., 0.
         self._publish_command(linear, angular)
         self._last_command = (linear, angular)
+        recorder=getattr(self,"_patrol_recorder",None)
+        if recorder is not None:
+            recorder.submit(frame,self.vision.last_debug if draw and hasattr(self.vision,"last_debug") else None,
+                dict(_tuning=tuning,capture_monotonic=captured_at,control_monotonic=done,sequence=sequence,
+                     source=self.vision.source,mode=mode,phase=router.phase if router is not None else "",
+                     reason=path.reason,error=path.error,near=path.near_error,mid=path.mid_error,
+                     confidence=path.confidence,cmd_v=linear,cmd_w=angular))
+            if recorder.error and not getattr(self,"_recorder_error_reported",False):
+                self._recorder_error_reported=True
+                self.get_logger().error("采集已停止，不影响控制："+recorder.error)
         if mode == "localization_fault_latched":
             self.get_logger().error(
                 f"PATROL_LOCALIZATION_FAULT reason={self.patrol_controller.fault_reason} "
@@ -796,6 +813,8 @@ def main(args=None):
         if node is not None:
             node.get_logger().warn(f"PATROL_PROCESS_EXIT signal={int(exiting.is_set())} requested={int(node.exit_requested)} ros_ok={int(base.rclpy.ok())}")
             node.close()
+            recorder=getattr(node,"_patrol_recorder",None)
+            if recorder is not None:recorder.close()
             node.destroy_node()
         if base.rclpy.ok():
             base.rclpy.shutdown()
