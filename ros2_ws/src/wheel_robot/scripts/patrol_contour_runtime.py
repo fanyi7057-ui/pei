@@ -2175,9 +2175,10 @@ class FixedSpeedController:
 
         # A growing mid-field offset is visible before the near point leaves the center.
         bend = (reliable and abs(path.mid_error) >= tuning.corner_start_error
-                and abs(path.mid_error - path.near_error) >= .16)
+                and abs(path.mid_error - path.near_error) >= .14)
         self.bend_frames = self.bend_frames + 1 if bend else 0
-        if bend:
+        still_turning = reliable and max(abs(path.near_error), abs(path.mid_error)) >= tuning.corner_start_error
+        if bend or (self.bend_slow and still_turning):
             self.bend_seen_at = now
         if self.bend_frames >= 2:
             self.bend_slow = True

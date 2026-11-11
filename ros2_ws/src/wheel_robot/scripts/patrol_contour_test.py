@@ -666,7 +666,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
                     control_tuning=replace(control_tuning,steering_gain=tuning.steering_gain*factor,
                                            steering_kd=tuning.steering_kd*factor,
                                            angular_accel_rad_s2=tuning.angular_accel_rad_s2*factor)
-            if candidate_left or (router is not None and router.phase == "ENTRY"):
+            if candidate_left or (router is not None and router.phase in ("APPROACH", "ENTRY")):
                 control_tuning=replace(control_tuning,fixed_speed_m_s=min(control_tuning.fixed_speed_m_s,tuning.search_recovery_speed_m_s))
             exit_turn=router.exit_search_turn(path,done,tuning,getattr(self.vision,"motion_heading",None)) if router is not None else None
             linear, angular, mode = self.patrol_controller.command(path, done, control_tuning,

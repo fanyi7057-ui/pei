@@ -260,7 +260,7 @@ def test_v12_new_fields_reject_invalid_snapshot(changes):
 
 @pytest.mark.parametrize("name,expected",[
     ("PathSelector","8e5d914aff1fe47fd4039d05214dae936fbf56fd79d36ade94128af131015224"),
-    ("FixedSpeedController","8b1689d9fd53d4cc233b0f3fca19e256b7fb1d0448c898a67eb76c086237aefc"),
+    ("FixedSpeedController","e71474833e19f4930355710d14b35ea1bb4d891d3e484fdcc1e079202d43a0ad"),
 ])
 def test_ordinary_classes_match_reviewed_source(name,expected):
     import ast
@@ -533,7 +533,7 @@ def test_file_reload_atomic_replace_reject_and_recover(tmp_path):
 def test_shipped_config_has_all_documented_values():
     path = SCRIPTS.parent / "config" / "patrol_test.yaml"
     tuning, message = PatrolFileWatcher(path).poll()
-    assert tuning == replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0., crop_left_ratio=.12, crop_right_ratio=.12, crop_top_ratio=.22, contour_order_enabled=1), message
+    assert tuning == replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0., crop_left_ratio=.12, crop_right_ratio=.12, crop_top_ratio=.22, contour_order_enabled=1, ring_entry_probe_seconds=.50), message
 
 
 @pytest.fixture
@@ -2529,7 +2529,7 @@ def test_v10_new_tuning_snapshot_validation(changes):
 def test_v10_complete_live_yaml_has_all_fields_and_preserves_non_ring_values():
     current,message=PatrolFileWatcher(SCRIPTS.parent/"config/patrol_test.yaml").poll()
     assert current is not None,message
-    assert current==replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0., crop_left_ratio=.12, crop_right_ratio=.12, crop_top_ratio=.22, contour_order_enabled=1)
+    assert current==replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0., crop_left_ratio=.12, crop_right_ratio=.12, crop_top_ratio=.22, contour_order_enabled=1, ring_entry_probe_seconds=.50)
     assert current.fixed_speed_m_s==.65
     assert (current.crosswalk_stop_seconds,current.crosswalk_clear_seconds)==(3.,3.)
 
@@ -3330,8 +3330,13 @@ def test_ordinary_bend_slows_before_near_error_and_recovers_after_clear_frames()
     controller.command(bend, 1.50, tuning, ordinary_guidance=True)
     slower, _, _ = controller.command(bend, 1.55, tuning, ordinary_guidance=True)
     assert slower < before
+    sustained_turn = replace(straight, error=.65, near_error=.65, mid_error=.65)
+    for i in range(14):
+        controller.command(sustained_turn, 1.60 + i * .05, tuning, ordinary_guidance=True)
+    assert controller.bend_slow
+    assert controller.last_command[0] <= tuning.search_recovery_speed_m_s + 1e-9
     for i in range(tuning.corner_exit_confirm_frames):
-        controller.command(straight, 1.60 + i * .05, tuning, ordinary_guidance=True)
+        controller.command(straight, 2.35 + i * .05, tuning, ordinary_guidance=True)
     assert not controller.bend_slow
 
 
