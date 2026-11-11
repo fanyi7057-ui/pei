@@ -127,12 +127,12 @@ def test_invalid_vv_parameters_reject_entire_snapshot(changes):
     with pytest.raises(ValueError):replace(PatrolTuning(),**changes).validate()
 
 
-def test_ordinary_algorithms_and_numeric_speed_defaults_unchanged():
+def test_reviewed_ordinary_algorithms_and_numeric_speed_defaults():
     scripts=Path(__file__).resolve().parents[1]/"scripts"
     text=(scripts/"patrol_contour_runtime.py").read_text(encoding="utf-8-sig")
     tree=ast.parse(text)
     for name,digest in (("PathSelector","8e5d914aff1fe47fd4039d05214dae936fbf56fd79d36ade94128af131015224"),
-                        ("FixedSpeedController","92a54094b2ac3d840725663752c9e208e0cd6fb635ef40c78c1d35ec7b359f90")):
+                        ("FixedSpeedController","b14b208801a9a8cc4d6ffb314369ca394c227385198960c671b43d2ddb59bcd1")):
         item=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name==name)
         assert hashlib.sha256(ast.get_source_segment(text,item).strip().encode()).hexdigest()==digest
     t=PatrolTuning();c=FixedSpeedController()

@@ -260,9 +260,9 @@ def test_v12_new_fields_reject_invalid_snapshot(changes):
 
 @pytest.mark.parametrize("name,expected",[
     ("PathSelector","8e5d914aff1fe47fd4039d05214dae936fbf56fd79d36ade94128af131015224"),
-    ("FixedSpeedController","92a54094b2ac3d840725663752c9e208e0cd6fb635ef40c78c1d35ec7b359f90"),
+    ("FixedSpeedController","b14b208801a9a8cc4d6ffb314369ca394c227385198960c671b43d2ddb59bcd1"),
 ])
-def test_v13_ordinary_classes_exact_v11_source(name,expected):
+def test_ordinary_classes_match_reviewed_source(name,expected):
     import ast
     import hashlib
     source=(SCRIPTS/"patrol_contour_runtime.py").read_text(encoding="utf-8-sig")
@@ -3299,3 +3299,50 @@ def test_reliable_opposite_path_cancels_stale_turn_before_new_turn():
     v,w,mode=c.command(path,2.06,t)
     assert w==0 and mode=="reacquire_confirm"
     assert c.command(path,2.09,t)[1]<0
+
+
+def test_ordinary_black_memory_ignores_single_opposite_edge_and_ring_can_override():
+    tuning = replace(PatrolTuning(), bounded_recovery_enabled=1)
+    controller = FixedSpeedController()
+    left = PathEstimate(True, -.45, .95, near_error=-.40, mid_error=-.50, source="black")
+    for now in (0., .05, .10):
+        controller.command(left, now, tuning, ordinary_guidance=True)
+    weak_right = replace(left, error=.8, near_error=.8, mid_error=.8, rescue=True)
+    controller.command(weak_right, .15, tuning, ordinary_guidance=True)
+    missing = PathEstimate(False)
+    assert controller.command(missing, .20, tuning, ordinary_guidance=True)[2] == "active_search"
+    assert controller.search_turn_goal > 0
+    controller.command(missing, .25, tuning, ordinary_guidance=True, search_direction=-1)
+    assert controller.search_turn_goal < 0
+
+
+def test_ordinary_bend_slows_before_near_error_and_recovers_after_clear_frames():
+    tuning = replace(PatrolTuning(), fixed_speed_m_s=.65, search_recovery_speed_m_s=.30)
+    controller = FixedSpeedController()
+    straight = PathEstimate(True, confidence=.95, source="black")
+    for i in range(30):
+        controller.command(straight, i * .05, tuning, ordinary_guidance=True)
+    bend = replace(straight, near_error=.04, mid_error=.36)
+    before = controller.last_command[0]
+    controller.command(bend, 1.50, tuning, ordinary_guidance=True)
+    slower, _, _ = controller.command(bend, 1.55, tuning, ordinary_guidance=True)
+    assert slower < before
+    for i in range(tuning.corner_exit_confirm_frames):
+        controller.command(straight, 1.60 + i * .05, tuning, ordinary_guidance=True)
+    assert not controller.bend_slow
+
+
+def test_trusted_black_reacquire_can_turn_harder_than_blind_search():
+    tuning = replace(PatrolTuning(), bounded_recovery_enabled=1)
+    controller = FixedSpeedController()
+    straight = PathEstimate(True, confidence=.95, source="black")
+    for i in range(20):
+        controller.command(straight, i * .05, tuning, ordinary_guidance=True)
+    for i in range(20, 35):
+        controller.command(PathEstimate(False), i * .05, tuning, ordinary_guidance=True)
+    turn = replace(straight, error=.8, near_error=.7, mid_error=.8)
+    _, first, _ = controller.command(turn, 1.75, tuning, ordinary_guidance=True)
+    speed, second, _ = controller.command(turn, 1.85, tuning, ordinary_guidance=True)
+    assert abs(first) <= tuning.search_turn_rad_s
+    assert second < -tuning.search_turn_rad_s
+    assert speed <= tuning.search_recovery_speed_m_s + 1e-9

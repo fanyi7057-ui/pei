@@ -2114,12 +2114,52 @@ class FixedSpeedController:
         self.last_curve_turn = 0.
         self.last_curve_at = -math.inf
         self.search_turn_goal = 0.
+        self._clear_black_guidance()
         self.fault_latched = False
         self.fault_reason = ""
         self.degraded = False
         self.corner_strength = 0.
         self.raw_angular = 0.
         self.reset_error()
+
+    def _clear_black_guidance(self):
+        self.black_side = 0
+        self.black_side_candidate = 0
+        self.black_side_frames = 0
+        self.black_side_at = -math.inf
+        self.bend_frames = 0
+        self.bend_clear_frames = 0
+        self.bend_slow = False
+        self.bend_seen_at = -math.inf
+        self.loss_black_guided = False
+
+    def _observe_black_guidance(self, path, now, tuning):
+        reliable = (path.valid and path.source == "black" and not path.rescue
+                    and not path.handoff and path.confidence >= tuning.rescue_corner_confidence)
+        side = 0
+        if reliable and abs(path.near_error) >= .08 and path.near_error * path.mid_error > 0:
+            side = -1 if path.near_error > 0 else 1
+        if reliable:
+            self.black_side_frames = self.black_side_frames + 1 if side == self.black_side_candidate else 1
+            self.black_side_candidate = side
+            if self.black_side_frames >= 2:
+                self.black_side, self.black_side_at = side, now
+        else:
+            self.black_side_frames = 0
+
+        # A growing mid-field offset is visible before the near point leaves the center.
+        bend = (reliable and abs(path.mid_error) >= tuning.corner_start_error
+                and abs(path.mid_error - path.near_error) >= .16)
+        self.bend_frames = self.bend_frames + 1 if bend else 0
+        if bend:
+            self.bend_seen_at = now
+        if self.bend_frames >= 2:
+            self.bend_slow = True
+        clear = (reliable and abs(path.near_error) <= tuning.corner_exit_error
+                 and abs(path.mid_error) <= tuning.corner_exit_error)
+        self.bend_clear_frames = self.bend_clear_frames + 1 if clear else 0
+        if self.bend_clear_frames >= tuning.corner_exit_confirm_frames or now - self.bend_seen_at > .5:
+            self.bend_slow = False
 
     def reset_error(self):
         """Clear PD only; never manufacture a cruise restart."""
@@ -2174,6 +2214,7 @@ class FixedSpeedController:
         self.last_command,self.last_time=(linear,angular),now
         # A task heading is current navigation evidence, NOT a black-line
         # detection. Resume a bounded visual search from the end of guidance.
+        self._clear_black_guidance()
         self.last_valid_at=now
         self.loss_started_at,self.loss_distance,self.loss_command=None,0.,None
         self.reacquire_streak=0
@@ -2184,7 +2225,7 @@ class FixedSpeedController:
         self.reset_error()
         return linear,angular
 
-    def command(self, path, now, tuning, search_direction=None, search_heading_turn=None):
+    def command(self, path, now, tuning, search_direction=None, search_heading_turn=None, ordinary_guidance=False):
         if not tuning.enabled:
             self.reset()
             return 0., 0., "disabled"
@@ -2199,6 +2240,12 @@ class FixedSpeedController:
             # flickers. A single line flash cannot renew either budget.
             self.loss_distance += abs(self.last_command[0])*elapsed
 
+        ordinary_guidance = ordinary_guidance and search_direction is None and search_heading_turn is None
+        if ordinary_guidance:
+            self._observe_black_guidance(path, now, tuning)
+        else:
+            self._clear_black_guidance()
+        black_side = self.black_side if now - self.black_side_at <= .5 else 0
         if path.valid:
             # Weak one-band rescue may steer briefly, but never renew recovery budgets.
             observed = not path.rescue and not path.handoff and path.confidence >= tuning.black_min_confidence
@@ -2219,7 +2266,7 @@ class FixedSpeedController:
             # Current measured geometry can correct direction immediately without
             # making it a confirmed route or restarting time/distance budgets.
             if tuning.bounded_recovery_enabled and recovering and eligible:
-                self.search_turn_goal = angular
+                self.search_turn_goal = (black_side * tuning.search_turn_rad_s if black_side else angular)
             # A real new observation may correct the search DIRECTION at
             # once; only confirmed consecutive observations renew budgets.
             if confirmed or not tuning.bounded_recovery_enabled:
@@ -2241,6 +2288,10 @@ class FixedSpeedController:
                 self.loss_distance = abs(self.last_command[0])*elapsed
                 self.loss_command = self.last_command
                 self.search_turn_goal = self.last_curve_turn if now-self.last_curve_at <= tuning.search_max_seconds else self.last_good_turn
+            if not recovering:
+                self.loss_black_guided = bool(black_side)
+            if not recovering and black_side:
+                self.search_turn_goal = black_side * tuning.search_turn_rad_s
             if search_direction is not None:
                 self.search_turn_goal = math.copysign(tuning.roundabout_search_turn_rad_s, search_direction)
             age = self.loss_age(now)
@@ -2248,7 +2299,7 @@ class FixedSpeedController:
             recent_curve = now-self.last_curve_at <= tuning.search_max_seconds
             # A confirmed sharp-turn direction starts active recovery right
             # away, instead of driving almost straight for another 0.8s.
-            active = bool(tuning.search_enabled and (search_direction is not None or age >= tuning.loss_hold_seconds or
+            active = bool(tuning.search_enabled and (search_direction is not None or self.loss_black_guided or age >= tuning.loss_hold_seconds or
                           (recent_curve and abs(self.last_curve_turn) >= min(tuning.search_turn_rad_s,tuning.max_turn_rad_s)*.5)))
             if search_heading_turn is not None:
                 angular=float(np.clip(search_heading_turn,-tuning.max_turn_rad_s,tuning.max_turn_rad_s))
@@ -2273,7 +2324,13 @@ class FixedSpeedController:
         # Ordinary recovery is bounded; explicit ring guidance keeps its own control.
         if tuning.bounded_recovery_enabled and (self.loss_started_at is not None or now < self.recovery_settle_until or path.rescue):
             linear = min(linear, tuning.search_recovery_speed_m_s)
-            angular = float(np.clip(angular, -tuning.search_turn_rad_s, tuning.search_turn_rad_s))
+            trusted_reacquire = (ordinary_guidance and path.valid and not path.rescue
+                                 and self.black_side_frames >= 2 and black_side
+                                 and self.black_side_candidate == black_side and angular * black_side > 0
+                                 and self.last_command[0] <= tuning.search_recovery_speed_m_s
+                                 + tuning.linear_accel_m_s2 * dt + 1e-9)
+            if not trusted_reacquire:
+                angular = float(np.clip(angular, -tuning.search_turn_rad_s, tuning.search_turn_rad_s))
 
         if self.loss_started_at is not None:
             soft_time=self.loss_age(now)>=tuning.search_max_seconds
@@ -2295,6 +2352,8 @@ class FixedSpeedController:
                     return self._fault("time_limit", now)
                 if soft_distance:
                     return self._fault("distance_limit", now)
+        if self.bend_slow:
+            linear = min(linear, tuning.search_recovery_speed_m_s)
         previous = self.last_command
         linear = self._approach(previous[0], linear, tuning.linear_accel_m_s2*dt)
         fast_turn = self.corner_strength > 0 or path.rescue or mode in ("active_search","degraded_search")

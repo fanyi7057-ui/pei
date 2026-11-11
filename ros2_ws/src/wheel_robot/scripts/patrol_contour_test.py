@@ -671,7 +671,8 @@ class PatrolTestNode(base.WheelLegRaceNode):
             exit_turn=router.exit_search_turn(path,done,tuning,getattr(self.vision,"motion_heading",None)) if router is not None else None
             linear, angular, mode = self.patrol_controller.command(path, done, control_tuning,
                 search_direction=1 if (candidate_left or (router is not None and router.search_left and tuning.roundabout_enabled)) else None,
-                search_heading_turn=exit_turn)
+                search_heading_turn=exit_turn,
+                ordinary_guidance=router is None or router.phase == "SEEK")
             planned_target=min(control_tuning.fixed_speed_m_s,control_tuning.search_degraded_speed_m_s) if self.patrol_controller.degraded else control_tuning.fixed_speed_m_s
         source = self.vision.source
         previous_source = getattr(self, "_previous_path_source", source)
