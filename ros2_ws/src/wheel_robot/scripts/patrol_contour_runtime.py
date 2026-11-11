@@ -1606,6 +1606,7 @@ class RoundaboutRouter:
             self.entry_visual_at = None
             self.entry_visual_errors = None
             self.entry_lost_at = None
+            self.entry_probe_extended = False
             self.entry_dash_proven = False
         self.phase_distance=self.left_yaw=self.evidence=0.
         self.path_streak=self.clear_frames=self.near_frames=self.solid_frames=0
@@ -1960,7 +1961,7 @@ class RoundaboutRouter:
               and abs(path.near_error-path.mid_error)<=tuning.roundabout_path_agreement):
             self._release_ring(now,tuning,"visual_exit")
 
-    def motion_override(self,now,tuning,pose=None,path=None):
+    def motion_override(self,now,tuning,pose=None,path=None,entry_branch_visible=False):
         if self.phase=="FINISH_RUN" and (not self.course.finish_allowed or not self.finish_authorized):
             self.fault="finish_without_ordered_receipts"
             return 0.,0.,"unauthorized_finish"
@@ -1981,9 +1982,23 @@ class RoundaboutRouter:
                     self._release_ring(now, tuning, "entry_tracking_lost")
                     return 0., 0., "roundabout_entry_release"
                 return speed, min(tuning.roundabout_search_turn_rad_s, tuning.max_turn_rad_s), "roundabout_left_acquire"
-            if now - self.phase_at >= tuning.ring_entry_probe_seconds:
-                self._release_ring(now, tuning, "entry_probe_no_route")
-                return 0., 0., "roundabout_entry_release"
+            probe_age = now - self.phase_at
+            if probe_age >= tuning.ring_entry_probe_seconds:
+                extension = min(.25, tuning.roundabout_path_dropout_seconds)
+                pending = visual or entry_branch_visible
+                if not pending or probe_age >= tuning.ring_entry_probe_seconds + extension:
+                    reason = "entry_confirm_timeout" if self.entry_probe_extended else "entry_probe_no_route"
+                    self._release_ring(now, tuning, reason)
+                    return 0., 0., "roundabout_entry_release"
+                self.entry_probe_extended = True
+            if self.entry_probe_extended:
+                self.route_status = "entry_confirm_extension" if visual else "entry_left_branch_route_rejected"
+            elif visual:
+                self.route_status = "entry_confirming_route"
+            elif entry_branch_visible:
+                self.route_status = "entry_left_branch_route_rejected"
+            else:
+                self.route_status = "entry_left_branch_not_confirmed"
             if visual:
                 errors = (path.near_error, path.mid_error)
                 continuous = (self.entry_visual_at is not None
@@ -2200,11 +2215,11 @@ class FixedSpeedController:
     def _approach(previous, target, delta):
         return previous+float(np.clip(target-previous, -delta, delta))
 
-    def _steer(self, path, now, tuning, dt, recovering=False):
+    def _steer(self, path, now, tuning, dt, recovering=False, straight=False):
         magnitude = abs(path.error)
         blend = float(np.clip((magnitude-tuning.corner_start_error) /
                               (tuning.corner_full_error-tuning.corner_start_error), 0., 1.))
-        self.corner_strength = blend*blend*(3-2*blend)
+        self.corner_strength = 0. if straight else blend*blend*(3-2*blend)
         # A lone weak edge remains usable, but no longer commands full sharp
         # turn authority solely because it happens to be near the image edge.
         if path.rescue:
@@ -2215,10 +2230,14 @@ class FixedSpeedController:
         derivative = 0. if reset_pd or path.rescue or dt <= 0 or path.handoff else float(np.clip(
             (filtered-self.filtered_error)/dt, -tuning.max_error_derivative, tuning.max_error_derivative))
         self.filtered_error, self.previous_source = filtered, path.source
-        normal = tuning.steering_gain*filtered
+        steering_error = math.copysign(max(0., abs(filtered)-.04), filtered) if straight else filtered
+        if straight and steering_error == 0.:
+            derivative = 0.
+        normal = tuning.steering_gain*steering_error
         corner = math.copysign(tuning.max_turn_rad_s, filtered) if filtered else 0.
         self.raw_angular = -((1-self.corner_strength)*normal+self.corner_strength*corner+tuning.steering_kd*derivative)
-        return float(np.clip(self.raw_angular, -tuning.max_turn_rad_s, tuning.max_turn_rad_s))
+        limit = min(tuning.max_turn_rad_s, .55) if straight else tuning.max_turn_rad_s
+        return float(np.clip(self.raw_angular, -limit, limit))
 
     def _fault(self, reason, now):
         self.fault_latched, self.fault_reason = True, reason
@@ -2289,7 +2308,11 @@ class FixedSpeedController:
             else:
                 mode = "reacquire_confirm"
                 linear = tuning.fixed_speed_m_s if tuning.maintain_cruise_during_search else min(self.loss_command[0], tuning.fixed_speed_m_s)
-            angular = self._steer(path, now, tuning, elapsed, recovering)
+            straight = (ordinary_guidance and observed and path.source == "black"
+                        and path.route_observed
+                        and max(path.near_error, path.mid_error, path.far_error)
+                        - min(path.near_error, path.mid_error, path.far_error) <= .18)
+            angular = self._steer(path, now, tuning, elapsed, recovering, straight=straight)
             # Current measured geometry can correct direction immediately without
             # making it a confirmed route or restarting time/distance budgets.
             if tuning.bounded_recovery_enabled and recovering and eligible and (

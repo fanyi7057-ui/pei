@@ -55,3 +55,12 @@ def test_locked_ordinary_line_cannot_confirm_follow_without_dash_evidence():
     for now in (.6,.63,.66,.69,.72,.75,.78,.81):
         r.accept_path(p,now,t)
     assert r.phase=="ENTRY" and not r.ring_route_acquired
+
+def test_entry_probe_extension_needs_current_left_evidence_and_keeps_hard_deadline():
+    r, t = fixture()
+    r.distance = .121
+    r._observe_vv_entry(None, .5, t, .03, .01, (.3, 0.))
+    assert r.motion_override(.81, t, entry_branch_visible=True)[2] == "roundabout_left_acquire"
+    assert r.route_status == "entry_left_branch_route_rejected"
+    assert r.motion_override(1.06, t, entry_branch_visible=True) == (0., 0., "roundabout_entry_release")
+    assert r.ring_release_source == "entry_confirm_timeout" and not any(r.course.rings)

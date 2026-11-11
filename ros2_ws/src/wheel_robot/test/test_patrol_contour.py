@@ -260,7 +260,7 @@ def test_v12_new_fields_reject_invalid_snapshot(changes):
 
 @pytest.mark.parametrize("name,expected",[
     ("PathSelector","8e5d914aff1fe47fd4039d05214dae936fbf56fd79d36ade94128af131015224"),
-    ("FixedSpeedController","e71474833e19f4930355710d14b35ea1bb4d891d3e484fdcc1e079202d43a0ad"),
+    ("FixedSpeedController","24b707475f4cb592507e12f7e5ccbf642b2f607f0571d6097658ef2b5f0888be"),
 ])
 def test_ordinary_classes_match_reviewed_source(name,expected):
     import ast
@@ -3354,3 +3354,13 @@ def test_trusted_black_reacquire_can_turn_harder_than_blind_search():
     assert abs(first) <= tuning.search_turn_rad_s
     assert second < -tuning.search_turn_rad_s
     assert speed <= tuning.search_recovery_speed_m_s + 1e-9
+
+def test_observed_straight_caps_large_offset_without_capping_curved_preview():
+    tuning = PatrolTuning()
+    straight = PathEstimate(True, .8, .95, near_error=.8, mid_error=.79,
+                            far_error=.77, source="black", route_observed=True)
+    for path, expected_limited in ((straight, True), (replace(straight, far_error=.2), False)):
+        controller = FixedSpeedController()
+        for i in range(8):
+            _, angular, _ = controller.command(path, i * .05, tuning, ordinary_guidance=True)
+        assert (abs(angular) <= .55) == expected_limited

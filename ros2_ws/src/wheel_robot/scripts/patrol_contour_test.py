@@ -629,7 +629,11 @@ class PatrolTestNode(base.WheelLegRaceNode):
             self.get_logger().error(f"PATROL_ROUTE_FAULT {router.fault}：不靠超时假装出环，回站立等待人工")
             self._wait_for_operator(router.fault)
             return
-        override=router.motion_override(done,tuning,getattr(self.vision,"motion_pose",None),path=path) if router is not None else None
+        cue = getattr(self.vision, "dash_observation", None)
+        override = router.motion_override(
+            done, tuning, getattr(self.vision, "motion_pose", None), path=path,
+            entry_branch_visible=bool(cue is not None and cue.branch.valid),
+        ) if router is not None else None
         if router is not None and router.ring_release_source=="entry_probe_no_route" and getattr(self,"_probe_release_seen",-1)!=router.release_serial:
             self._probe_release_seen=router.release_serial
             self.patrol_controller.last_good_turn=0.
