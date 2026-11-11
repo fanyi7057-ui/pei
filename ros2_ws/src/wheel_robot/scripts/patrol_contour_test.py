@@ -104,7 +104,13 @@ class PatrolVision(base.CourseVision):
         if points is not None:
             for x,y in points:
                 cv2.circle(black_view,(int(round(x)),int(round(y))),3,(0,0,255),1)
-        road_view = np.zeros_like(raw) if road.mask is None else cv2.cvtColor(road.mask,cv2.COLOR_GRAY2BGR)
+        road_view = np.zeros_like(raw)
+        if road.mask is not None:
+            mask_height, mask_width = road.mask.shape
+            if mask_width != raw.shape[1] or not 0 < mask_height <= raw.shape[0]:
+                raise ValueError(f"unexpected road snapshot mask shape {road.mask.shape}")
+            # road_centerline removes only the top rows of the processed frame.
+            road_view[-mask_height:] = cv2.cvtColor(road.mask, cv2.COLOR_GRAY2BGR)
         canvas = np.hstack((raw,black_view,road_view))
         metadata = f"time={now:.3f} phase={self.router.phase} trigger={force} cue={self.dash_observation.reason} blocks={self.dash_observation.blocks} source={self.source} selected={chosen.reason} road={road.reason}"
         def write():
@@ -373,7 +379,13 @@ class PatrolVision(base.CourseVision):
                   f"dash_mask={self.dash_observation.mask_source} dash_raw={self.dash_observation.raw_blocks} dash_sided={self.dash_observation.sided_blocks} dash={self.dash_observation.reason} "
                   f"rescue={int(chosen.rescue)} observed={int(chosen.route_observed)} "
                   f"near={chosen.near_error:+.3f} mid={chosen.mid_error:+.3f}", flush=True)
-        self._snapshot_if_missing(work,dark,road,chosen,now,force=self.router.entry_detection_reason=="vv_latched_advance_current_route")
+        try:
+            self._snapshot_if_missing(
+                work, dark, road, chosen, now,
+                force=self.router.entry_detection_reason == "vv_latched_advance_current_route",
+            )
+        except (ValueError, cv2.error, RuntimeError) as exc:
+            print(f"VISION snapshot_failed={exc}", flush=True)
         return chosen
 
 
