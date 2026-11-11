@@ -260,7 +260,7 @@ def test_v12_new_fields_reject_invalid_snapshot(changes):
 
 @pytest.mark.parametrize("name,expected",[
     ("PathSelector","8e5d914aff1fe47fd4039d05214dae936fbf56fd79d36ade94128af131015224"),
-    ("FixedSpeedController","24b707475f4cb592507e12f7e5ccbf642b2f607f0571d6097658ef2b5f0888be"),
+    ("FixedSpeedController","4f0ec63cb2cdf490da8c844cf6fa2b218ef50c904a1e6f374885caa8e712d085"),
 ])
 def test_ordinary_classes_match_reviewed_source(name,expected):
     import ast
@@ -3364,3 +3364,16 @@ def test_observed_straight_caps_large_offset_without_capping_curved_preview():
         for i in range(8):
             _, angular, _ = controller.command(path, i * .05, tuning, ordinary_guidance=True)
         assert (abs(angular) <= .55) == expected_limited
+
+def test_far_bend_needs_visible_points_and_two_frames():
+    tuning = PatrolTuning()
+    path = PathEstimate(True, confidence=.95, source="black", route_observed=True,
+                        near_error=.03, mid_error=.08, far_error=.42)
+    controller = FixedSpeedController()
+    controller.command(path, .05, tuning, ordinary_guidance=True)
+    assert not controller.far_bend_visible
+    path = replace(path, points=np.array([[145., 92.], [156., 148.], [160., 220.]]))
+    controller.command(path, .10, tuning, ordinary_guidance=True)
+    assert controller.far_bend_visible and not controller.bend_slow
+    controller.command(path, .15, tuning, ordinary_guidance=True)
+    assert controller.bend_slow

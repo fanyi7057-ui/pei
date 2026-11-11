@@ -2172,6 +2172,8 @@ class FixedSpeedController:
         self.bend_clear_frames = 0
         self.bend_slow = False
         self.bend_seen_at = -math.inf
+        self.far_bend_visible = False
+        self.straight_limited = False
         self.loss_black_guided = False
 
     def _observe_black_guidance(self, path, now, tuning):
@@ -2191,13 +2193,18 @@ class FixedSpeedController:
         # A growing mid-field offset is visible before the near point leaves the center.
         bend = (reliable and abs(path.mid_error) >= tuning.corner_start_error
                 and abs(path.mid_error - path.near_error) >= .14)
+        ys = path.points[:, 1] if reliable and path.route_observed and path.points is not None else ()
+        far_visible = len(ys) >= 3 and min(ys) <= .55 * max(ys)
+        self.far_bend_visible = (far_visible and abs(path.far_error) >= tuning.corner_start_error
+                                 and abs(path.far_error - path.mid_error) >= .18)
+        bend = bend or self.far_bend_visible
         self.bend_frames = self.bend_frames + 1 if bend else 0
         still_turning = reliable and max(abs(path.near_error), abs(path.mid_error)) >= tuning.corner_start_error
         if bend or (self.bend_slow and still_turning):
             self.bend_seen_at = now
         if self.bend_frames >= 2:
             self.bend_slow = True
-        clear = (reliable and abs(path.near_error) <= tuning.corner_exit_error
+        clear = (reliable and not self.far_bend_visible and abs(path.near_error) <= tuning.corner_exit_error
                  and abs(path.mid_error) <= tuning.corner_exit_error)
         self.bend_clear_frames = self.bend_clear_frames + 1 if clear else 0
         if self.bend_clear_frames >= tuning.corner_exit_confirm_frames or now - self.bend_seen_at > .5:
@@ -2279,6 +2286,7 @@ class FixedSpeedController:
             return 0., 0., "localization_fault_latched"
         elapsed = max(0., now-self.last_time) if self.last_time is not None else 1/30
         self.degraded=False
+        self.straight_limited = False
         dt = min(.1, elapsed)
         recovering = self.loss_started_at is not None
         if recovering:
@@ -2312,6 +2320,7 @@ class FixedSpeedController:
                         and path.route_observed
                         and max(path.near_error, path.mid_error, path.far_error)
                         - min(path.near_error, path.mid_error, path.far_error) <= .18)
+            self.straight_limited = bool(straight)
             angular = self._steer(path, now, tuning, elapsed, recovering, straight=straight)
             # Current measured geometry can correct direction immediately without
             # making it a confirmed route or restarting time/distance budgets.

@@ -38,7 +38,7 @@ class PatrolRecorder:
         writer=None;last_sample=-float('inf');last_config=-float('inf');last_tuning=None
         try:
             with (self.directory/'frames.csv').open('w',newline='',encoding='utf-8') as f:
-                fields=['video_frame','capture_monotonic','control_monotonic','sequence','source','mode','phase','reason','error','near','mid','confidence','cmd_v','cmd_w','queue_dropped','config_sha256']
+                fields=['video_frame','capture_monotonic','control_monotonic','sequence','source','mode','phase','reason','error','near','mid','far','far_bend','bend_slow','straight_limited','confidence','cmd_v','cmd_w','queue_dropped','config_sha256']
                 rows=csv.DictWriter(f,fieldnames=fields);rows.writeheader()
                 while not self.stop.is_set() or not self.queue.empty():
                     try:frame,debug,row=self.queue.get(timeout=.1)

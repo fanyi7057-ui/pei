@@ -270,6 +270,19 @@ class PatrolVision(base.CourseVision):
                 # Single-edge continuation NEVER renews the width deadline.
                 self.road_widths = road.widths.copy()
                 self.last_dual_at = now
+        if self.router.phase == "ENTRY":
+            branch = self.dash_observation.branch
+            if branch.valid and branch.route_observed and self.ring_memory.agrees(branch, now, tuning) is not False:
+                self.ring_memory.remember(branch, now)
+                self.router.entry_dash_proven = True
+                main = self.dash_observation.main
+                # The extracted black route may still be the straight fork.
+                # Prefer the current measured left branch when it is ambiguous.
+                if main.valid and (not black.route_observed
+                    or self.ring_memory.agrees(black, now, tuning) is not True
+                    or max(abs(black.near_error-main.near_error), abs(black.mid_error-main.mid_error))
+                    <= max(abs(black.near_error-branch.near_error), abs(black.mid_error-branch.mid_error))):
+                    black = replace(branch, mask=dark)
         if routing:
             # Select a ROUTE before choosing a sensor. Ordinary black priority
             # must not pull us back onto the straight/right fork.
@@ -697,7 +710,10 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 dict(_tuning=tuning,capture_monotonic=captured_at,control_monotonic=done,sequence=sequence,
                      source=self.vision.source,mode=mode,phase=router.phase if router is not None else "",
                      reason=path.reason,error=path.error,near=path.near_error,mid=path.mid_error,
-                     confidence=path.confidence,cmd_v=linear,cmd_w=angular))
+                     confidence=path.confidence,cmd_v=linear,cmd_w=angular,far=path.far_error,
+                     far_bend=int(self.patrol_controller.far_bend_visible),
+                     bend_slow=int(self.patrol_controller.bend_slow),
+                     straight_limited=int(self.patrol_controller.straight_limited)))
             if recorder.error and not getattr(self,"_recorder_error_reported",False):
                 self._recorder_error_reported=True
                 self.get_logger().error("采集已停止，不影响控制："+recorder.error)
@@ -734,6 +750,8 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 f"black_e={black_path.error:+.3f} road_e={road_path.error:+.3f} "
                 f"selected_e={path.error:+.3f} near={path.near_error:+.3f} mid={path.mid_error:+.3f} "
                 f"raw_w={self.patrol_controller.raw_angular:+.2f} handoff={int(path.handoff)} "
+                f"far_bend={int(self.patrol_controller.far_bend_visible)} bend_slow={int(self.patrol_controller.bend_slow)} "
+                f"straight_limited={int(self.patrol_controller.straight_limited)} "
                 f"corner={self.patrol_controller.corner_strength:.2f} search_distance={self.patrol_controller.loss_distance:.2f}m "
                 f"patrol_baseline=V11 "
                 f"near_gap={road_path.near_gap_ratio:.2f} reacquire={self.patrol_controller.reacquire_streak}/{tuning.reacquire_confirm_frames} "
