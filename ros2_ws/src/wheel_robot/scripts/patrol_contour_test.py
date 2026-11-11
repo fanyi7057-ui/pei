@@ -652,7 +652,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
             target_v,target_w,mode=override
             planned_target=target_v
             linear,angular=self.patrol_controller.task_command(target_v,target_w,done,tuning,
-                immediate_stop=mode in ("crosswalk_stop","finished"),
+                immediate_stop=mode in ("crosswalk_stop","finished","roundabout_entry_release"),
                 left_only=mode=="roundabout_left_acquire")
         else:
             control_tuning=tuning
@@ -666,7 +666,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
                     control_tuning=replace(control_tuning,steering_gain=tuning.steering_gain*factor,
                                            steering_kd=tuning.steering_kd*factor,
                                            angular_accel_rad_s2=tuning.angular_accel_rad_s2*factor)
-            if candidate_left:
+            if candidate_left or (router is not None and router.phase == "ENTRY"):
                 control_tuning=replace(control_tuning,fixed_speed_m_s=min(control_tuning.fixed_speed_m_s,tuning.search_recovery_speed_m_s))
             exit_turn=router.exit_search_turn(path,done,tuning,getattr(self.vision,"motion_heading",None)) if router is not None else None
             linear, angular, mode = self.patrol_controller.command(path, done, control_tuning,

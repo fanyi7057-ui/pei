@@ -1600,6 +1600,13 @@ class RoundaboutRouter:
         preserve = self.phase in ("ENTRY", "FOLLOW") and name in ("FOLLOW", "EXIT")
         acquired, cleared = self.branch_acquired, self.gate_cleared
         self.phase,self.phase_at=name,now
+        if name == "ENTRY":
+            self.entry_visual_tracking = False
+            self.entry_visual_frames = 0
+            self.entry_visual_at = None
+            self.entry_visual_errors = None
+            self.entry_lost_at = None
+            self.entry_dash_proven = False
         self.phase_distance=self.left_yaw=self.evidence=0.
         self.path_streak=self.clear_frames=self.near_frames=self.solid_frames=0
         self.gate_cleared=self.branch_acquired=False
@@ -1718,8 +1725,6 @@ class RoundaboutRouter:
         if self.phase=="APPROACH":
             if moving and self.distance-self.first_marker_distance>=tuning.ring_entry_advance_m:
                 self._phase("ENTRY",now)
-                self.entry_visual_tracking=False
-                self.entry_dash_proven=False
                 self.entry_detection_reason="vv_distance_complete_left_probe"
             else:
                 self.entry_detection_reason="vv_advancing_current_route"
@@ -1962,17 +1967,38 @@ class RoundaboutRouter:
         turn_progress=self.measured_turn.angle if tuning.roundabout_heading_enabled and self.measured_turn.fresh(now,tuning) else self.left_yaw
         establish=turn_progress<tuning.roundabout_entry_min_yaw_rad or ((tuning.roundabout_entry_commit_enabled or not self.branch_acquired) and turn_progress<math.radians(tuning.roundabout_entry_acquire_yaw_deg))
         if self.phase=="ENTRY":
-            visual=bool(path is not None and path.valid and path.route_locked
-                        and path.route_observed and not path.rescue and not path.handoff)
+            visual = bool(path is not None and path.valid and path.route_locked
+                          and path.route_observed and not path.rescue and not path.handoff
+                          and self.entry_dash_proven)
+            speed = min(tuning.fixed_speed_m_s, tuning.search_recovery_speed_m_s)
+            if self.entry_visual_tracking:
+                if visual:
+                    self.entry_lost_at = None
+                    return None
+                if self.entry_lost_at is None:
+                    self.entry_lost_at = now
+                if now - self.entry_lost_at >= tuning.roundabout_path_dropout_seconds:
+                    self._release_ring(now, tuning, "entry_tracking_lost")
+                    return 0., 0., "roundabout_entry_release"
+                return speed, min(tuning.roundabout_search_turn_rad_s, tuning.max_turn_rad_s), "roundabout_left_acquire"
+            if now - self.phase_at >= tuning.ring_entry_probe_seconds:
+                self._release_ring(now, tuning, "entry_probe_no_route")
+                return 0., 0., "roundabout_entry_release"
             if visual:
-                self.entry_visual_tracking=True
-                return None
-            if getattr(self,"entry_visual_tracking",False):
-                return None  # never restart the forced probe after visual acquisition
-            if now-self.phase_at>=tuning.ring_entry_probe_seconds:
-                self._release_ring(now,tuning,"entry_probe_no_route")
-                return None
-            return min(tuning.fixed_speed_m_s,tuning.search_recovery_speed_m_s),min(tuning.roundabout_entry_turn_rad_s,tuning.max_turn_rad_s),"roundabout_left_acquire"
+                errors = (path.near_error, path.mid_error)
+                continuous = (self.entry_visual_at is not None
+                              and 0 < now - self.entry_visual_at <= tuning.roundabout_path_max_gap_seconds
+                              and max(abs(a-b) for a, b in zip(errors, self.entry_visual_errors))
+                              <= tuning.roundabout_entry_path_delta)
+                self.entry_visual_frames = self.entry_visual_frames + 1 if continuous else 1
+                self.entry_visual_at, self.entry_visual_errors = now, errors
+                if self.entry_visual_frames >= max(2, tuning.roundabout_path_confirm_frames):
+                    self.entry_visual_tracking = True
+                    return None
+            else:
+                self.entry_visual_frames = 0
+                self.entry_visual_at = None
+            return speed, min(tuning.roundabout_entry_turn_rad_s, tuning.max_turn_rad_s), "roundabout_left_acquire"
         if self.phase in ("CW_STOP","FINISHED"):
             return 0.,0.,"crosswalk_stop" if self.phase=="CW_STOP" else "finished"
         if self.phase=="CW_CLEAR":
@@ -2265,7 +2291,9 @@ class FixedSpeedController:
             angular = self._steer(path, now, tuning, elapsed, recovering)
             # Current measured geometry can correct direction immediately without
             # making it a confirmed route or restarting time/distance budgets.
-            if tuning.bounded_recovery_enabled and recovering and eligible:
+            if tuning.bounded_recovery_enabled and recovering and eligible and (
+                not ordinary_guidance or (self.black_side_frames >= 2 and black_side * angular > 0)
+            ):
                 self.search_turn_goal = (black_side * tuning.search_turn_rad_s if black_side else angular)
             # A real new observation may correct the search DIRECTION at
             # once; only confirmed consecutive observations renew budgets.
@@ -2352,6 +2380,12 @@ class FixedSpeedController:
                     return self._fault("time_limit", now)
                 if soft_distance:
                     return self._fault("distance_limit", now)
+        if ordinary_guidance and recovering and path.valid and self.loss_command is not None:
+            prior_turn = self.loss_command[1]
+            if prior_turn * angular < 0 and not (
+                self.black_side_frames >= 2 and black_side * angular > 0
+            ):
+                angular = 0.
         if self.bend_slow:
             linear = min(linear, tuning.search_recovery_speed_m_s)
         previous = self.last_command
@@ -2365,7 +2399,7 @@ class FixedSpeedController:
         if unwinding:
             brake_rate = max(rate, tuning.unwind_angular_accel_rad_s2)
             if previous[1]*angular < 0:
-                reliable_opposite = (tuning.bounded_recovery_enabled and recovering
+                reliable_opposite = (not ordinary_guidance and tuning.bounded_recovery_enabled and recovering
                     and path.valid and eligible and path.confidence >= tuning.rescue_corner_confidence
                     and abs(path.error) >= tuning.corner_start_error and path.near_error*path.error > 0)
                 angular = 0. if reliable_opposite else self._approach(previous[1], 0., brake_rate*dt)

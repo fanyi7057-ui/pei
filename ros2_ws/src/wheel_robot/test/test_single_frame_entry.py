@@ -22,7 +22,7 @@ def test_one_frame_latches_advance_without_second_cue():
 def test_probe_timeout_does_not_award_ring_or_continue_forced_turn():
     r,t=fixture();r.distance=.121
     r._observe_vv_entry(None,.5,t,.03,.01,(.3,0.))
-    assert r.motion_override(.81,t) is None
+    assert r.motion_override(.81,t) == (0., 0., "roundabout_entry_release")
     assert r.phase=="SEEK" and not any(r.course.rings)
     assert r.ring_release_source=="entry_probe_no_route"
 
@@ -30,9 +30,16 @@ def test_probe_hands_to_real_owned_route_before_timeout():
     r,t=fixture();r.distance=.121
     r._observe_vv_entry(None,.5,t,.03,.01,(.3,0.))
     p=PathEstimate(True,route_locked=True,route_observed=True)
-    assert r.motion_override(.6,t,path=p) is None
-    assert r.motion_override(.9,t,path=PathEstimate(False)) is None
-    assert r.phase=="ENTRY"
+    assert r.motion_override(.56,t,path=p)[2] == "roundabout_left_acquire"
+    r.entry_dash_proven = True
+    assert r.motion_override(.60,t,path=p)[2] == "roundabout_left_acquire"
+    assert r.motion_override(.64,t,path=p)[2] == "roundabout_left_acquire"
+    assert r.motion_override(.68,t,path=p) is None
+    assert r.motion_override(.70,t,path=PathEstimate(False))[2] == "roundabout_left_acquire"
+    assert r.motion_override(.74,t,path=p) is None
+    assert r.motion_override(.80,t,path=PathEstimate(False))[2] == "roundabout_left_acquire"
+    assert r.motion_override(1.10,t,path=PathEstimate(False)) == (0., 0., "roundabout_entry_release")
+    assert r.phase == "SEEK" and not any(r.course.rings)
 
 def test_stationary_detection_cannot_latch_entry():
     r=RoundaboutRouter();t=PatrolTuning();r.started_at=0.

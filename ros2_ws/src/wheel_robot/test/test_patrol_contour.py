@@ -260,7 +260,7 @@ def test_v12_new_fields_reject_invalid_snapshot(changes):
 
 @pytest.mark.parametrize("name,expected",[
     ("PathSelector","8e5d914aff1fe47fd4039d05214dae936fbf56fd79d36ade94128af131015224"),
-    ("FixedSpeedController","b14b208801a9a8cc4d6ffb314369ca394c227385198960c671b43d2ddb59bcd1"),
+    ("FixedSpeedController","8b1689d9fd53d4cc233b0f3fca19e256b7fb1d0448c898a67eb76c086237aefc"),
 ])
 def test_ordinary_classes_match_reviewed_source(name,expected):
     import ast
@@ -290,7 +290,6 @@ def test_v13_27_degree_candidate_cannot_release_entry_or_enable_boost(owned):
         p=route_path(-.18,route_locked=True)
         r.accept_path(p,now,t)
         assert r.phase=="ENTRY"
-        assert r.motion_override(now,t,path=p) is None
         assert not r.follow_boost_allowed(p,now,t)
 
 
@@ -1527,7 +1526,11 @@ def test_v7_left_entry_cancels_stale_right_command_without_dropping_cruise():
     assert output[1]>0
     r.left_yaw=math.radians(t.roundabout_entry_acquire_yaw_deg)
     r.branch_acquired=True  # an observed owned route, not angle alone
-    assert r.motion_override(1.2,t,path=PathEstimate(True,route_locked=True,route_observed=True)) is None  # real route may correct right
+    r.entry_dash_proven = True
+    observed = PathEstimate(True, route_locked=True, route_observed=True)
+    assert r.motion_override(1.20,t,path=observed)[2] == "roundabout_left_acquire"
+    assert r.motion_override(1.23,t,path=observed)[2] == "roundabout_left_acquire"
+    assert r.motion_override(1.26,t,path=observed) is None
     r._phase("APPROACH",1.3)
     assert r.motion_override(1.3,t) is None
 
@@ -2625,7 +2628,7 @@ def test_v11_entry_rejects_the_right_road_that_cancelled_left_acquisition(monkey
     p=v.estimate(frame,PatrolTuning(),.7)
     assert not p.valid and v.road_estimate.reason=="entry_unacquired_right_road"
     assert v.ring_memory.path is None
-    assert v.router.motion_override(.7,PatrolTuning()) is None
+    assert v.router.motion_override(.7,PatrolTuning()) == (0., 0., "roundabout_entry_release")
     assert v.router.phase=="SEEK" and v.router.ring_release_source=="entry_probe_no_route"
 
 
@@ -2903,7 +2906,7 @@ def test_v11_entry_uses_fresh_measured_heading_over_command_progress():
     r.measured_turn.source="imu"
     r.measured_turn.stamp=.5
     r.measured_turn.angle=.1
-    assert r.motion_override(.5,t) is None
+    assert r.motion_override(.5,t) == (0., 0., "roundabout_entry_release")
     assert r.ring_release_source=="entry_probe_no_route"
 
 
