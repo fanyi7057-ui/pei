@@ -132,7 +132,7 @@ def test_reviewed_ordinary_algorithms_and_numeric_speed_defaults():
     text=(scripts/"patrol_contour_runtime.py").read_text(encoding="utf-8-sig")
     tree=ast.parse(text)
     for name,digest in (("PathSelector","8e5d914aff1fe47fd4039d05214dae936fbf56fd79d36ade94128af131015224"),
-                        ("FixedSpeedController","6558b6fb24caf548c4b49abbd9034341f6c3cc5c0618ff3621c36b1b6d665638")):
+                        ("FixedSpeedController","3b97cb2fed18e50569244a607b8ebc6dd6f80315becfdc9aa39fbeb42decd7fb")):
         item=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name==name)
         assert hashlib.sha256(ast.get_source_segment(text,item).strip().encode()).hexdigest()==digest
     t=PatrolTuning();c=FixedSpeedController()
@@ -160,4 +160,7 @@ def test_latched_distance_sequence_replaces_retired_five_four_cooldown():
     assert r.phase=="APPROACH"
     r.distance=r.first_marker_distance+t.ring_entry_advance_m+.001
     r._observe_vv_entry(None,.5,t,.03,.01,(.3,0.))
+    assert r.phase=="APPROACH"
+    assert r.entry_detection_reason=="vv_wait_diverging_left_branch"
+    r._observe_vv_entry(DashObservation(valid=True,branch=PathEstimate(True)),.53,t,.03,.01,(.3,0.))
     assert r.phase=="ENTRY"

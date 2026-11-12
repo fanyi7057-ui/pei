@@ -1619,6 +1619,8 @@ class RoundaboutRouter:
         self.near_seen_at=None
         self.visual_release_frames=0
         self.visual_release_at=None
+        if name in ("SEEK", "APPROACH"):
+            self.entry_left_seen_at = None
         if name=="SEEK":
             self.first_marker_at=None
             self.first_marker_distance=self.distance
@@ -1633,6 +1635,7 @@ class RoundaboutRouter:
             self.measured_turn.reset()
 
     def pause(self,now):
+        self.entry_left_seen_at = None
         self.vv_streak=0
         self.vv_entry_streak=0
         self.vv_last_at=None
@@ -1731,16 +1734,24 @@ class RoundaboutRouter:
                 self.first_marker_at=now
                 self.first_marker_distance=self.distance
                 self._phase("APPROACH",now)
+                self.entry_left_seen_at = now if entry_branch is not None and entry_branch.valid else None
                 self.entry_detection_reason="vv_latched_advance_current_route"
             return
         if self.phase=="APPROACH":
-            if moving and self.distance-self.first_marker_distance>=tuning.ring_entry_advance_m:
+            if hit and entry_branch is not None and entry_branch.valid:
+                self.entry_left_seen_at = now
+            if now-self.phase_at >= tuning.roundabout_approach_max_seconds:
+                self._release_ring(now,tuning,"entry_advance_timeout")
+                return
+            distance_ready = self.distance-self.first_marker_distance >= tuning.ring_entry_advance_m
+            left_ready = self.entry_left_seen_at is not None and now-self.entry_left_seen_at <= .35
+            if moving and distance_ready and left_ready:
                 self._phase("ENTRY",now)
                 self.entry_detection_reason="vv_distance_complete_left_probe"
+            elif distance_ready:
+                self.entry_detection_reason="vv_wait_diverging_left_branch"
             else:
                 self.entry_detection_reason="vv_advancing_current_route"
-            if self.phase=="APPROACH" and now-self.phase_at>=tuning.roundabout_approach_max_seconds:
-                self._release_ring(now,tuning,"entry_advance_timeout")
 
     def observe(self,gate,score,now,tuning,command=(0.,0.),pose=None,
                 gate_near=0.,exit_solid=False,crosswalk=False,gate_tracked=False,heading=None,entry_ready=False,dash_cue=None):
@@ -2326,7 +2337,8 @@ class FixedSpeedController:
             else:
                 mode = "reacquire_confirm"
                 linear = tuning.fixed_speed_m_s if tuning.maintain_cruise_during_search else min(self.loss_command[0], tuning.fixed_speed_m_s)
-            straight = (ordinary_guidance and observed and path.source == "black"
+            straight = (ordinary_guidance and not self.bend_slow and not self.far_bend_visible
+                        and observed and path.source == "black"
                         and path.route_observed
                         and max(path.near_error, path.mid_error, path.far_error)
                         - min(path.near_error, path.mid_error, path.far_error) <= .18)

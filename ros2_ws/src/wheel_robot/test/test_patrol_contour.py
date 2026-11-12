@@ -260,7 +260,7 @@ def test_v12_new_fields_reject_invalid_snapshot(changes):
 
 @pytest.mark.parametrize("name,expected",[
     ("PathSelector","8e5d914aff1fe47fd4039d05214dae936fbf56fd79d36ade94128af131015224"),
-    ("FixedSpeedController","6558b6fb24caf548c4b49abbd9034341f6c3cc5c0618ff3621c36b1b6d665638"),
+    ("FixedSpeedController","3b97cb2fed18e50569244a607b8ebc6dd6f80315becfdc9aa39fbeb42decd7fb"),
 ])
 def test_ordinary_classes_match_reviewed_source(name,expected):
     import ast
@@ -1464,7 +1464,7 @@ def test_v6_single_dash_advances_then_probes_without_far_gate_recheck():
     r=RoundaboutRouter()
     t=replace(PatrolTuning(),roundabout_arm_seconds=0.,roundabout_arm_distance_m=0.)
     for now in np.arange(0.,.16,.03):
-        r.observe(True,.95,now,t,(.5,0.),gate_near=.45,dash_cue=vv_test_cue())
+        r.observe(True,.95,now,t,(.5,0.),gate_near=.45,dash_cue=vv_test_cue(entry=True))
     assert r.phase=="APPROACH" and not r.left_lock
     for now in np.arange(.18,.55,.03):
         r.observe(False,0.,now,t,(.5,0.))
@@ -1495,6 +1495,8 @@ def test_v16_missing_cue_after_latch_does_not_cancel_distance_advance():
     assert r.phase=="APPROACH"
     for i in range(4,18):
         r.observe(False,0.,i*.03,t,(.5,0.))
+    assert r.phase=="APPROACH" and not r.left_lock
+    r.observe(False,0.,.55,t,(.5,0.),dash_cue=vv_test_cue(entry=True))
     assert r.phase=="ENTRY"
 
 
