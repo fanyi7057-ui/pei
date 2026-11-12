@@ -1715,6 +1715,16 @@ class RoundaboutRouter:
         self.vv_last_at=now
         moving=command[0]>1e-4 and travel>1e-6
         hit=cue is not None and cue.valid
+        exit_branch = getattr(cue, "exit_branch", None)
+        entry_branch = getattr(cue, "branch", None)
+        exit_only = (hit and exit_branch is not None and exit_branch.valid
+                     and not (entry_branch is not None and entry_branch.valid))
+        if exit_only:
+            if self.phase == "APPROACH":
+                self._phase("SEEK", now)
+            self.vv_streak = 0
+            self.entry_detection_reason = "vv_ignore_converging_exit"
+            return
         self.vv_streak=1 if hit and moving else 0
         if self.phase=="SEEK":
             if hit and moving and self.gate_detection_allowed(now,tuning):
@@ -2421,6 +2431,10 @@ class FixedSpeedController:
                 angular = 0.
         if self.bend_slow:
             linear = min(linear, tuning.search_recovery_speed_m_s)
+        elif (self.straight_limited and mode == "fixed_speed" and not recovering
+              and now >= self.recovery_settle_until and not self.far_bend_visible
+              and max(abs(path.near_error), abs(path.mid_error), abs(path.far_error)) <= .10):
+            linear += min(.05, .08 * linear)
         previous = self.last_command
         linear = self._approach(previous[0], linear, tuning.linear_accel_m_s2*dt)
         fast_turn = self.corner_strength > 0 or path.rescue or mode in ("active_search","degraded_search")

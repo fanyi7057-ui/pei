@@ -64,3 +64,12 @@ def test_entry_probe_extension_needs_current_left_evidence_and_keeps_hard_deadli
     assert r.route_status == "entry_left_branch_route_rejected"
     assert r.motion_override(1.06, t, entry_branch_visible=True) == (0., 0., "roundabout_entry_release")
     assert r.ring_release_source == "entry_confirm_timeout" and not any(r.course.rings)
+
+def test_converging_exit_cancels_generic_approach_without_ring_receipt():
+    r, t = fixture()
+    r.distance = .2
+    exit_cue = SimpleNamespace(valid=True, exit_branch=PathEstimate(True), branch=PathEstimate(False))
+    r._observe_vv_entry(exit_cue, .2, t, .03, .01, (.3, 0.))
+    assert r.phase == "SEEK" and not any(r.course.rings)
+    r._observe_vv_entry(exit_cue, .3, t, .03, .01, (.3, 0.))
+    assert r.phase == "SEEK"

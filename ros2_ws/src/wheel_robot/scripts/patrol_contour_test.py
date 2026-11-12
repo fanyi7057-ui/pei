@@ -201,6 +201,8 @@ class PatrolVision(base.CourseVision):
         if navigation_serial!=self.router.navigation_reset_serial:
             self.reset_path()
             self.ring_memory.reset()
+        if self.router.phase == "APPROACH":
+            self.ring_memory.remember(self.dash_observation.branch, now)
         if self.router.phase=="ENTRY" and self.ring_phase!="ENTRY":
             cue=self.dash_observation
             entry=self.dash_observation.branch
@@ -208,13 +210,14 @@ class PatrolVision(base.CourseVision):
             # Current real guide seeds identity, NOT acquisition proof.
             self.reset_path()
             self.dash_observation=cue  # retain this fresh frame for diagnostics
-            self.ring_memory.reset()
+            if self.ring_memory.at is None or now - self.ring_memory.at > tuning.roundabout_route_memory_seconds:
+                self.ring_memory.reset()
             if entry.valid and entry.points is not None:
                 self.ring_memory.remember(entry,now)
                 self.previous_points=entry.points.copy()
                 self.last_path_at=now
                 self.seed_x_ratio=float(entry.points[np.argmax(entry.points[:,1]),0]/width)
-        if not self.router.ring_tracking:
+        if not self.router.ring_tracking and self.router.phase != "APPROACH":
             self.ring_memory.reset()
         self.ring_phase=self.router.phase
         black = PathEstimate(False, reason="black_disabled")
