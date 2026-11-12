@@ -71,6 +71,7 @@ def detect_vv_dashes(events,white,tuning,reference_x_ratio=None):
         return result
     seed=80*(tuning.target_x_ratio if reference_x_ratio is None else float(np.clip(reference_x_ratio,.20,.80)))
     best=None
+    short_main=None
     # One block per horizontal band; do not double-count two fork branches.
     for anchor in candidates:
         column=sorted((c for c in candidates if abs(c[0]-anchor[0])<=tuning.vv_dash_max_x_spread_px80/2),key=lambda c:c[1])
@@ -81,15 +82,21 @@ def detect_vv_dashes(events,white,tuning,reference_x_ratio=None):
                     rows[-1]=c
             else:
                 rows.append(c)
-        if len(rows)<tuning.vv_dash_min_blocks:
+        if len(rows)<max(3,tuning.vv_dash_min_blocks-1):
             continue
         gaps=sum(b[1]-(a[1]+a[2])>=tuning.vv_dash_min_gap_rows56 for a,b in zip(rows,rows[1:]))
         if gaps*2<len(rows)-1:
             continue
         score=(len(rows)+np.ptp([c[1] for c in rows])/56
                -abs(rows[-1][0]-seed)/20-np.std([c[0] for c in rows])/4)
-        if best is None or score>best[0]:
-            best=(score,rows)
+        if len(rows) >= tuning.vv_dash_min_blocks:
+            if best is None or score>best[0]:
+                best=(score,rows)
+        elif short_main is None or score>short_main[0]:
+            short_main=(score,rows)
+    short = best is None
+    if short:
+        best = short_main
     if best is None:
         result.reason="vv_column_or_gap_reject"
         return result
@@ -115,37 +122,42 @@ def detect_vv_dashes(events,white,tuning,reference_x_ratio=None):
     if source_gaps*2<len(rows)-1:
         result.reason="vv_source_gaps_reject"
         return result
-    if result.near_ratio<tuning.vv_dash_entry_near_ratio:
-        result.reason="vv_dashes_not_near"
+    # Compare only within the main chain's observed row span. A detached
+    # near block must not reverse the inferred direction by extrapolation.
+    branch = []
+    for x, y, _ in candidates:
+        if main[0, 1] <= y*height/56 <= main[-1, 1]:
+            gap = np.interp(y*height/56, main[:, 1], main[:, 0]) - x*width/80
+            if .035*width <= gap <= .45*width:
+                branch.append((x*width/80, y*height/56, gap))
+    branch.sort(key=lambda point: point[1])
+    direction = ""
+    if len(branch) >= 2 and branch[-1][1]-branch[0][1] >= .10*height:
+        changes = np.diff([point[2] for point in branch])
+        delta = branch[-1][2]-branch[0][2]
+        if delta <= -.0375*width and np.all(changes <= 0):
+            direction = "entry"
+        elif delta >= .0375*width and np.all(changes >= 0):
+            direction = "exit"
+    # A short main chain is evidence only with an independently measured fork.
+    near_limit = tuning.vv_dash_entry_near_ratio
+    if short and direction:
+        near_limit = max(.54, near_limit-.08)
+    if result.near_ratio < near_limit or (short and not direction):
+        result.reason = "vv_column_or_gap_reject" if short else "vv_dashes_not_near"
+        result.blocks = 0
         return result
-    result.valid=True
-    result.reason="vv_dash_hit"
-    # Curved LEFT guide is an actual observation, not a fabricated connector.
-    fit=np.polyfit(main[:,1],main[:,0],1)
-    branch=[]
-    for x,y,_ in candidates:
-        px,py=x*width/80,y*height/56
-        gap=np.polyval(fit,py)-px
-        if .035*width<=gap<=.45*width:
-            branch.append((px,py))
-    if len(branch)>=2:
-        branch=np.asarray(branch)
-        if np.ptp(branch[:,1])>=.10*height and branch[:,1].max()/height>=tuning.vv_dash_entry_near_ratio:
-            curve=_path(branch,width,height,tuning,"vv_left_curved_dashes")
-            # For 4-entry the selected guide bends LEFT as we look forward.
-            # At 5-exit the returning curve points back toward the main line;
-            # do not follow that branch backwards, even after a long delay.
-            near_gap=result.main.near_error-curve.near_error
-            mid_gap=result.main.mid_error-curve.mid_error
-            # Compare TWO guides, not their absolute screen slope. Camera
-            # yaw/ordinary main-road slant must not reverse fork identity.
-            if mid_gap>.04 and mid_gap>near_gap+.02:
-                curve.route_locked=True
-                result.branch=curve
-                result.reason="vv_entry_diverging_left"
-            elif near_gap>mid_gap+.02:
-                result.exit_branch=curve
-                result.reason="vv_exit_converging_left"
+    result.valid = True
+    result.reason = "vv_dash_hit"
+    if direction:
+        curve = _path(np.asarray(branch)[:, :2], width, height, tuning, "vv_left_curved_dashes")
+        if direction == "entry":
+            curve.route_locked = True
+            result.branch = curve
+            result.reason = "vv_entry_diverging_left"
+        else:
+            result.exit_branch = curve
+            result.reason = "vv_exit_converging_left"
     return result
 
 
