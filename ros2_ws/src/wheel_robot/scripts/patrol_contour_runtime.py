@@ -2193,6 +2193,8 @@ class FixedSpeedController:
         self.bend_clear_frames = 0
         self.bend_slow = False
         self.bend_seen_at = -math.inf
+        self.turn_direction = 0
+        self.reversal_frames = 0
         self.far_bend_visible = False
         self.straight_limited = False
         self.loss_black_guided = False
@@ -2448,9 +2450,20 @@ class FixedSpeedController:
               and max(abs(path.near_error), abs(path.mid_error), abs(path.far_error)) <= .10):
             linear += min(.05, .08 * linear)
         previous = self.last_command
+        reversal = (ordinary_guidance and self.bend_slow and path.valid and path.source == "black"
+                    and not self.far_bend_visible and abs(path.mid_error-path.near_error) < .22
+                    and angular * self.turn_direction < 0)
+        if reversal:
+            consistent = (observed and self.black_side_candidate * angular > 0
+                          and self.black_side_frames >= 1)
+            self.reversal_frames = self.reversal_frames + 1 if consistent else 0
+            if self.reversal_frames < tuning.corner_exit_confirm_frames:
+                angular = 0.
+        else:
+            self.reversal_frames = 0
         linear = self._approach(previous[0], linear, tuning.linear_accel_m_s2*dt)
         fast_turn = self.corner_strength > 0 or path.rescue or mode in ("active_search","degraded_search")
-        rate = tuning.corner_angular_accel_rad_s2 if fast_turn else tuning.angular_accel_rad_s2
+        rate = tuning.corner_angular_accel_rad_s2 if fast_turn and not reversal else tuning.angular_accel_rad_s2
         # Unwind the OLD turn quickly, independently of how gently a new turn
         # should build. Crossing zero never spends leftover braking authority
         # accelerating into a new direction within the same frame.
@@ -2467,5 +2480,9 @@ class FixedSpeedController:
         else:
             angular = self._approach(previous[1], angular, rate*dt)
         angular = float(np.clip(angular, -tuning.max_turn_rad_s, tuning.max_turn_rad_s))
+        if ordinary_guidance and abs(angular) >= .55:
+            self.turn_direction = 1 if angular > 0 else -1
+        elif ordinary_guidance and not self.bend_slow:
+            self.turn_direction = 0
         self.last_time, self.last_command = now, (linear, angular)
         return linear, angular, mode
