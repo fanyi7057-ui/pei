@@ -2513,9 +2513,21 @@ class FixedSpeedController:
               and now >= self.recovery_settle_until and not self.far_bend_visible
               and max(abs(path.near_error), abs(path.mid_error), abs(path.far_error)) <= .10):
             linear += min(.05, .08 * linear)
+        # A confirmed line approaching the image edge needs more time to
+        # turn before it disappears. Leave rescue and blind search alone.
+        edge_braking = (ordinary_guidance and not recovering and path.valid
+                        and path.source == "black" and path.route_observed
+                        and not path.rescue and not path.handoff
+                        and path.confidence >= tuning.black_min_confidence
+                        and abs(path.near_error) >= .45
+                        and path.near_error*path.mid_error > 0)
+        if edge_braking:
+            edge_progress = float(np.clip((abs(path.near_error)-.45)/.35, 0., 1.))
+            edge_speed = tuning.search_recovery_speed_m_s*(1.-.20*edge_progress)
+            linear = min(linear, edge_speed)
         previous = self.last_command
         linear_rate = tuning.linear_accel_m_s2
-        if ordinary_guidance and self.bend_slow and linear < previous[0]:
+        if ordinary_guidance and (self.bend_slow or edge_braking) and linear < previous[0]:
             linear_rate *= 1.5
         linear = self._approach(previous[0], linear, linear_rate*dt)
         fast_turn = self.corner_strength > 0 or path.rescue or mode in ("active_search","degraded_search")
