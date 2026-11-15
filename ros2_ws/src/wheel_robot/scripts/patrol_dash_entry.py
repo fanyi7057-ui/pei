@@ -37,7 +37,7 @@ def _path(points,width,height,tuning,reason):
     return result
 
 
-def detect_vv_dashes(events,white,tuning,reference_x_ratio=None):
+def detect_vv_dashes(events,white,tuning,reference_x_ratio=None, tracking_entry=False):
     """VV's small dark blocks + white sides + x spread + vertical gaps.
 
     Unlike the original global x-range check, score separate columns: a
@@ -143,6 +143,10 @@ def detect_vv_dashes(events,white,tuning,reference_x_ratio=None):
     near_limit = tuning.vv_dash_entry_near_ratio
     if short and direction:
         near_limit = max(.54, near_limit-.08)
+    if tracking_entry and direction == "entry":
+        # When yaw moves the straight chain out of the near field, permit
+        # a shorter main chain reach when the fork direction is measured.
+        near_limit = min(near_limit, .45)
     if result.near_ratio < near_limit or (short and not direction):
         result.reason = "vv_column_or_gap_reject" if short else "vv_dashes_not_near"
         result.blocks = 0
@@ -161,12 +165,13 @@ def detect_vv_dashes(events,white,tuning,reference_x_ratio=None):
     return result
 
 
-def detect_vv_dashes_compatible(events,white,tuning,reference_x_ratio=None,legacy_events=None):
+def detect_vv_dashes_compatible(events,white,tuning,reference_x_ratio=None,legacy_events=None,tracking_entry=False):
     """Try corrected pixels first; retain valid legacy chain when needed."""
-    result=detect_vv_dashes(events,white,tuning,reference_x_ratio)
-    if not result.valid and legacy_events is not None:
-        legacy=detect_vv_dashes(legacy_events,white,tuning,reference_x_ratio)
-        if legacy.valid:
+    result=detect_vv_dashes(events,white,tuning,reference_x_ratio,tracking_entry)
+    if (not result.valid or (tracking_entry and not result.branch.valid
+                             and not result.exit_branch.valid)) and legacy_events is not None:
+        legacy=detect_vv_dashes(legacy_events,white,tuning,reference_x_ratio,tracking_entry)
+        if legacy.valid and (not result.valid or legacy.branch.valid):
             legacy.mask_source="legacy_compatible"
             return legacy
     return result

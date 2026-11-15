@@ -163,7 +163,7 @@ class PatrolVision(base.CourseVision):
             legacy=getattr(self,"_legacy_event_dark",None)
             if legacy is not None:
                 legacy=legacy.copy();legacy[guard>0]=0
-            self.dash_observation=detect_vv_dashes_compatible(events,_white,tuning,self.seed_x_ratio,legacy)
+            self.dash_observation=detect_vv_dashes_compatible(events,_white,tuning,self.seed_x_ratio,legacy,self.router.phase == "ENTRY")
             cue=self.dash_observation
             self.gate_chain_count=cue.blocks
             self.gate_near=cue.near_ratio
@@ -278,7 +278,10 @@ class PatrolVision(base.CourseVision):
                 self.last_dual_at = now
         if self.router.phase == "ENTRY":
             branch = self.dash_observation.branch
-            if branch.valid and branch.route_observed and self.ring_memory.agrees(branch, now, tuning) is not False:
+            if branch.valid and branch.route_observed:
+                # A fresh diverging fork identifies the branch in the current
+                # camera pose. The router still requires continuous geometry
+                # before it hands over steering.
                 self.ring_memory.remember(branch, now)
                 self.router.entry_dash_proven = True
                 main = self.dash_observation.main
