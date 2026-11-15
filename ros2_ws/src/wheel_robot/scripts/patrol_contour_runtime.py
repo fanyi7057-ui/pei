@@ -2353,7 +2353,17 @@ class FixedSpeedController:
                         and max(path.near_error, path.mid_error, path.far_error)
                         - min(path.near_error, path.mid_error, path.far_error) <= .18)
             self.straight_limited = bool(straight)
-            angular = self._steer(path, now, tuning, elapsed, recovering, straight=straight)
+            steering_path = path
+            # A near point can cross center before the visible bend is clear.
+            # Use the agreeing mid/far geometry only while tracking a real line.
+            if (ordinary_guidance and self.bend_slow and not recovering
+                and observed and path.source == "black" and path.route_observed
+                and path.near_error * path.mid_error < 0
+                and path.mid_error * path.far_error > 0
+                and min(abs(path.mid_error), abs(path.far_error)) >= .25):
+                preview_error = .25*path.near_error + .55*path.mid_error + .20*path.far_error
+                steering_path = replace(path, error=preview_error, handoff=True)
+            angular = self._steer(steering_path, now, tuning, elapsed, recovering, straight=straight)
             # Current measured geometry can correct direction immediately without
             # making it a confirmed route or restarting time/distance budgets.
             if tuning.bounded_recovery_enabled and recovering and eligible and (
