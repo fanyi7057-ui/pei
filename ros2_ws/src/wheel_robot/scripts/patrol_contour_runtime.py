@@ -2242,7 +2242,7 @@ class FixedSpeedController:
         ys = path.points[:, 1] if reliable and path.route_observed and path.points is not None else ()
         far_visible = len(ys) >= 3 and min(ys) <= .55 * max(ys)
         self.far_bend_visible = (far_visible and abs(path.far_error) >= tuning.corner_start_error
-                                 and abs(path.far_error - path.mid_error) >= .15)
+                                 and abs(path.far_error - path.mid_error) >= .12)
         bend = bend or self.far_bend_visible
         self.bend_frames = self.bend_frames + 1 if bend else 0
         if self.bend_frames >= 2:
@@ -2376,7 +2376,7 @@ class FixedSpeedController:
                 and abs(path.mid_error) >= .08 and abs(path.far_error) >= .25):
                 crosses_center = path.near_error * path.mid_error < 0
                 if crosses_center or self.far_bend_visible:
-                    preview_error = .25*path.near_error + .55*path.mid_error + .20*path.far_error
+                    preview_error = .18*path.near_error + .52*path.mid_error + .30*path.far_error
                     if preview_error * path.mid_error > 0:
                         steering_path = replace(path, error=preview_error, handoff=True)
             angular = self._steer(steering_path, now, tuning, elapsed, recovering, straight=straight)
