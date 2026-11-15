@@ -53,6 +53,7 @@ class PatrolTuning:
     search_hard_max_seconds: float = 8.0
     search_hard_max_distance_m: float = 2.6
     ring_entry_advance_m: float = 0.12
+    ring_entry_approach_max_m: float = 0.60
     ring_entry_probe_seconds: float = 0.30
     corner_exit_confirm_frames: int = 3
     corner_exit_error: float = 0.12
@@ -339,7 +340,7 @@ class PatrolTuning:
             raise ValueError("corner_exit_confirm_frames must be integer 2..10")
         if not 0 < self.corner_exit_error <= .25 or not 0 < self.ring_candidate_hold_seconds <= 1:
             raise ValueError("invalid corner/candidate limits")
-        if not 0 < self.ring_entry_advance_m <= 1 or not 0 < self.ring_entry_probe_seconds <= 2:
+        if not 0 < self.ring_entry_advance_m <= self.ring_entry_approach_max_m <= 1 or not 0 < self.ring_entry_probe_seconds <= 2:
             raise ValueError("invalid entry advance/probe limits")
         if self.contour_order_enabled not in (0,1):
             raise ValueError("contour_order_enabled must be 0 or 1")
@@ -1753,13 +1754,16 @@ class RoundaboutRouter:
             if now-self.phase_at >= tuning.roundabout_approach_max_seconds:
                 self._release_ring(now,tuning,"entry_advance_timeout")
                 return
-            distance_ready = self.distance-self.first_marker_distance >= tuning.ring_entry_advance_m
+            advance = self.distance-self.first_marker_distance
+            distance_ready = advance >= tuning.ring_entry_advance_m
             left_ready = self.entry_left_seen_at is not None and now-self.entry_left_seen_at <= .35
-            if moving and distance_ready and left_ready:
+            if moving and distance_ready and left_ready and advance <= tuning.ring_entry_approach_max_m:
                 deadline = self.ring_deadline(tuning)
                 self.entry_started_in_grace = deadline is not None and deadline <= now < deadline+1.20
                 self._phase("ENTRY",now)
                 self.entry_detection_reason="vv_distance_complete_left_probe"
+            elif advance >= tuning.ring_entry_approach_max_m:
+                self._release_ring(now,tuning,"entry_approach_distance_limit")
             elif distance_ready:
                 self.entry_detection_reason="vv_wait_diverging_left_branch"
             else:

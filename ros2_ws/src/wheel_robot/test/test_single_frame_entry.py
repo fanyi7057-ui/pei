@@ -93,3 +93,19 @@ def test_live_approach_gets_bounded_grace_to_confirm_left_branch():
     r.distance = .2
     assert r.apply_time_fallback(2.21, t)
     assert r.phase == "SEEK" and not any(r.course.rings)
+
+
+def test_approach_distance_cap_requires_left_evidence_and_rejects_late_fork():
+    for distance, cue, expected in (
+        (.59, None, "APPROACH"),
+        (.60, None, "SEEK"),
+        (.60, left_cue(), "ENTRY"),
+        (.61, left_cue(), "SEEK"),
+    ):
+        r, t = fixture()
+        r.distance = distance
+        r._observe_vv_entry(cue, .5, t, .03, .01, (.3, 0.))
+        assert r.phase == expected
+        assert not any(r.course.rings)
+        if expected == "SEEK":
+            assert r.ring_release_source == "entry_approach_distance_limit"
