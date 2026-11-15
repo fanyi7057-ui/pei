@@ -1478,6 +1478,7 @@ class RoundaboutRouter:
         self.exit_observed_since=None
         self.last_good_path_at=None
 
+        self.entry_started_in_grace = False
         self.first_marker_at=None
         self.first_marker_distance=0.
         self.marker_moving_seconds=0.
@@ -1588,6 +1589,14 @@ class RoundaboutRouter:
         deadline=self.ring_deadline(tuning)
         if deadline is None or now<deadline:
             return False
+        if self.ring_tracking and self.entry_started_in_grace:
+            return False  # ENTRY/FOLLOW/EXIT still have their own hard deadlines
+        # Finish observing a live fork even when the lap-wide search clock
+        # expires just before its left branch comes into view.
+        if (self.phase == "APPROACH" and self.phase_at is not None
+            and self.distance-self.first_marker_distance >= tuning.ring_entry_advance_m
+            and now < min(deadline+1.20, self.phase_at+tuning.roundabout_approach_max_seconds)):
+            return False
         self._release_ring(now,tuning,"time_fallback")
         return True
 
@@ -1620,6 +1629,7 @@ class RoundaboutRouter:
         self.visual_release_frames=0
         self.visual_release_at=None
         if name in ("SEEK", "APPROACH"):
+            self.entry_started_in_grace = False
             self.entry_left_seen_at = None
         if name=="SEEK":
             self.first_marker_at=None
@@ -1746,6 +1756,8 @@ class RoundaboutRouter:
             distance_ready = self.distance-self.first_marker_distance >= tuning.ring_entry_advance_m
             left_ready = self.entry_left_seen_at is not None and now-self.entry_left_seen_at <= .35
             if moving and distance_ready and left_ready:
+                deadline = self.ring_deadline(tuning)
+                self.entry_started_in_grace = deadline is not None and deadline <= now < deadline+1.20
                 self._phase("ENTRY",now)
                 self.entry_detection_reason="vv_distance_complete_left_probe"
             elif distance_ready:

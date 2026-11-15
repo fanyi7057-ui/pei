@@ -77,3 +77,19 @@ def test_converging_exit_cancels_generic_approach_without_ring_receipt():
     assert r.phase == "SEEK" and not any(r.course.rings)
     r._observe_vv_entry(exit_cue, .3, t, .03, .01, (.3, 0.))
     assert r.phase == "SEEK"
+
+
+def test_live_approach_gets_bounded_grace_to_confirm_left_branch():
+    r, t = fixture()
+    t = replace(t, roundabout_timeout_enabled=1, roundabout_first_timeout_seconds=1.)
+    r.distance = .2
+    assert not r.apply_time_fallback(1.01, t)
+    r._observe_vv_entry(left_cue(), 1.8, t, .03, .01, (.3, 0.))
+    assert r.phase == "ENTRY" and not r.apply_time_fallback(1.81, t)
+    r._phase("FOLLOW", 2.)
+    assert not r.apply_time_fallback(2.1, t) and not any(r.course.rings)
+
+    r, _ = fixture()
+    r.distance = .2
+    assert r.apply_time_fallback(2.21, t)
+    assert r.phase == "SEEK" and not any(r.course.rings)
