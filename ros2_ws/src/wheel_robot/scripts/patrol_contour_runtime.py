@@ -2192,7 +2192,6 @@ class FixedSpeedController:
         self.bend_frames = 0
         self.bend_clear_frames = 0
         self.bend_slow = False
-        self.bend_seen_at = -math.inf
         self.far_bend_visible = False
         self.straight_limited = False
         self.loss_black_guided = False
@@ -2227,18 +2226,17 @@ class FixedSpeedController:
         ys = path.points[:, 1] if reliable and path.route_observed and path.points is not None else ()
         far_visible = len(ys) >= 3 and min(ys) <= .55 * max(ys)
         self.far_bend_visible = (far_visible and abs(path.far_error) >= tuning.corner_start_error
-                                 and abs(path.far_error - path.mid_error) >= .18)
+                                 and abs(path.far_error - path.mid_error) >= .15)
         bend = bend or self.far_bend_visible
         self.bend_frames = self.bend_frames + 1 if bend else 0
-        still_turning = reliable and max(abs(path.near_error), abs(path.mid_error)) >= tuning.corner_start_error
-        if bend or (self.bend_slow and still_turning):
-            self.bend_seen_at = now
         if self.bend_frames >= 2:
             self.bend_slow = True
-        clear = (reliable and not self.far_bend_visible and abs(path.near_error) <= tuning.corner_exit_error
+        reliable_road = (path.valid and path.source == "road" and path.route_observed
+                         and not path.single_edge and not path.handoff and not path.rescue)
+        clear = ((reliable or reliable_road) and not self.far_bend_visible and abs(path.near_error) <= tuning.corner_exit_error
                  and abs(path.mid_error) <= tuning.corner_exit_error)
         self.bend_clear_frames = self.bend_clear_frames + 1 if clear else 0
-        if self.bend_clear_frames >= tuning.corner_exit_confirm_frames or now - self.bend_seen_at > .5:
+        if self.bend_clear_frames >= tuning.corner_exit_confirm_frames:
             self.bend_slow = False
 
     def reset_error(self):
@@ -2472,7 +2470,10 @@ class FixedSpeedController:
               and max(abs(path.near_error), abs(path.mid_error), abs(path.far_error)) <= .10):
             linear += min(.05, .08 * linear)
         previous = self.last_command
-        linear = self._approach(previous[0], linear, tuning.linear_accel_m_s2*dt)
+        linear_rate = tuning.linear_accel_m_s2
+        if ordinary_guidance and self.bend_slow and linear < previous[0]:
+            linear_rate *= 1.5
+        linear = self._approach(previous[0], linear, linear_rate*dt)
         fast_turn = self.corner_strength > 0 or path.rescue or mode in ("active_search","degraded_search")
         rate = tuning.corner_angular_accel_rad_s2 if fast_turn else tuning.angular_accel_rad_s2
         # Unwind the OLD turn quickly, independently of how gently a new turn
