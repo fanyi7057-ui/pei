@@ -2103,8 +2103,9 @@ class PathSelector:
         self.last_observed_error = None
         self.jump_candidate = None
         self.jump_streak = 0
+        self.black_preview = None
 
-    def select(self, black, road, now, tuning):
+    def select(self, black, road, now, tuning, ordinary_guidance=False):
         black_ok = black_usable(black, tuning)
         road_ok = bool(tuning.contour_enabled and road.valid)
         self.black_streak = self.black_streak + 1 if black_ok else 0
@@ -2114,15 +2115,29 @@ class PathSelector:
             estimate, source = road, "road"
         else:
             return PathEstimate(False, reason=f"no_path:black={black.reason};road={road.reason}"), "none"
+        preview = self.black_preview
+        # A left/right jump can be real when the previous far segment
+        # moves into the current middle rows during a tight bend.
+        continued_bend = (
+            ordinary_guidance and source == "black" and preview is not None
+            and 0 < now-preview[0] <= .12 and abs(preview[1]) >= .45
+            and estimate.route_observed and not estimate.rescue
+            and estimate.near_error * preview[1] > 0
+            and abs(estimate.mid_error-preview[1]) <= .20
+            and abs(estimate.far_error-preview[1]) <= .20
+        )
         if (source == "black" and self.last_observed_error is not None
                 and abs(estimate.error-self.last_observed_error) > tuning.path_jump_error
-                and estimate.error*self.last_observed_error < 0 and not estimate.route_locked):
+                and estimate.error*self.last_observed_error < 0 and not estimate.route_locked
+                and not continued_bend):
             self.jump_streak = self.jump_streak+1 if self.jump_candidate is not None and abs(estimate.error-self.jump_candidate) < .20 else 1
             self.jump_candidate = estimate.error
             if self.jump_streak < tuning.path_jump_confirm_frames:
                 return PathEstimate(False, reason="path_jump_confirm"), "none"
         self.jump_candidate, self.jump_streak = None, 0
         self.last_observed_error = estimate.error
+        self.black_preview = ((now, estimate.far_error) if ordinary_guidance and source == "black"
+                              and estimate.route_observed and not estimate.rescue else None)
         if source != self.source:
             self.transition_from = self.last_error
             self.transition_at = now if self.source != "none" and not (estimate.rescue or estimate.route_locked) else -math.inf

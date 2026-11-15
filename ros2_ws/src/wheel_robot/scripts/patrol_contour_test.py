@@ -376,7 +376,7 @@ class PatrolVision(base.CourseVision):
         self.black_estimate, self.road_estimate = black, road
         committed=self.exit_commit.select(black,road,now,self.motion_command[0],tuning)
         if committed is None:
-            chosen, self.source = self.selector.select(black, road, now, tuning)
+            chosen, self.source = self.selector.select(black, road, now, tuning, ordinary_guidance=self.router.phase == "SEEK")
         else:
             chosen,self.source=committed,committed.source if committed.valid else "none"
             if chosen.valid:
