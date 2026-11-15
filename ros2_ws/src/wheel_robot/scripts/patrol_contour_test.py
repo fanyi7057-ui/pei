@@ -17,7 +17,7 @@ from patrol_contour_runtime import (
     black_usable, road_centerline, road_masks, crop_patrol_frame, path_errors, detect_crosswalk,
 )
 
-from patrol_dash_entry import DashObservation, detect_vv_dashes, detect_vv_dashes_compatible
+from patrol_dash_entry import DashObservation, detect_vv_dashes, detect_vv_dashes_compatible, match_entry_dashes
 
 
 class PatrolVision(base.CourseVision):
@@ -278,6 +278,11 @@ class PatrolVision(base.CourseVision):
                 self.last_dual_at = now
         if self.router.phase == "ENTRY":
             branch = self.dash_observation.branch
+            if not branch.route_observed and self.ring_memory.at is not None and now-self.ring_memory.at <= .30:
+                tracked = match_entry_dashes(self.dash_observation,self.ring_memory.path,width,height,tuning)
+                if tracked is not None:
+                    branch = tracked
+                    black = replace(tracked, mask=dark)
             if branch.valid and branch.route_observed:
                 # A fresh diverging fork identifies the branch in the current
                 # camera pose. The router still requires continuous geometry
