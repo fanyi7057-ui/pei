@@ -2380,6 +2380,17 @@ class FixedSpeedController:
                     if preview_error * path.mid_error > 0:
                         steering_path = replace(path, error=preview_error, handoff=True)
             angular = self._steer(steering_path, now, tuning, elapsed, recovering, straight=straight)
+            # An observed far segment can still point into the current bend
+            # while the near point sweeps across the camera during recentering.
+            if (ordinary_guidance and self.bend_slow and not recovering
+                and observed and path.source == "black" and path.route_observed
+                and path.points is not None and len(path.points) >= 3
+                and np.min(path.points[:, 1]) <= .55*np.max(path.points[:, 1])
+                and (abs(path.far_error) >= tuning.corner_start_error
+                     or abs(path.mid_error-path.far_error) >= .30)
+                and path.near_error * path.far_error < 0
+                and angular * path.far_error > 0):
+                angular = math.copysign(min(abs(angular), .55), angular)
             # Current measured geometry can correct direction immediately without
             # making it a confirmed route or restarting time/distance budgets.
             if tuning.bounded_recovery_enabled and recovering and eligible and (
