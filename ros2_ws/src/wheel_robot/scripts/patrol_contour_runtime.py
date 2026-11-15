@@ -821,7 +821,7 @@ class RingRouteMemory:
 
     def remember(self, path, now):
         if path.valid and path.route_locked and path.route_observed and not path.handoff:
-            self.path = replace(path, points=None, mask=None, exit_boundary=None)
+            self.path = replace(path, points=None if path.points is None else path.points.copy(), mask=None, exit_boundary=None)
             self.at = now
 
 
@@ -2209,6 +2209,16 @@ class FixedSpeedController:
             if self.black_side_frames >= 2:
                 self.black_side, self.black_side_at = side, now
         else:
+            # A near-edge fragment can corroborate the immediately preceding
+            # multi-row observation, but cannot establish a direction alone.
+            edge_side = -1 if path.near_error > 0 else 1
+            if (self.bend_slow and path.valid and path.source == "black"
+                and path.rescue and abs(path.near_error) >= .55
+                and self.black_side_frames > 0 and edge_side == self.black_side_candidate):
+                self.black_side, self.black_side_at = edge_side, now
+                if self.loss_started_at is not None:
+                    self.search_turn_goal = edge_side * tuning.search_turn_rad_s
+                    self.loss_black_guided = True
             self.black_side_frames = 0
 
         # A growing mid-field offset is visible before the near point leaves the center.
@@ -2352,14 +2362,18 @@ class FixedSpeedController:
                 self.search_turn_goal = (black_side * tuning.search_turn_rad_s if black_side else angular)
             # A real new observation may correct the search DIRECTION at
             # once; only confirmed consecutive observations renew budgets.
-            if confirmed or not tuning.bounded_recovery_enabled:
+            if (confirmed or not tuning.bounded_recovery_enabled) and not (
+                ordinary_guidance and (path.rescue or path.handoff)
+            ):
                 self.last_good_turn = angular
                 if tuning.bounded_recovery_enabled and path.route_observed and abs(path.near_error) < .12 and abs(path.mid_error) < .18 and not path.rescue:
                     self.last_curve_at = -math.inf
                     self.last_curve_turn = 0.
-            if (confirmed or not tuning.bounded_recovery_enabled) and (abs(path.error) >= tuning.corner_start_error or path.rescue):
+            if (confirmed or not tuning.bounded_recovery_enabled) and (
+                abs(path.error) >= tuning.corner_start_error or path.rescue
+            ) and not (ordinary_guidance and (path.rescue or path.handoff)):
                 self.last_curve_turn, self.last_curve_at = angular, now
-                if recovering:
+                if recovering and not ordinary_guidance:
                     self.search_turn_goal = angular
         elif self.last_valid_at is None:
             self.last_time, self.last_command = now, (0., 0.)

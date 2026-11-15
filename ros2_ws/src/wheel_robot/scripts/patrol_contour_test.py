@@ -212,10 +212,13 @@ class PatrolVision(base.CourseVision):
             self.dash_observation=cue  # retain this fresh frame for diagnostics
             if self.ring_memory.at is None or now - self.ring_memory.at > tuning.roundabout_route_memory_seconds:
                 self.ring_memory.reset()
-            if entry.valid and entry.points is not None:
-                self.ring_memory.remember(entry,now)
+            if entry.valid and entry.route_observed:
+                self.ring_memory.remember(entry, now)
+            else:
+                entry = self.ring_memory.path
+            if entry is not None and entry.points is not None:
                 self.previous_points=entry.points.copy()
-                self.last_path_at=now
+                self.last_path_at=self.ring_memory.at
                 self.seed_x_ratio=float(entry.points[np.argmax(entry.points[:,1]),0]/width)
         if not self.router.ring_tracking and self.router.phase != "APPROACH":
             self.ring_memory.reset()
@@ -286,6 +289,14 @@ class PatrolVision(base.CourseVision):
                     or max(abs(black.near_error-main.near_error), abs(black.mid_error-main.mid_error))
                     <= max(abs(black.near_error-branch.near_error), abs(black.mid_error-branch.mid_error))):
                     black = replace(branch, mask=dark)
+        if self.router.phase == "APPROACH":
+            main = self.dash_observation.main
+            branch = self.dash_observation.branch
+            if self.dash_observation.valid and main.route_observed and branch.valid and black.valid:
+                main_distance = max(abs(black.near_error-main.near_error), abs(black.mid_error-main.mid_error))
+                branch_distance = max(abs(black.near_error-branch.near_error), abs(black.mid_error-branch.mid_error))
+                if branch_distance + .06 < main_distance:
+                    black = replace(main, mask=dark, reason="approach_main_dash")
         if routing:
             # Select a ROUTE before choosing a sensor. Ordinary black priority
             # must not pull us back onto the straight/right fork.
@@ -319,6 +330,15 @@ class PatrolVision(base.CourseVision):
                     allowed = agrees
                 else:
                     allowed = left_shape if self.router.left_lock else False
+                if self.router.phase == "ENTRY" and black.route_observed and not black.rescue:
+                    memory_match = self.ring_memory.agrees(black, now, tuning)
+                    main = self.dash_observation.main
+                    main_matches = self.dash_observation.valid and max(
+                        abs(black.near_error-main.near_error), abs(black.mid_error-main.mid_error)
+                    ) <= tuning.roundabout_path_agreement
+                    if memory_match is True and not main_matches:
+                        allowed = True
+                        self.router.entry_dash_proven = True
                 if self.router.phase=="EXIT" and road.valid and road.exit_boundary is not None:
                     # A validated virtual RIGHT edge defines this task's
                     # center; even a nearby straight black must not undo it.
