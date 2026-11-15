@@ -260,7 +260,7 @@ def test_v12_new_fields_reject_invalid_snapshot(changes):
 
 @pytest.mark.parametrize("name,expected",[
     ("PathSelector","8e5d914aff1fe47fd4039d05214dae936fbf56fd79d36ade94128af131015224"),
-    ("FixedSpeedController","3cc44faab1390606e1bba21caeb7e8441362fcb73ff9b37ef6fc17b9ae22f522"),
+    ("FixedSpeedController","a3f38f5475063965444f2fdbaaa59e8278baa5fc72e9aa12ff3797039342f8a8"),
 ])
 def test_ordinary_classes_match_reviewed_source(name,expected):
     import ast

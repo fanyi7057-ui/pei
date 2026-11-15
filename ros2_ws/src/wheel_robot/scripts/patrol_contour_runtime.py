@@ -2196,6 +2196,7 @@ class FixedSpeedController:
         self.far_bend_visible = False
         self.straight_limited = False
         self.loss_black_guided = False
+        self.bend_search_brake_until = None
 
     def _observe_black_guidance(self, path, now, tuning):
         reliable = (path.valid and path.source == "black" and not path.rescue
@@ -2339,6 +2340,7 @@ class FixedSpeedController:
             confirmed = not recovering or self.reacquire_streak >= tuning.reacquire_confirm_frames
             if confirmed:
                 if recovering:
+                    self.bend_search_brake_until = None
                     self.recovery_settle_until = now+.35
                 self.last_valid_at = now
                 self.loss_started_at, self.loss_distance = None, 0.
@@ -2455,6 +2457,21 @@ class FixedSpeedController:
                 self.black_side_frames >= 2 and black_side * angular > 0
             ):
                 angular = 0.
+        if ordinary_guidance and self.loss_started_at is not None:
+            edge_conflict = (
+                self.bend_slow and path.valid and path.source == "black"
+                and path.rescue and abs(path.near_error) >= .55
+                and path.near_error * self.search_turn_goal > 0
+            )
+            if edge_conflict and self.bend_search_brake_until is None:
+                self.bend_search_brake_until = now + .18
+            # A lone opposite fragment can brake one search episode, but only
+            # the existing reliable path confirmation may change its direction.
+            if (self.bend_search_brake_until is not None
+                and now < self.bend_search_brake_until
+                and not (self.black_side_frames >= 2 and black_side * angular > 0)):
+                angular = 0.
+                linear = min(linear, tuning.search_degraded_speed_m_s)
         if self.bend_slow:
             linear = min(linear, tuning.search_recovery_speed_m_s)
         elif (self.straight_limited and mode == "fixed_speed" and not recovering
