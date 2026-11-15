@@ -298,6 +298,9 @@ class PatrolVision(base.CourseVision):
                 if branch_distance + .06 < main_distance:
                     black = replace(main, mask=dark, reason="approach_main_dash")
         if routing:
+            if (self.router.phase == "ENTRY" and road.valid and self.ring_memory.path is not None
+                and self.ring_memory.agrees(road, now, tuning) is not True):
+                road.valid, road.reason = False, "entry_road_disagrees_with_left_guide"
             # Select a ROUTE before choosing a sensor. Ordinary black priority
             # must not pull us back onto the straight/right fork.
             if self.router.phase=="ENTRY" and road.valid and not self.router.branch_acquired and not road.route_locked:
@@ -330,14 +333,20 @@ class PatrolVision(base.CourseVision):
                     allowed = agrees
                 else:
                     allowed = left_shape if self.router.left_lock else False
-                if self.router.phase == "ENTRY" and black.route_observed and not black.rescue:
-                    memory_match = self.ring_memory.agrees(black, now, tuning)
+                if self.router.phase == "ENTRY" and self.ring_memory.path is not None:
                     main = self.dash_observation.main
-                    main_matches = self.dash_observation.valid and max(
-                        abs(black.near_error-main.near_error), abs(black.mid_error-main.mid_error)
-                    ) <= tuning.roundabout_path_agreement
-                    if memory_match is True and not main_matches:
-                        allowed = True
+                    guide = self.ring_memory.path
+                    # During entry, a generic left-looking line does not
+                    # establish ownership. Require the measured branch match.
+                    allowed = (black.route_observed and not black.rescue
+                               and self.ring_memory.agrees(black, now, tuning) is True)
+                    if allowed and self.dash_observation.valid and main.valid:
+                        branch_delta = max(abs(black.near_error-guide.near_error),
+                                           abs(black.mid_error-guide.mid_error))
+                        main_delta = max(abs(black.near_error-main.near_error),
+                                         abs(black.mid_error-main.mid_error))
+                        allowed = branch_delta + .06 < main_delta
+                    if allowed:
                         self.router.entry_dash_proven = True
                 if self.router.phase=="EXIT" and road.valid and road.exit_boundary is not None:
                     # A validated virtual RIGHT edge defines this task's
