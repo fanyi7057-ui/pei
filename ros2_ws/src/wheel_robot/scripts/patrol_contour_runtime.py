@@ -29,6 +29,9 @@ class PatrolTuning:
     angular_accel_rad_s2: float = 3.0
     corner_start_error: float = 0.25
     corner_full_error: float = 0.70
+    corner_min_confidence: float = 0.45
+    corner_full_confidence: float = 0.75
+    corner_filter_alpha_ceiling: float = 0.88
     corner_angular_accel_rad_s2: float = 10.0
     unwind_angular_accel_rad_s2: float = 10.0
     rescue_corner_confidence: float = 0.55
@@ -363,6 +366,10 @@ class PatrolTuning:
             raise ValueError("ROI上下界必须有序且有面积")
         if not self.roi_top_ratio <= self.road_far_y_ratio < self.road_mid_y_ratio < self.road_near_y_ratio <= self.roi_bottom_ratio:
             raise ValueError("道路远/中/近采样行必须有序且位于ROI内")
+        if not 0 <= self.corner_min_confidence < self.corner_full_confidence <= 1:
+            raise ValueError("corner confidence must satisfy 0 <= min < full <= 1")
+        if not 0 < self.corner_filter_alpha_ceiling <= 1:
+            raise ValueError("corner filter alpha ceiling must be in (0, 1]")
         if self.error_filter_alpha <= 0:
             raise ValueError("error_filter_alpha必须大于0")
         for name in ("rescue_corner_confidence", "path_jump_error", "roundabout_path_agreement", "blue_weak_min_area_ratio", "blue_context_radius_ratio"):
@@ -2282,7 +2289,7 @@ class FixedSpeedController:
     def _approach(previous, target, delta):
         return previous+float(np.clip(target-previous, -delta, delta))
 
-    def _steer(self, path, now, tuning, dt, recovering=False, straight=False):
+    def _steer(self, path, now, tuning, dt, recovering=False, straight=False, ordinary_guidance=False):
         magnitude = abs(path.error)
         blend = float(np.clip((magnitude-tuning.corner_start_error) /
                               (tuning.corner_full_error-tuning.corner_start_error), 0., 1.))
@@ -2291,7 +2298,13 @@ class FixedSpeedController:
         # turn authority solely because it happens to be near the image edge.
         if path.rescue:
             self.corner_strength *= min(1., path.confidence/tuning.rescue_corner_confidence)
-        alpha = tuning.error_filter_alpha+(1-tuning.error_filter_alpha)*self.corner_strength
+        elif ordinary_guidance:
+            confidence_span = tuning.corner_full_confidence-tuning.corner_min_confidence
+            confidence_weight = (path.confidence-tuning.corner_min_confidence)/confidence_span
+            self.corner_strength *= float(np.clip(confidence_weight, 0., 1.))
+        alpha_ceiling = (max(tuning.error_filter_alpha, tuning.corner_filter_alpha_ceiling)
+                         if ordinary_guidance else 1.)
+        alpha = tuning.error_filter_alpha+(alpha_ceiling-tuning.error_filter_alpha)*self.corner_strength
         reset_pd = self.filtered_error is None or recovering or path.source != self.previous_source
         filtered = path.error if reset_pd or path.rescue else alpha*path.error+(1-alpha)*self.filtered_error
         derivative = 0. if reset_pd or path.rescue or dt <= 0 or path.handoff else float(np.clip(
@@ -2394,7 +2407,8 @@ class FixedSpeedController:
                     preview_error = .18*path.near_error + .52*path.mid_error + .30*path.far_error
                     if preview_error * path.mid_error > 0:
                         steering_path = replace(path, error=preview_error, handoff=True)
-            angular = self._steer(steering_path, now, tuning, elapsed, recovering, straight=straight)
+            angular = self._steer(steering_path, now, tuning, elapsed, recovering, straight=straight,
+                                  ordinary_guidance=ordinary_guidance)
             # An observed far segment can still point into the current bend
             # while the near point sweeps across the camera during recentering.
             if (ordinary_guidance and self.bend_slow and not recovering

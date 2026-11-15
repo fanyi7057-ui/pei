@@ -45,6 +45,11 @@ patrol_test:
   corner_full_error: 0.70
   # 急弯/主动找线转向变化率，rad/s²，>0；默认10.0，减少旧方向残留。
   # 普通小误差仍用angular_accel_rad_s2；增大更快但过大抽动，仍受max_turn_rad_s约束。
+  # Confidence range that ramps in extra turn authority during ordinary patrol.
+  corner_min_confidence: 0.45
+  corner_full_confidence: 0.75
+  # Maximum weight of a new error sample during an ordinary sharp turn.
+  corner_filter_alpha_ceiling: 0.88
   corner_angular_accel_rad_s2: 10.0
   # 卸掉旧转向/回正的变化率，rad/s²，>0；默认10，修复强转后仍拖着旧方向。
   # 增大回正更及时，过大生硬；与建立新方向分开，跨零时本帧不直接反向打满。不改变线速度。
