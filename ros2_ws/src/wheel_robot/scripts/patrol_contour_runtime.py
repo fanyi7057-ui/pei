@@ -2345,7 +2345,7 @@ class FixedSpeedController:
             else:
                 mode = "reacquire_confirm"
                 linear = tuning.fixed_speed_m_s if tuning.maintain_cruise_during_search else min(self.loss_command[0], tuning.fixed_speed_m_s)
-            straight = (ordinary_guidance and not self.bend_slow and not self.far_bend_visible
+            straight = (ordinary_guidance and not self.far_bend_visible
                         and observed and path.source == "black"
                         and path.route_observed
                         and max(path.near_error, path.mid_error, path.far_error)

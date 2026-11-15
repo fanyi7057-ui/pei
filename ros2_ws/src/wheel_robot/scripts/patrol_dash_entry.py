@@ -55,9 +55,12 @@ def detect_vv_dashes(events,white,tuning,reference_x_ratio=None, tracking_entry=
     candidates=[]
     for i in range(1,count):
         x,y,bw,bh,area=stats[i]
-        if not (3<=area<=70 and 1<=bw<=12 and 1<=bh<=14):
-            continue
         cx,cy=centers[i]
+        standard = 3 <= area <= 70 and 1 <= bw <= 12 and 1 <= bh <= 14
+        # Perspective enlarges genuine blocks in the lower half of the image.
+        near_block = cy >= 28 and 3 <= area <= 95 and 1 <= bw <= 14 and 1 <= bh <= 14
+        if not (standard or near_block):
+            continue
         left=int(np.floor(cx-bw/2-2))
         right=int(np.ceil(cx+bw/2+2))
         row=int(round(cy))
