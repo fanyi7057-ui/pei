@@ -183,7 +183,7 @@ def detect_vv_dashes_compatible(events,white,tuning,reference_x_ratio=None,legac
 
 
 def match_entry_dashes(observation, guide, width, height, tuning):
-    """Match current pixels to the existing left branch despite modest yaw."""
+    """Match current pixels to the existing left branch despite modest yaw and forward motion."""
     if guide is None or guide.points is None or observation.exit_branch.valid:
         return None
     reference = guide.points[np.argsort(guide.points[:, 1])]
@@ -191,25 +191,33 @@ def match_entry_dashes(observation, guide, width, height, tuning):
         return None
     main = observation.main
     main_points = main.points if observation.valid and main.valid else None
-    candidates = []
+    branch_blocks = []
     for x, y in observation.block_points:
-        if not reference[0, 1] <= y <= reference[-1, 1]:
-            continue
         if main_points is not None and main_points[0, 1] <= y <= main_points[-1, 1]:
             if np.interp(y, main_points[:, 1], main_points[:, 0]) - x < .04*width:
                 continue
-        shift = x-np.interp(y, reference[:, 1], reference[:, 0])
-        if abs(shift) <= .14*width:
-            candidates.append((x,y,shift))
+        branch_blocks.append((x, y))
+
     matches = {}
-    for _, _, shift in candidates:
-        group = sorted((p for p in candidates if abs(p[2]-shift) <= .025*width),
-                       key=lambda p:p[1])
-        if len(group) < 2 or min(np.diff([p[1] for p in group])) < .035*height:
-            continue
-        candidate = _path(np.asarray(group)[:, :2],width,height,tuning,"vv_entry_tracked_dashes")
-        if candidate.route_observed:
-            matches[tuple(group)] = candidate
+    # Forward motion brings the same markings lower in the image. Compare
+    # them against a bounded shift of the last genuinely observed route.
+    for row_shift in (0., .025, .05, .075):
+        candidates = []
+        for x, y in branch_blocks:
+            reference_y = y-row_shift*height
+            if not reference[0, 1] <= reference_y <= reference[-1, 1]:
+                continue
+            shift = x-np.interp(reference_y, reference[:, 1], reference[:, 0])
+            if abs(shift) <= .14*width:
+                candidates.append((x, y, shift))
+        for _, _, shift in candidates:
+            group = tuple(sorted(((x, y) for x, y, dx in candidates
+                                  if abs(dx-shift) <= .025*width), key=lambda p:p[1]))
+            if group in matches or len(group) < 2 or min(np.diff([p[1] for p in group])) < .035*height:
+                continue
+            candidate = _path(np.asarray(group), width, height, tuning, "vv_entry_tracked_dashes")
+            if candidate.route_observed:
+                matches[group] = candidate
     if len(matches) != 1:
         return None
     candidate = next(iter(matches.values()))
