@@ -195,9 +195,13 @@ class PatrolVision(base.CourseVision):
                 detected,self.crosswalk_score=detect_crosswalk(events,hsv,zebra_tuning)
                 self.router.observe_crosswalk_visual_release(detected,now,tuning)
                 crosswalk=detected and self.router.crosswalk_armed(now,tuning)
+        entry_cue = self.dash_observation
+        if (self.router.phase in ("SEEK", "APPROACH") and entry_cue.branch.valid
+                and not entry_cue.entry_near_separated):
+            entry_cue = replace(entry_cue, branch=PathEstimate(False, reason="entry_near_not_separated"))
         self.router.observe(gate,self.gate_score,now,tuning,self.motion_command,self.motion_pose,
                             gate_near=self.gate_near,exit_solid=exit_solid,crosswalk=crosswalk,gate_tracked=self.gate_tracked,
-                            heading=self.motion_heading,dash_cue=self.dash_observation)
+                            heading=self.motion_heading,dash_cue=entry_cue)
         if navigation_serial!=self.router.navigation_reset_serial:
             self.reset_path()
             self.ring_memory.reset()
@@ -701,8 +705,12 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 f"dash_match={cue.entry_match_status if cue is not None else 'unavailable'} "
                 f"path={path.reason}"
             )
-        if router is not None and router.ring_release_source=="entry_probe_no_route" and getattr(self,"_probe_release_seen",-1)!=router.release_serial:
+        entry_aborted = (router is not None and router.phase == "SEEK"
+                         and router.ring_release_source in (
+                             "entry_probe_no_route", "entry_confirm_timeout", "entry_tracking_lost"))
+        if entry_aborted and getattr(self, "_probe_release_seen", -1) != router.release_serial:
             self._probe_release_seen=router.release_serial
+            self._entry_rejoin_until = router.phase_at + .25
             self.patrol_controller.last_good_turn=0.
             self.patrol_controller.last_curve_at=-float("inf")
             self.patrol_controller.search_turn_goal=0.
@@ -710,6 +718,9 @@ class PatrolTestNode(base.WheelLegRaceNode):
             if self.patrol_controller.loss_command is not None:
                 self.patrol_controller.loss_command=(self.patrol_controller.loss_command[0],0.)
             self.patrol_controller.reset_error()
+        if (entry_aborted and override is None and not path.valid
+                and done < getattr(self, "_entry_rejoin_until", 0.)):
+            override = (.5*tuning.search_recovery_speed_m_s, 0., "roundabout_entry_rejoin")
         if not hasattr(self, "_corner_exit_guard"):
             self._corner_exit_guard = CornerExitGuard()
         self._corner_exit_guard.observe(path,self.patrol_controller,done,tuning,

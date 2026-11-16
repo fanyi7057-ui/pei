@@ -112,7 +112,7 @@ patrol_test:
   # Ordinary lost-path/reacquisition speed cap; normal cruise is unchanged.
   # Local V23 corner unwind; measured entry cue permits at most 0.6s left search.
   # One qualified dash frame -> current-route advance -> bounded left probe.
-  ring_entry_advance_m: 0.12
+  ring_entry_advance_m: 0.22
   # Maximum approach distance from the same latch point. No left probe without a confirmed fork.
   ring_entry_approach_max_m: 0.60
   ring_entry_probe_seconds: 0.50
