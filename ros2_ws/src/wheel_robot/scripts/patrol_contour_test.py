@@ -276,27 +276,20 @@ class PatrolVision(base.CourseVision):
                 # Single-edge continuation NEVER renews the width deadline.
                 self.road_widths = road.widths.copy()
                 self.last_dual_at = now
+        entry_guide = None
         if self.router.phase == "ENTRY":
             branch = self.dash_observation.branch
-            if not branch.route_observed and self.ring_memory.at is not None and now-self.ring_memory.at <= .30:
-                tracked = match_entry_dashes(self.dash_observation,self.ring_memory.path,width,height,tuning)
-                if tracked is not None:
-                    branch = tracked
-                    black = replace(tracked, mask=dark)
-            if branch.valid and branch.route_observed:
-                # A fresh diverging fork identifies the branch in the current
-                # camera pose. The router still requires continuous geometry
-                # before it hands over steering.
+            if not (branch.valid and branch.route_observed):
+                branch = None
+                if self.ring_memory.at is not None and 0 <= now-self.ring_memory.at <= .30:
+                    branch = match_entry_dashes(self.dash_observation, self.ring_memory.path, width, height, tuning)
+            if branch is not None and branch.valid and branch.route_observed:
+                # This frame's diverging branch or matched dash chain owns
+                # the entry. Do not reclassify it as a generic black line.
                 self.ring_memory.remember(branch, now)
                 self.router.entry_dash_proven = True
-                main = self.dash_observation.main
-                # The extracted black route may still be the straight fork.
-                # Prefer the current measured left branch when it is ambiguous.
-                if main.valid and (not black.route_observed
-                    or self.ring_memory.agrees(black, now, tuning) is not True
-                    or max(abs(black.near_error-main.near_error), abs(black.mid_error-main.mid_error))
-                    <= max(abs(black.near_error-branch.near_error), abs(black.mid_error-branch.mid_error))):
-                    black = replace(branch, mask=dark)
+                entry_guide = replace(branch, mask=dark, route_locked=True)
+                black = entry_guide
         if self.router.phase == "APPROACH":
             main = self.dash_observation.main
             branch = self.dash_observation.branch
@@ -325,7 +318,7 @@ class PatrolVision(base.CourseVision):
                     reference = PathEstimate(True, errors[0], near_error=errors[1], mid_error=errors[2], far_error=errors[3])
             if road.valid and self.router.branch_acquired:
                 road.route_locked = True
-            if black.valid:
+            if black.valid and black is not entry_guide:
                 agrees = reference is not None and max(abs(black.near_error-reference.near_error), abs(black.mid_error-reference.mid_error)) <= tuning.roundabout_path_agreement
                 left_shape = black.error < -.10 and black.mid_error <= .10
                 if self.router.phase=="FOLLOW":
@@ -659,6 +652,9 @@ class PatrolTestNode(base.WheelLegRaceNode):
         draw = base.SHOW_DEBUG and now-self._last_display_at >= 1/tuning.display_fps
         router = getattr(self.vision, "router", None)
         route_before = router.phase if router is not None else "SEEK"
+        if route_before == "APPROACH":
+            approach_origin = router.first_marker_distance
+            approach_left_seen = router.entry_left_seen_at
         if router is not None:
             self.vision.motion_command = self._last_command
             self.vision.motion_pose = self._odom_snapshot() if now-getattr(self, "_last_odom_time", 0.) <= .35 else None
@@ -666,6 +662,17 @@ class PatrolTestNode(base.WheelLegRaceNode):
         path = self.vision.estimate(frame, tuning, now, draw=draw)
         done = time.monotonic()
         if router is not None and router.phase != route_before:
+            if route_before == "APPROACH":
+                left_seen = router.entry_left_seen_at
+                if left_seen is None:
+                    left_seen = approach_left_seen
+                left_age = "none" if left_seen is None else f"{now-left_seen:.2f}s"
+                self.get_logger().info(
+                    f"RING_APPROACH_END phase={router.phase} "
+                    f"advance={router.distance-approach_origin:.2f}m "
+                    f"left_age={left_age} left_observed={int(self.vision.dash_observation.branch.route_observed)} "
+                    f"reason={router.ring_release_source if router.phase == 'SEEK' else router.entry_detection_reason}"
+                )
             self.get_logger().warn(f"ROUTE 阶段 {route_before}->{router.phase}；任务={router.task_name}，台阶位置={router.course.steps}，环岛凭据={router.course.rings}，横道凭据={router.course.zebras}；左路线锁定={int(router.left_lock)}，视觉完成环岛={router.completed}，时间释放={router.timed_releases}，来源={router.ring_release_source}")
         if router is not None and router.navigation_reset_serial!=getattr(self,"_navigation_reset_seen",0):
             self.patrol_controller.reset_error()
@@ -685,7 +692,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
         cue = getattr(self.vision, "dash_observation", None)
         override = router.motion_override(
             done, tuning, getattr(self.vision, "motion_pose", None), path=path,
-            entry_branch_visible=bool(cue is not None and cue.branch.valid),
+            entry_branch_visible=bool(cue is not None and cue.branch.valid and cue.branch.route_observed),
         ) if router is not None else None
         if router is not None and router.ring_release_source=="entry_probe_no_route" and getattr(self,"_probe_release_seen",-1)!=router.release_serial:
             self._probe_release_seen=router.release_serial
