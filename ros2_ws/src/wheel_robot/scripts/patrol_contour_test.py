@@ -693,7 +693,14 @@ class PatrolTestNode(base.WheelLegRaceNode):
         override = router.motion_override(
             done, tuning, getattr(self.vision, "motion_pose", None), path=path,
             entry_branch_visible=bool(cue is not None and cue.branch.valid and cue.branch.route_observed),
+            entry_sparse_visible=bool(cue is not None and cue.entry_match_status == "matched_without_near_mid_coverage"),
         ) if router is not None else None
+        if route_before == "ENTRY" and router is not None and router.phase == "SEEK":
+            self.get_logger().info(
+                f"RING_ENTRY_END reason={router.ring_release_source} "
+                f"dash_match={cue.entry_match_status if cue is not None else 'unavailable'} "
+                f"path={path.reason}"
+            )
         if router is not None and router.ring_release_source=="entry_probe_no_route" and getattr(self,"_probe_release_seen",-1)!=router.release_serial:
             self._probe_release_seen=router.release_serial
             self.patrol_controller.last_good_turn=0.

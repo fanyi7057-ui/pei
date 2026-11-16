@@ -26,6 +26,7 @@ class DashObservation:
     reason: str = "no_dash_blocks"
     mask_source: str = "corrected"
     block_points: tuple = ()
+    entry_match_status: str = "not_checked"
 
 
 def _path(points,width,height,tuning,reason):
@@ -184,7 +185,11 @@ def detect_vv_dashes_compatible(events,white,tuning,reference_x_ratio=None,legac
 
 def match_entry_dashes(observation, guide, width, height, tuning):
     """Match current pixels to the existing left branch despite modest yaw and forward motion."""
-    if guide is None or guide.points is None or observation.exit_branch.valid:
+    observation.entry_match_status = "no_recent_guide"
+    if observation.exit_branch.valid:
+        observation.entry_match_status = "exit_fork_excluded"
+        return None
+    if guide is None or guide.points is None:
         return None
     reference = guide.points[np.argsort(guide.points[:, 1])]
     if len(reference) < 2:
@@ -199,6 +204,7 @@ def match_entry_dashes(observation, guide, width, height, tuning):
         branch_blocks.append((x, y))
 
     matches = {}
+    sparse_groups = set()
     # Forward motion brings the same markings lower in the image. Compare
     # them against a bounded shift of the last genuinely observed route.
     for row_shift in (0., .025, .05, .075):
@@ -218,8 +224,17 @@ def match_entry_dashes(observation, guide, width, height, tuning):
             candidate = _path(np.asarray(group), width, height, tuning, "vv_entry_tracked_dashes")
             if candidate.route_observed:
                 matches[group] = candidate
+            else:
+                sparse_groups.add(group)
     if len(matches) != 1:
+        if len(matches) > 1 or len(sparse_groups) > 1:
+            observation.entry_match_status = "ambiguous_match"
+        elif sparse_groups:
+            observation.entry_match_status = "matched_without_near_mid_coverage"
+        else:
+            observation.entry_match_status = "no_matching_dash_pair"
         return None
+    observation.entry_match_status = "matched_observed_route"
     candidate = next(iter(matches.values()))
     candidate.route_locked = True
     return candidate

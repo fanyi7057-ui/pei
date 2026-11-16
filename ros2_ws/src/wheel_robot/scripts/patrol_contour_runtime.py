@@ -1617,6 +1617,8 @@ class RoundaboutRouter:
             self.entry_visual_errors = None
             self.entry_lost_at = None
             self.entry_probe_extended = False
+            self.entry_sparse_at = None
+            self.entry_sparse_frames = 0
             self.entry_dash_proven = False
         self.phase_distance=self.left_yaw=self.evidence=0.
         self.path_streak=self.clear_frames=self.near_frames=self.solid_frames=0
@@ -1998,7 +2000,7 @@ class RoundaboutRouter:
               and abs(path.near_error-path.mid_error)<=tuning.roundabout_path_agreement):
             self._release_ring(now,tuning,"visual_exit")
 
-    def motion_override(self,now,tuning,pose=None,path=None,entry_branch_visible=False):
+    def motion_override(self, now, tuning, pose=None, path=None, entry_branch_visible=False, entry_sparse_visible=False):
         if self.phase=="FINISH_RUN" and (not self.course.finish_allowed or not self.finish_authorized):
             self.fault="finish_without_ordered_receipts"
             return 0.,0.,"unauthorized_finish"
@@ -2019,10 +2021,19 @@ class RoundaboutRouter:
                     self._release_ring(now, tuning, "entry_tracking_lost")
                     return 0., 0., "roundabout_entry_release"
                 return speed, min(tuning.roundabout_search_turn_rad_s, tuning.max_turn_rad_s), "roundabout_left_acquire"
+            if entry_sparse_visible:
+                consecutive = (self.entry_sparse_at is not None
+                               and 0 < now-self.entry_sparse_at <= tuning.roundabout_path_max_gap_seconds)
+                self.entry_sparse_frames = self.entry_sparse_frames + 1 if consecutive else 1
+                self.entry_sparse_at = now
+            else:
+                self.entry_sparse_frames = 0
+                self.entry_sparse_at = None
+            sparse_confirmed = self.entry_sparse_frames >= 2
             probe_age = now - self.phase_at
             if probe_age >= tuning.ring_entry_probe_seconds:
                 extension = min(.25, tuning.roundabout_path_dropout_seconds)
-                pending = visual or entry_branch_visible
+                pending = visual or entry_branch_visible or sparse_confirmed
                 if not pending or probe_age >= tuning.ring_entry_probe_seconds + extension:
                     reason = "entry_confirm_timeout" if self.entry_probe_extended else "entry_probe_no_route"
                     self._release_ring(now, tuning, reason)
