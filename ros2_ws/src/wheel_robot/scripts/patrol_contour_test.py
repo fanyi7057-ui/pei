@@ -17,7 +17,7 @@ from patrol_contour_runtime import (
     black_usable, road_centerline, road_masks, crop_patrol_frame, path_errors, detect_crosswalk,
 )
 
-from patrol_dash_entry import DashObservation, detect_vv_dashes, detect_vv_dashes_compatible, match_entry_dashes
+from patrol_dash_entry import ApproachBranchConfirmation, DashObservation, detect_vv_dashes, detect_vv_dashes_compatible, match_entry_dashes
 
 
 class PatrolVision(base.CourseVision):
@@ -42,7 +42,7 @@ class PatrolVision(base.CourseVision):
         self.router = RoundaboutRouter()
         self.dash_observation = DashObservation()
         self.entry_ready = False
-        self._approach_branch_sample = None
+        self.approach_branch_confirmation = ApproachBranchConfirmation()
         self.entry_trigger = "none"
         self.exit_commit = ExitRouteCommit()
         self.ring_memory = RingRouteMemory()
@@ -71,7 +71,7 @@ class PatrolVision(base.CourseVision):
         self.ring_candidate_search = RingCandidateSearch()
         self.dash_observation = DashObservation()
         self.entry_ready = False
-        self._approach_branch_sample = None
+        self.approach_branch_confirmation.reset()
         self.exit_commit.reset()
         self.reset_tracking()
         self._last_good_band_x = [None for _ in base.LOOKAHEAD_Y_RATIOS]
@@ -200,30 +200,17 @@ class PatrolVision(base.CourseVision):
         entry_cue = self.dash_observation
         branch = entry_cue.branch
         branch_status = "outside_approach"
-        previous_branch = self._approach_branch_sample
-        self._approach_branch_sample = None
-        if self.router.phase in ("SEEK", "APPROACH"):
-            branch_status = entry_cue.reason
-            if branch.valid:
-                branch_status = "left_branch_too_far"
-                if (entry_cue.valid and not entry_cue.exit_branch.valid and branch.points is not None
-                        and len(branch.points) >= 2 and branch.points[:, 1].max() >= .45*height):
-                    errors = (branch.mid_error, branch.far_error)
-                    branch_status = "left_branch_first_frame"
-                    if self.router.phase == "APPROACH":
-                        self._approach_branch_sample = (now, errors)
-                        if previous_branch is not None:
-                            previous_at, previous_errors = previous_branch
-                            if (0 < now-previous_at <= tuning.roundabout_path_max_gap_seconds
-                                    and max(abs(a-b) for a, b in zip(errors, previous_errors))
-                                    <= tuning.roundabout_entry_path_delta):
-                                branch_status = "left_branch_confirmed"
-                            else:
-                                branch_status = "left_branch_discontinuous"
-                if branch_status != "left_branch_confirmed":
-                    entry_cue = replace(entry_cue, branch=PathEstimate(False, reason=branch_status))
-            if self.router.phase == "APPROACH" and branch_status != "left_branch_confirmed":
+        if self.router.phase == "APPROACH":
+            branch_status = self.approach_branch_confirmation.observe(entry_cue, now, height, tuning)
+            if branch_status != "left_branch_confirmed":
                 self.router.entry_left_seen_at = None
+                entry_cue = replace(entry_cue, branch=PathEstimate(False, reason=branch_status))
+        else:
+            self.approach_branch_confirmation.reset()
+            if self.router.phase == "SEEK":
+                branch_status = entry_cue.reason
+                if branch.valid:
+                    entry_cue = replace(entry_cue, branch=PathEstimate(False, reason="awaiting_approach"))
         self.approach_branch_status = branch_status
         self.approach_branch_rows = (0. if branch.points is None or not len(branch.points)
                                      else float(branch.points[:, 1].max()/height))
@@ -684,6 +671,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
         draw = base.SHOW_DEBUG and now-self._last_display_at >= 1/tuning.display_fps
         router = getattr(self.vision, "router", None)
         route_before = router.phase if router is not None else "SEEK"
+        release_before = router.release_serial if router is not None else None
         if route_before == "APPROACH":
             approach_origin = router.first_marker_distance
             approach_left_seen = router.entry_left_seen_at
@@ -693,6 +681,15 @@ class PatrolTestNode(base.WheelLegRaceNode):
             self.vision.motion_heading=self._heading_snapshot(now,tuning,self.vision.motion_pose)
         path = self.vision.estimate(frame, tuning, now, draw=draw)
         done = time.monotonic()
+        approach_advance = None
+        approach_end_reason = ""
+        if route_before == "APPROACH":
+            approach_advance = router.distance-approach_origin
+            if router.phase != "APPROACH":
+                approach_end_reason = (router.ring_release_source if router.release_serial != release_before
+                                       else router.entry_detection_reason)
+        elif router is not None and router.phase == "APPROACH":
+            approach_advance = 0.
         if router is not None and router.phase != route_before:
             if route_before == "APPROACH":
                 left_seen = router.entry_left_seen_at
@@ -701,11 +698,11 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 left_age = "none" if left_seen is None else f"{now-left_seen:.2f}s"
                 self.get_logger().info(
                     f"RING_APPROACH_END phase={router.phase} "
-                    f"advance={router.distance-approach_origin:.2f}m "
+                    f"advance={approach_advance:.2f}m progress={router.progress_source} "
                     f"left_age={left_age} left_observed={int(self.vision.dash_observation.branch.route_observed)} "
                     f"branch_check={self.vision.approach_branch_status} "
                     f"branch_nearest_row={self.vision.approach_branch_rows:.2f} "
-                    f"reason={router.ring_release_source if router.phase == 'SEEK' else router.entry_detection_reason}"
+                    f"reason={approach_end_reason}"
                 )
             self.get_logger().warn(f"ROUTE 阶段 {route_before}->{router.phase}；任务={router.task_name}，台阶位置={router.course.steps}，环岛凭据={router.course.rings}，横道凭据={router.course.zebras}；左路线锁定={int(router.left_lock)}，视觉完成环岛={router.completed}，时间释放={router.timed_releases}，来源={router.ring_release_source}")
         if router is not None and router.navigation_reset_serial!=getattr(self,"_navigation_reset_seen",0):
@@ -804,6 +801,11 @@ class PatrolTestNode(base.WheelLegRaceNode):
             recorder.submit(frame,self.vision.last_debug if draw and hasattr(self.vision,"last_debug") else None,
                 dict(_tuning=tuning,capture_monotonic=captured_at,control_monotonic=done,sequence=sequence,
                      source=self.vision.source,mode=mode,phase=router.phase if router is not None else "",
+                     approach_advance_m=approach_advance,
+                     approach_progress_source=router.progress_source if approach_advance is not None else "",
+                     approach_branch_status=self.vision.approach_branch_status if approach_advance is not None else "",
+                     approach_branch_nearest_row=self.vision.approach_branch_rows if approach_advance is not None else "",
+                     approach_end_reason=approach_end_reason,
                      reason=path.reason,error=path.error,near=path.near_error,mid=path.mid_error,
                      confidence=path.confidence,cmd_v=linear,cmd_w=angular,far=path.far_error,
                      far_bend=int(self.patrol_controller.far_bend_visible),

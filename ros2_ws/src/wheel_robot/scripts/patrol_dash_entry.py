@@ -27,6 +27,45 @@ class DashObservation:
     mask_source: str = "corrected"
     block_points: tuple = ()
     entry_match_status: str = "not_checked"
+    right_fork: bool = False
+
+
+class ApproachBranchConfirmation:
+    """Confirm a current fork observation using at most one missed frame."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.last_sample = None
+        self.missed = False
+
+    def observe(self, cue, now, height, tuning):
+        branch = cue.branch
+        if cue.exit_branch.valid or cue.right_fork:
+            self.reset()
+            return "conflicting_fork"
+        if not (cue.valid and branch.valid and branch.points is not None and len(branch.points) >= 2):
+            if self.missed:
+                self.reset()
+            elif self.last_sample is not None:
+                self.missed = True
+            return cue.reason
+        if branch.points[:, 1].max() < .45*height:
+            self.reset()
+            return "left_branch_too_far"
+        previous = self.last_sample
+        errors = (branch.mid_error, branch.far_error)
+        self.last_sample = (now, errors)
+        self.missed = False
+        if previous is None:
+            return "left_branch_first_frame"
+        previous_at, previous_errors = previous
+        if not 0 < now-previous_at <= min(.15, tuning.roundabout_path_max_gap_seconds):
+            return "left_branch_first_frame"
+        if max(abs(a-b) for a, b in zip(errors, previous_errors)) > tuning.roundabout_entry_path_delta:
+            return "left_branch_discontinuous"
+        return "left_branch_confirmed"
 
 
 def _path(points,width,height,tuning,reason):
@@ -131,11 +170,21 @@ def detect_vv_dashes(events,white,tuning,reference_x_ratio=None, tracking_entry=
     # Compare only within the main chain's observed row span. A detached
     # near block must not reverse the inferred direction by extrapolation.
     branch = []
+    right_blocks = []
     for x, y, _ in candidates:
         if main[0, 1] <= y*height/56 <= main[-1, 1]:
             gap = np.interp(y*height/56, main[:, 1], main[:, 0]) - x*width/80
             if .035*width <= gap <= .45*width:
                 branch.append((x*width/80, y*height/56, gap))
+            elif -.45*width <= gap <= -.035*width:
+                right_blocks.append((y*height/56, -gap))
+    right_blocks.sort()
+    if len(right_blocks) >= 2:
+        right_rows, right_gaps = zip(*right_blocks)
+        gap_steps = np.diff(right_gaps)
+        result.right_fork = bool(right_rows[-1]-right_rows[0] >= .10*height
+                                 and abs(right_gaps[-1]-right_gaps[0]) >= .0375*width
+                                 and (np.all(gap_steps <= 0) or np.all(gap_steps >= 0)))
     branch.sort(key=lambda point: point[1])
     direction = ""
     if len(branch) >= 2 and branch[-1][1]-branch[0][1] >= .10*height:
