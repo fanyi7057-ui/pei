@@ -27,7 +27,6 @@ class DashObservation:
     mask_source: str = "corrected"
     block_points: tuple = ()
     entry_match_status: str = "not_checked"
-    entry_near_separated: bool = False
 
 
 def _path(points,width,height,tuning,reason):
@@ -165,9 +164,6 @@ def detect_vv_dashes(events,white,tuning,reference_x_ratio=None, tracking_entry=
         if direction == "entry":
             curve.route_locked = True
             result.branch = curve
-            # Both chains were measured at this row. Require the closest
-            # branch block to be independently visible before turning in.
-            result.entry_near_separated = branch[-1][1] >= .55*height and branch[-1][2] >= .055*width
             result.reason = "vv_entry_diverging_left"
         else:
             result.exit_branch = curve

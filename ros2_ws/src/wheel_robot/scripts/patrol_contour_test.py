@@ -42,6 +42,7 @@ class PatrolVision(base.CourseVision):
         self.router = RoundaboutRouter()
         self.dash_observation = DashObservation()
         self.entry_ready = False
+        self._approach_branch_sample = None
         self.entry_trigger = "none"
         self.exit_commit = ExitRouteCommit()
         self.ring_memory = RingRouteMemory()
@@ -70,6 +71,7 @@ class PatrolVision(base.CourseVision):
         self.ring_candidate_search = RingCandidateSearch()
         self.dash_observation = DashObservation()
         self.entry_ready = False
+        self._approach_branch_sample = None
         self.exit_commit.reset()
         self.reset_tracking()
         self._last_good_band_x = [None for _ in base.LOOKAHEAD_Y_RATIOS]
@@ -196,9 +198,35 @@ class PatrolVision(base.CourseVision):
                 self.router.observe_crosswalk_visual_release(detected,now,tuning)
                 crosswalk=detected and self.router.crosswalk_armed(now,tuning)
         entry_cue = self.dash_observation
-        if (self.router.phase in ("SEEK", "APPROACH") and entry_cue.branch.valid
-                and not entry_cue.entry_near_separated):
-            entry_cue = replace(entry_cue, branch=PathEstimate(False, reason="entry_near_not_separated"))
+        branch = entry_cue.branch
+        branch_status = "outside_approach"
+        previous_branch = self._approach_branch_sample
+        self._approach_branch_sample = None
+        if self.router.phase in ("SEEK", "APPROACH"):
+            branch_status = entry_cue.reason
+            if branch.valid:
+                branch_status = "left_branch_too_far"
+                if (entry_cue.valid and not entry_cue.exit_branch.valid and branch.points is not None
+                        and len(branch.points) >= 2 and branch.points[:, 1].max() >= .45*height):
+                    errors = (branch.mid_error, branch.far_error)
+                    branch_status = "left_branch_first_frame"
+                    if self.router.phase == "APPROACH":
+                        self._approach_branch_sample = (now, errors)
+                        if previous_branch is not None:
+                            previous_at, previous_errors = previous_branch
+                            if (0 < now-previous_at <= tuning.roundabout_path_max_gap_seconds
+                                    and max(abs(a-b) for a, b in zip(errors, previous_errors))
+                                    <= tuning.roundabout_entry_path_delta):
+                                branch_status = "left_branch_confirmed"
+                            else:
+                                branch_status = "left_branch_discontinuous"
+                if branch_status != "left_branch_confirmed":
+                    entry_cue = replace(entry_cue, branch=PathEstimate(False, reason=branch_status))
+            if self.router.phase == "APPROACH" and branch_status != "left_branch_confirmed":
+                self.router.entry_left_seen_at = None
+        self.approach_branch_status = branch_status
+        self.approach_branch_rows = (0. if branch.points is None or not len(branch.points)
+                                     else float(branch.points[:, 1].max()/height))
         self.router.observe(gate,self.gate_score,now,tuning,self.motion_command,self.motion_pose,
                             gate_near=self.gate_near,exit_solid=exit_solid,crosswalk=crosswalk,gate_tracked=self.gate_tracked,
                             heading=self.motion_heading,dash_cue=entry_cue)
@@ -675,6 +703,8 @@ class PatrolTestNode(base.WheelLegRaceNode):
                     f"RING_APPROACH_END phase={router.phase} "
                     f"advance={router.distance-approach_origin:.2f}m "
                     f"left_age={left_age} left_observed={int(self.vision.dash_observation.branch.route_observed)} "
+                    f"branch_check={self.vision.approach_branch_status} "
+                    f"branch_nearest_row={self.vision.approach_branch_rows:.2f} "
                     f"reason={router.ring_release_source if router.phase == 'SEEK' else router.entry_detection_reason}"
                 )
             self.get_logger().warn(f"ROUTE 阶段 {route_before}->{router.phase}；任务={router.task_name}，台阶位置={router.course.steps}，环岛凭据={router.course.rings}，横道凭据={router.course.zebras}；左路线锁定={int(router.left_lock)}，视觉完成环岛={router.completed}，时间释放={router.timed_releases}，来源={router.ring_release_source}")
