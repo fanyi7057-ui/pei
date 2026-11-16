@@ -260,7 +260,7 @@ def test_v12_new_fields_reject_invalid_snapshot(changes):
 
 @pytest.mark.parametrize("name,expected",[
     ("PathSelector","89813ecd017f3c049a034960b1f8d5b053f124903149aca0d29909a37ae6d9cf"),
-    ("FixedSpeedController","001250c7113084f5cdb2b2f8bee54c473f6871481e7610a66c03e31cd712779a"),
+    ("FixedSpeedController","3f2582119e0cdc7c486c11498b26e5bb3097e33c2d757e7e50232d1ac48a77dc"),
 ])
 def test_ordinary_classes_match_reviewed_source(name,expected):
     import ast
@@ -3379,3 +3379,28 @@ def test_far_bend_needs_visible_points_and_two_frames():
     assert controller.far_bend_visible and not controller.bend_slow
     controller.command(path, .15, tuning, ordinary_guidance=True)
     assert controller.bend_slow
+
+
+@pytest.mark.parametrize("following_mid,following_far,following_time,limited", [
+    (.36, .49, .17, False),  # Middle and far support the new S bend.
+    (.04, .49, .17, True),  # A lone far segment is insufficient.
+    (.12, -.12, .22, False),  # The previous preview has expired.
+])
+def test_bend_reversal_limits_brief_conflict_without_delaying_next_bend(
+        following_mid, following_far, following_time, limited):
+    tuning = replace(PatrolTuning(), steering_kd=0., error_filter_alpha=1.,
+                     angular_accel_rad_s2=100., corner_angular_accel_rad_s2=100.,
+                     unwind_angular_accel_rad_s2=100.)
+    controller = FixedSpeedController()
+    first_bend = PathEstimate(True, -.45, .95, source="black", route_observed=True,
+                              points=np.array([[90., 80.], [115., 145.], [135., 220.]]),
+                              near_error=-.15, mid_error=-.36, far_error=-.65)
+    for now in (0., .05):
+        controller.command(first_bend, now, tuning, ordinary_guidance=True)
+    ambiguous = replace(first_bend, error=.65, near_error=.65, mid_error=.12, far_error=-.12)
+    controller.command(ambiguous, .10, tuning, ordinary_guidance=True)
+    assert controller.command(ambiguous, .15, tuning, ordinary_guidance=True)[1] == pytest.approx(-.55)
+
+    following = replace(ambiguous, mid_error=following_mid, far_error=following_far)
+    angular = controller.command(following, following_time, tuning, ordinary_guidance=True)[1]
+    assert (angular >= -.55) == limited
