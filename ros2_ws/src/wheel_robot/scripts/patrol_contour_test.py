@@ -14,7 +14,7 @@ import icn as base
 from patrol_contour_runtime import (
     FixedSpeedController, CornerExitGuard, RingCandidateSearch, PathEstimate, PathSelector, PatrolFileWatcher,
     PatrolTuning, RoundaboutRouter, ExitRouteCommit, RingRouteMemory, observed_route,
-    black_usable, road_centerline, road_masks, crop_patrol_frame, path_errors, detect_crosswalk,
+    black_usable, road_centerline, ring_corner_path, road_masks, crop_patrol_frame, path_errors, detect_crosswalk,
 )
 
 from patrol_dash_entry import ApproachBranchConfirmation, DashObservation, detect_vv_dashes, detect_vv_dashes_compatible, match_entry_dashes
@@ -35,7 +35,6 @@ class PatrolVision(base.CourseVision):
         self.last_black_at = None
         self.road_widths = None
         self.last_dual_at = None
-        self.last_width_probe_at = -float("inf")
         self.black_estimate = PathEstimate(False, reason="not_processed")
         self.road_estimate = PathEstimate(False, reason="not_processed")
         self.preview_kind = "black"
@@ -72,6 +71,7 @@ class PatrolVision(base.CourseVision):
         self.dash_observation = DashObservation()
         self.entry_ready = False
         self.approach_branch_confirmation.reset()
+        self._entry_corner_sample = None
         self.exit_commit.reset()
         self.reset_tracking()
         self._last_good_band_x = [None for _ in base.LOOKAHEAD_Y_RATIOS]
@@ -83,11 +83,23 @@ class PatrolVision(base.CourseVision):
         self.last_black_at = None
         self.road_widths = None
         self.last_dual_at = None
-        self.last_width_probe_at = -float("inf")
         self.source = "none"
         self.last_debug = None
         self.black_estimate = PathEstimate(False, reason="reset")
         self.road_estimate = PathEstimate(False, reason="reset")
+
+    @staticmethod
+    def black_inside_road(black, road, width):
+        # Restrict only against measured pairs. A partial/clipped edge cannot
+        # disqualify a reliable black line.
+        if black.points is None or road.left_edge is None or road.right_edge is None:
+            return True
+        left = {y: x for x, y in road.left_edge}
+        right = {y: x for x, y in road.right_edge}
+        margin = .025*width
+        votes = [left[y]-margin <= x <= right[y]+margin
+                 for x, y in black.points if y in left and y in right]
+        return len(votes) < 2 or sum(votes)*2 >= len(votes)
 
     def _snapshot_if_missing(self, frame, dark, road, chosen, now, force=False):
         directory = getattr(self, "snapshot_directory", None)
@@ -161,7 +173,8 @@ class PatrolVision(base.CourseVision):
         self.gate_near=self.crosswalk_score=self.exit_solid_score=0.
         self.entry_ready=False
         self.dash_observation=DashObservation()
-        if self.router.gate_detection_allowed(now,tuning) or self.router.phase=="ENTRY":
+        contour_retry = tuning.contour_enabled and self.router.contour_entry_retry_allowed(now, tuning)
+        if self.router.gate_detection_allowed(now,tuning) or self.router.phase=="ENTRY" or contour_retry:
             legacy=getattr(self,"_legacy_event_dark",None)
             if legacy is not None:
                 legacy=legacy.copy();legacy[guard>0]=0
@@ -197,6 +210,40 @@ class PatrolVision(base.CourseVision):
                 detected,self.crosswalk_score=detect_crosswalk(events,hsv,zebra_tuning)
                 self.router.observe_crosswalk_visual_release(detected,now,tuning)
                 crosswalk=detected and self.router.crosswalk_armed(now,tuning)
+        corner = None
+        corner_confirmed = False
+        phase = self.router.phase
+        if tuning.contour_enabled and tuning.roundabout_enabled and (
+                phase in ("ENTRY", "APPROACH") or (
+                    phase in ("FOLLOW", "EXIT") and tuning.roundabout_exit_corner_enabled) or (
+                    phase == "SEEK" and (self.router.gate_detection_allowed(now, tuning) or contour_retry))):
+            raw_height, raw_width = frame.shape[:2]
+            wide_top = int(.08*raw_height)
+            wide = cv2.resize(frame[wide_top:], (width, height), interpolation=cv2.INTER_AREA)
+            wide_hsv = cv2.cvtColor(wide, cv2.COLOR_BGR2HSV)
+            wide_blue, wide_white = road_masks(wide_hsv, tuning)
+            left_crop = int(raw_width*tuning.crop_left_ratio)
+            top_crop = int(raw_height*tuning.crop_top_ratio)
+            cropped_width = raw_width-left_crop-int(raw_width*tuning.crop_right_ratio)
+            wide_seed = (left_crop+tuning.target_x_ratio*cropped_width)/raw_width
+
+            def to_control(points):
+                return (points*np.array([raw_width/width, (raw_height-wide_top)/height])
+                        + [0, wide_top] - [left_crop, top_crop]) * [width/cropped_width, height/(raw_height-top_crop)]
+
+            entering = phase in ("SEEK", "APPROACH", "ENTRY")
+            if not entering or not (self.dash_observation.exit_branch.valid or self.dash_observation.right_fork):
+                corner = ring_corner_path(wide_hsv, wide_blue, wide_white, wide_seed, tuning,
+                                          entering, (width, height), to_control)
+            if corner is not None and phase in ("SEEK", "APPROACH"):
+                prior = getattr(self, "_entry_corner_sample", None)
+                self._entry_corner_sample = (now, corner.entry_boundary[0].copy())
+                corner_confirmed = (prior is not None and 0 < now-prior[0] <= tuning.roundabout_path_max_gap_seconds
+                                    and np.linalg.norm((corner.entry_boundary[0]-prior[1])/[width,height]) <= .10)
+            elif (not entering or self.dash_observation.exit_branch.valid or self.dash_observation.right_fork):
+                self._entry_corner_sample = None
+        else:
+            self._entry_corner_sample = None
         entry_cue = self.dash_observation
         branch = entry_cue.branch
         branch_status = "outside_approach"
@@ -216,7 +263,8 @@ class PatrolVision(base.CourseVision):
                                      else float(branch.points[:, 1].max()/height))
         self.router.observe(gate,self.gate_score,now,tuning,self.motion_command,self.motion_pose,
                             gate_near=self.gate_near,exit_solid=exit_solid,crosswalk=crosswalk,gate_tracked=self.gate_tracked,
-                            heading=self.motion_heading,dash_cue=entry_cue)
+                            heading=self.motion_heading,dash_cue=entry_cue, entry_corner=corner_confirmed,
+                            exit_corner=corner is not None and corner.exit_boundary is not None)
         if navigation_serial!=self.router.navigation_reset_serial:
             self.reset_path()
             self.ring_memory.reset()
@@ -235,6 +283,8 @@ class PatrolVision(base.CourseVision):
                 self.ring_memory.remember(entry, now)
             else:
                 entry = self.ring_memory.path
+            if corner is not None and corner.entry_boundary is not None:
+                self.ring_memory.remember(corner, now)
             if entry is not None and entry.points is not None:
                 self.previous_points=entry.points.copy()
                 self.last_path_at=self.ring_memory.at
@@ -264,15 +314,9 @@ class PatrolVision(base.CourseVision):
                                  rescue=bool(valid and extracted[9] == "line_edge_single_rescue"))
             black.route_observed=observed_route(black,width,height,tuning)
         road = PathEstimate(False, reason="contour_not_needed")
-        # While returning from road fallback, compute both until black is
-        # confirmed. Sample measured dual-edge width at a low rate while
-        # black is healthy; waiting until loss left no width for single-edge
-        # recovery. A probe cannot replace an otherwise healthy black path.
         routing = bool(tuning.roundabout_enabled and self.router.phase in ("ENTRY","FOLLOW","EXIT"))
-        width_probe=now-self.last_width_probe_at>=tuning.road_width_probe_seconds
         committing=self.exit_commit.active(now,tuning)
-        if tuning.contour_enabled and (self.router.phase=="APPROACH" or routing or committing or not black_usable(black, tuning) or self.selector.source == "road" or width_probe):
-            self.last_width_probe_at=now
+        if tuning.contour_enabled:
             widths = self.road_widths if self.last_dual_at is not None and now-self.last_dual_at < tuning.road_single_edge_hold_seconds else None
             road_tuning=replace(tuning,contour_order_enabled=0) if routing or committing else tuning
             road = road_centerline(hsv, road_tuning, self.seed_x_ratio, self.previous_points, widths,
@@ -295,6 +339,11 @@ class PatrolVision(base.CourseVision):
                 # Single-edge continuation NEVER renews the width deadline.
                 self.road_widths = road.widths.copy()
                 self.last_dual_at = now
+        corner_selected = bool(corner is not None and (
+            (self.router.phase == "ENTRY" and corner.entry_boundary is not None)
+            or (self.router.phase == "EXIT" and corner.exit_boundary is not None)))
+        if corner_selected:
+            road = corner
         entry_guide = None
         if self.router.phase == "ENTRY":
             branch = self.dash_observation.branch
@@ -302,7 +351,10 @@ class PatrolVision(base.CourseVision):
                 branch = None
                 if self.ring_memory.at is not None and 0 <= now-self.ring_memory.at <= .30:
                     branch = match_entry_dashes(self.dash_observation, self.ring_memory.path, width, height, tuning)
-            if branch is not None and branch.valid and branch.route_observed:
+            if (branch is not None and branch.valid and branch.route_observed
+                    and not (self.ring_memory.path is not None
+                             and self.ring_memory.path.entry_boundary is not None
+                             and self.ring_memory.agrees(branch, now, tuning) is not True)):
                 # This frame's diverging branch or matched dash chain owns
                 # the entry. Do not reclassify it as a generic black line.
                 self.ring_memory.remember(branch, now)
@@ -318,14 +370,14 @@ class PatrolVision(base.CourseVision):
                 if branch_distance + .06 < main_distance:
                     black = replace(main, mask=dark, reason="approach_main_dash")
         if routing:
-            if (self.router.phase == "ENTRY" and road.valid and self.ring_memory.path is not None
+            if (not corner_selected and self.router.phase == "ENTRY" and road.valid and self.ring_memory.path is not None
                 and self.ring_memory.agrees(road, now, tuning) is not True):
                 road.valid, road.reason = False, "entry_road_disagrees_with_left_guide"
             # Select a ROUTE before choosing a sensor. Ordinary black priority
             # must not pull us back onto the straight/right fork.
             if self.router.phase=="ENTRY" and road.valid and not self.router.branch_acquired and not road.route_locked:
                 road.valid,road.reason=False,"entry_unacquired_right_road"
-            if self.router.phase in ("ENTRY","FOLLOW") and road.valid and self.ring_memory.path is not None:
+            if not corner_selected and self.router.phase in ("ENTRY","FOLLOW") and road.valid and self.ring_memory.path is not None:
                 agrees=self.ring_memory.agrees(road,now,tuning)
                 left_recovery=road.route_observed and road.error<-.10 and road.mid_error<=.10
                 if agrees is False or (agrees is None and self.ring_memory.path is not None and not left_recovery):
@@ -388,7 +440,13 @@ class PatrolVision(base.CourseVision):
         self.black_estimate, self.road_estimate = black, road
         committed=self.exit_commit.select(black,road,now,self.motion_command[0],tuning)
         if committed is None:
-            chosen, self.source = self.selector.select(black, road, now, tuning, ordinary_guidance=self.router.phase == "SEEK")
+            preferred_black = black
+            if not routing and road.valid and road.route_observed and black_usable(black, tuning):
+                if not self.black_inside_road(black, road, width):
+                    preferred_black = replace(black, valid=False, reason="black_outside_connected_road")
+            chosen, self.source = self.selector.select(
+                PathEstimate(False, reason="corner_priority") if corner_selected else preferred_black,
+                road, now, tuning, ordinary_guidance=self.router.phase == "SEEK")
         else:
             chosen,self.source=committed,committed.source if committed.valid else "none"
             if chosen.valid:
@@ -401,7 +459,7 @@ class PatrolVision(base.CourseVision):
                 self.exit_commit.begin(chosen,now,tuning)
             else:
                 self.exit_commit.reset()
-        if self.router.ring_tracking:
+        if self.router.ring_tracking and chosen.exit_boundary is None:
             self.ring_memory.remember(chosen,now)
         self.ring_phase=self.router.phase
         if chosen.valid and chosen.points is not None and len(chosen.points):
@@ -413,8 +471,10 @@ class PatrolVision(base.CourseVision):
                                                        chosen.points[order, 1], chosen.points[order, 0]) / width, 0, 1))
         if draw:
             debug = work.copy()
-            if chosen.exit_boundary is not None and len(chosen.exit_boundary)>1:
-                cv2.polylines(debug,[np.rint(chosen.exit_boundary).astype(np.int32)],False,(255,0,255),2)
+            for edge, color in ((road.left_edge, (255, 220, 0)), (road.right_edge, (0, 170, 255)),
+                                (chosen.entry_boundary, (255, 0, 255)), (chosen.exit_boundary, (255, 0, 255))):
+                if edge is not None and len(edge) > 1:
+                    cv2.polylines(debug, [np.rint(edge).astype(np.int32)], False, color, 2)
             if chosen.points is not None and len(chosen.points) > 1:
                 points = np.round(chosen.points).astype(np.int32)
                 cv2.polylines(debug, [points], False, (0, 255, 0), 2)
@@ -775,7 +835,8 @@ class PatrolTestNode(base.WheelLegRaceNode):
                     control_tuning=replace(control_tuning,steering_gain=tuning.steering_gain*factor,
                                            steering_kd=tuning.steering_kd*factor,
                                            angular_accel_rad_s2=tuning.angular_accel_rad_s2*factor)
-            if candidate_left or (router is not None and router.phase in ("APPROACH", "ENTRY")):
+            if (candidate_left or (router is not None and router.phase in ("APPROACH", "ENTRY"))
+                    or (path.valid and path.source == "road" and (path.single_edge or path.handoff))):
                 control_tuning=replace(control_tuning,fixed_speed_m_s=min(control_tuning.fixed_speed_m_s,tuning.search_recovery_speed_m_s))
             exit_turn=router.exit_search_turn(path,done,tuning,getattr(self.vision,"motion_heading",None)) if router is not None else None
             linear, angular, mode = self.patrol_controller.command(path, done, control_tuning,

@@ -533,7 +533,7 @@ def test_file_reload_atomic_replace_reject_and_recover(tmp_path):
 def test_shipped_config_has_all_documented_values():
     path = SCRIPTS.parent / "config" / "patrol_test.yaml"
     tuning, message = PatrolFileWatcher(path).poll()
-    assert tuning == replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0., crop_left_ratio=.12, crop_right_ratio=.12, crop_top_ratio=.22, contour_order_enabled=1, ring_entry_probe_seconds=.50, ring_entry_advance_m=.22), message
+    assert tuning == replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0., crop_left_ratio=.13, crop_right_ratio=.13, crop_top_ratio=.24, contour_order_enabled=1, roundabout_exit_corner_enabled=1, ring_entry_probe_seconds=.50, ring_entry_advance_m=.22), message
 
 
 @pytest.fixture
@@ -2136,7 +2136,7 @@ def test_v9_healthy_black_caches_real_width_before_one_edge_disappears(monkeypat
     assert v.last_dual_at==1.  # single-edge frames cannot renew width history
 
 
-def test_v9_width_probe_is_low_rate_and_cannot_override_valid_black(monkeypatch):
+def test_contour_is_measured_every_frame_and_preserves_valid_black(monkeypatch):
     module=load_actual_vision_module(monkeypatch)
     v=module.PatrolVision()
     frame=np.full((240,320,3),(255,0,0),np.uint8)
@@ -2151,7 +2151,8 @@ def test_v9_width_probe_is_low_rate_and_cannot_override_valid_black(monkeypatch)
     for now in np.arange(0.,1.,1/30):
         p=v.estimate(frame,PatrolTuning(),now)
         assert p.valid and v.source=="black"
-    assert 3<=len(calls)<=5  # not every camera frame
+    assert len(calls) == 30
+    assert v.road_estimate.left_edge is not None and v.road_estimate.right_edge is not None
 
 
 def test_v9_bounded_search_continues_past_old_one_meter_then_safely_waits():
@@ -2531,7 +2532,7 @@ def test_v10_new_tuning_snapshot_validation(changes):
 def test_v10_complete_live_yaml_has_all_fields_and_preserves_non_ring_values():
     current,message=PatrolFileWatcher(SCRIPTS.parent/"config/patrol_test.yaml").poll()
     assert current is not None,message
-    assert current==replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0., crop_left_ratio=.12, crop_right_ratio=.12, crop_top_ratio=.22, contour_order_enabled=1, ring_entry_probe_seconds=.50, ring_entry_advance_m=.22)
+    assert current==replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0., crop_left_ratio=.13, crop_right_ratio=.13, crop_top_ratio=.24, contour_order_enabled=1, roundabout_exit_corner_enabled=1, ring_entry_probe_seconds=.50, ring_entry_advance_m=.22)
     assert current.fixed_speed_m_s==.65
     assert (current.crosswalk_stop_seconds,current.crosswalk_clear_seconds)==(3.,3.)
 
@@ -3404,3 +3405,53 @@ def test_bend_reversal_limits_brief_conflict_without_delaying_next_bend(
     following = replace(ambiguous, mid_error=following_mid, far_error=following_far)
     angular = controller.command(following, following_time, tuning, ordinary_guidance=True)[1]
     assert (angular >= -.55) == limited
+
+@pytest.mark.parametrize("entering,polygon", [
+    (True, [(0, 10), (85, 12), (64, 47), (0, 46)]),
+    (False, [(5, 102), (84, 57), (319, 58), (319, 122), (120, 104)]),
+])
+def test_wide_ring_corner_builds_left_guide_on_white_surface(entering, polygon):
+    from patrol_contour_runtime import ring_corner_path
+
+    hsv = np.full((240, 320, 3), (0, 0, 235), np.uint8)
+    cv2.fillPoly(hsv, [np.asarray(polygon)], (110, 220, 160))
+    tuning = PatrolTuning()
+    blue, white = road_masks(hsv, tuning)
+    guide = ring_corner_path(hsv, blue, white, .5, tuning, entering,
+                             (320, 240), lambda points: points)
+    assert guide is not None and guide.route_locked
+    assert guide.mid_error < guide.near_error
+    assert (guide.entry_boundary is not None) == entering
+    assert (guide.exit_boundary is not None) == (not entering)
+    x, y = guide.points.astype(int).T
+    assert np.all(blue[y, x] == 0)
+    blank = np.zeros_like(blue)
+    assert ring_corner_path(hsv, blank, white, .5, tuning, entering,
+                            (320, 240), lambda points: points) is None
+
+
+def test_contour_entry_can_arm_without_black_dashes_and_keeps_distance_gate():
+    tuning = replace(PatrolTuning(), roundabout_arm_seconds=0., roundabout_arm_distance_m=0.)
+    router = RoundaboutRouter()
+    router.observe(False, 0., 0., tuning)
+    router.observe(False, 0., .1, tuning, (.3, 0.), entry_corner=True)
+    assert router.phase == "APPROACH"
+    router.observe(False, 0., .2, tuning, (.3, 0.), entry_corner=True)
+    assert router.phase == "APPROACH"
+    router.distance = router.first_marker_distance+tuning.ring_entry_advance_m
+    router.observe(False, 0., .3, tuning, (.3, 0.), entry_corner=True)
+    assert router.phase == "ENTRY" and router.entry_detection_reason == "contour_left_corner"
+
+def test_only_current_contour_evidence_can_retry_after_approach_distance_limit():
+    tuning = replace(PatrolTuning(), roundabout_arm_seconds=0., roundabout_arm_distance_m=0.)
+    router = RoundaboutRouter()
+    router.observe(False, 0., 0., tuning)
+    router._release_ring(.1, tuning, "entry_approach_distance_limit")
+    router.observe(False, 0., .2, tuning, (.3, 0.))
+    assert router.phase == "SEEK"
+    router.observe(False, 0., .3, tuning, (.3, 0.), entry_corner=True)
+    assert router.phase == "ENTRY"
+    assert router.entry_detection_reason == "contour_entry_after_distance_limit"
+    router._release_ring(.4, tuning, "entry_tracking_lost")
+    router.observe(False, 0., .5, tuning, (.3, 0.), entry_corner=True)
+    assert router.phase == "SEEK"

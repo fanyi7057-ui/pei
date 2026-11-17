@@ -481,6 +481,9 @@ class PathEstimate:
     route_locked: bool = False
     route_observed: bool = False  # near+mid geometry actually observed, not a lock flag
     exit_boundary: Optional[np.ndarray] = None  # validated virtual RIGHT boundary
+    left_edge: Optional[np.ndarray] = None
+    right_edge: Optional[np.ndarray] = None
+    entry_boundary: Optional[np.ndarray] = None
 
 
 class GateChainTracker:
@@ -1123,7 +1126,122 @@ def contour_order_reference(mask, blue, full_h, y0, tuning):
     widths=np.column_stack((rr[yi]-l[yi],yi+y0))
     return PathEstimate(True,errors[0],min(1.,np.count_nonzero(observed[yi])/h),smooth,mask,
                         "road_contour_order",*errors[1:],widths=widths,dual_fraction=len(yi)/h,
-                        route_observed=True,near_gap_ratio=near_gap)
+                        route_observed=True,near_gap_ratio=near_gap,
+                        left_edge=np.column_stack((l[yi],yi+y0)),
+                        right_edge=np.column_stack((rr[yi],yi+y0)))
+
+
+def road_surface_mask(hsv, blue, white, tuning):
+    binary = cv2.bitwise_and(cv2.bitwise_not(blue), white)
+    kernel = np.ones((int(tuning.close_kernel_px),) * 2, np.uint8)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+    if tuning.black_gap_fill_px:
+        # Only close narrow NEUTRAL-DARK paint gaps, never blue islands or a
+        # large arbitrary hole. Inverting/filling an outer contour is unsafe.
+        paint_kernel = np.ones((1, int(tuning.black_gap_fill_px)+1), np.uint8)
+        bridged = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, paint_kernel)
+        neutral_dark = (hsv[:, :, 1] <= tuning.white_s_max) & (hsv[:, :, 2] < tuning.white_v_min)
+        binary[(bridged > 0) & neutral_dark] = 255
+    binary[blue > 0] = 0  # reapply AFTER every morphology/repair operation
+    return binary
+
+
+def ring_corner_path(hsv, blue, white, seed, tuning, entering, control_size, to_control):
+    """Measured blue tip and white cross-sections in the wide camera view."""
+    height, width = blue.shape
+    mask = road_surface_mask(hsv, blue, white, tuning)
+    contours, _ = cv2.findContours(blue, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    minimum_width = tuning.min_road_width_ratio*width
+    anchor_x = int(np.clip(round(seed*width), 0, width-1))
+    bottom = min(height-1, int(.85*height))
+    bottom_runs = np.flatnonzero(np.diff(np.pad((mask[bottom] > 0).astype(np.int8), (1, 1))))
+    runs = [(l, r-1) for l, r in zip(bottom_runs[::2], bottom_runs[1::2])
+            if r-l >= minimum_width]
+    if not runs:
+        return None
+    anchor = min(runs, key=lambda run: max(run[0]-anchor_x, anchor_x-run[1], 0))
+    nearest_x = int(np.clip(anchor_x, *anchor))
+    if abs(nearest_x-anchor_x) > .08*width or np.any(blue[bottom, min(nearest_x, anchor_x):max(nearest_x, anchor_x)+1]):
+        return None
+    for contour in contours:
+        if cv2.contourArea(contour) < .012*width*height:
+            continue
+        polygon = cv2.approxPolyDP(contour, .012*cv2.arcLength(contour, True), True)[:, 0, :]
+        for i, (tip_x, tip_y) in enumerate(polygon):
+            if not (1 <= tip_x < anchor_x-.10*width and .06*height < tip_y < .66*height):
+                continue
+            before, after = polygon[i-1], polygon[(i+1) % len(polygon)]
+            adjacent = np.array([before, after]) - [tip_x, tip_y]
+            # Entry is the lower-right corner of the blue region on the left.
+            # Exit is the tip of a blue region growing to the right.
+            inward = adjacent[:, 0]*(-1 if entering else 1)
+            nearly_horizontal = np.abs(adjacent[:, 1]) <= .30*np.abs(adjacent[:, 0])+2
+            if not np.any((inward >= .08*width) & nearly_horizontal):
+                continue
+            if entering and not np.any(adjacent[:, 1] <= -.06*height):
+                continue
+            if not entering and np.min(polygon[:, 0]) < tip_x-.04*width:
+                continue
+            first = int(tip_y)+max(3, int(.025*height))
+            if bottom-first < .15*height:
+                continue
+            near_right = anchor[1] if anchor[1] < width-1 else min(width-1, anchor_x+minimum_width/2)
+            ys = np.arange(first, bottom+1)
+            virtual = np.interp(ys, [first, bottom], [tip_x, near_right])
+            rights = np.rint(virtual).astype(int)
+            # Prefer a real left edge. Where it leaves the wide view,
+            # maintain a conservative offset from the virtual right edge.
+            centers, lefts, observed_rows = [], [], []
+            if np.count_nonzero(blue[ys, rights]) > .04*len(ys):
+                continue
+            for y, right in zip(ys, rights):
+                row = mask[y]
+                if not row[right]:
+                    continue
+                blockers = np.flatnonzero(row[:right] == 0)
+                left = int(blockers[-1])+1 if len(blockers) else 0
+                center = (left+right)/2 if left else right-minimum_width/2
+                if center < 0 or right-left < minimum_width:
+                    continue
+                centers.append(center)
+                lefts.append(left if left else np.nan)
+                observed_rows.append(y)
+            if (len(observed_rows) < .14*height or observed_rows[0] > .62*height
+                    or observed_rows[-1] < bottom-3
+                    or max(np.diff(observed_rows), default=0) > .16*height):
+                continue
+            rows = np.asarray(observed_rows)
+            test_y = np.arange(rows[0], rows[-1]+1)
+            test_x = np.rint(np.interp(test_y, rows, centers)).astype(int)
+            right_limit = np.rint(np.interp(test_y, ys, virtual)).astype(int)
+            # A short local detour can avoid blue pixels created by the
+            # contrast mask. The path never crosses above a blue island.
+            pixels = hsv[test_y]
+            allowed = ((blue[test_y] == 0) & ((mask[test_y] > 0) |
+                       ((pixels[:, :, 1] <= tuning.white_s_max) & (pixels[:, :, 2] < tuning.white_v_min))))
+            radius = max(1, int(.045*width))
+            probes = test_x[:, None]+np.arange(-radius, radius+1)
+            bounded = np.clip(probes, 0, width-1)
+            valid = (probes == bounded) & (probes < right_limit[:, None]) & allowed[np.arange(len(test_y))[:, None], bounded]
+            if not np.all(valid.any(axis=1)):
+                continue
+            best = np.argmin(np.where(valid, abs(probes-test_x[:, None]), width), axis=1)
+            test_x = probes[np.arange(len(test_y)), best]
+            if np.max(np.abs(np.diff(test_x)), initial=0) > .065*width:
+                continue
+            points = to_control(np.column_stack((test_x, test_y)))
+            boundary = to_control(np.column_stack(([tip_x, near_right], [tip_y, bottom])))
+            errors = path_errors(points, *control_size, tuning)
+            if errors[2] >= errors[1]-.08 or errors[2] >= -.08:
+                continue
+            measured = np.isfinite(lefts)
+            left_edge = to_control(np.column_stack((np.asarray(lefts)[measured], rows[measured])))
+            return PathEstimate(True, errors[0], .8, points, reason="ring_entry_corner" if entering else "ring_exit_corner",
+                                near_error=errors[1], mid_error=errors[2], far_error=errors[3],
+                                route_locked=True, route_observed=True, left_edge=left_edge, right_edge=boundary,
+                                entry_boundary=boundary if entering else None,
+                                exit_boundary=None if entering else boundary)
+    return None
 
 
 def road_centerline(hsv, tuning, seed_x_ratio=None, previous_points=None, previous_widths=None, branch="nearest", masks=None, exit_guide=False):
@@ -1139,18 +1257,8 @@ def road_centerline(hsv, tuning, seed_x_ratio=None, previous_points=None, previo
     height = len(roi)
     full_blue, full_white = road_masks(hsv, tuning) if masks is None else masks
     blue, white = full_blue[y0:y1], full_white[y0:y1]
-    binary = cv2.bitwise_and(cv2.bitwise_not(blue), white)
-    kernel = np.ones((int(tuning.close_kernel_px),) * 2, np.uint8)
-    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
-    if tuning.black_gap_fill_px:
-        # Only close narrow NEUTRAL-DARK paint gaps, never blue islands or a
-        # large arbitrary hole. Inverting/filling an outer contour is unsafe.
-        paint_kernel = np.ones((1, int(tuning.black_gap_fill_px)+1), np.uint8)
-        bridged = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, paint_kernel)
-        neutral_dark = (roi[:, :, 1] <= tuning.white_s_max) & (roi[:, :, 2] < tuning.white_v_min)
-        binary[(bridged > 0) & neutral_dark] = 255
-    binary[blue > 0] = 0  # reapply AFTER every morphology/repair operation
-    contours, hierarchy = cv2.findContours(binary, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
+    binary = road_surface_mask(roi, blue, white, tuning)
+    _, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=4)
     seed = tuning.target_x_ratio if seed_x_ratio is None else float(np.clip(seed_x_ratio, 0, 1))
     sx0 = int(max(0, seed - tuning.seed_half_width_ratio) * width)
     sx1 = max(sx0 + 1, int(min(1, seed + tuning.seed_half_width_ratio) * width))
@@ -1160,21 +1268,10 @@ def road_centerline(hsv, tuning, seed_x_ratio=None, previous_points=None, previo
     best = None
     best_score = None
     anchor_y=int(np.clip(tuning.road_near_y_ratio*full_h-y0,0,height-1))
-    for i, contour in enumerate(contours):
-        if hierarchy[0, i, 3] != -1:
+    for i in np.unique(labels[sy0:, sx0:sx1]):
+        if not i or stats[i, cv2.CC_STAT_AREA] < tuning.min_road_area_ratio * width * height:
             continue
-        area = cv2.contourArea(contour)
-        if area < tuning.min_road_area_ratio * width * height:
-            continue
-        filled = np.zeros_like(binary)
-        cv2.drawContours(filled, [contour], -1, 255, cv2.FILLED)
-        child = hierarchy[0, i, 2]
-        while child != -1:
-            cv2.drawContours(filled, [contours[child]], -1, 0, cv2.FILLED)
-            child = hierarchy[0, child, 0]
-        # Component selection may use an outer polygon, but its drivable
-        # pixels MUST remain exactly within the repaired, non-blue road mask.
-        filled = cv2.bitwise_and(filled, binary)
+        filled = np.uint8(labels == i)*255
         seed_pixels = int(np.count_nonzero(filled[sy0:, sx0:sx1]))
         if seed_pixels == 0:
             continue
@@ -1249,6 +1346,8 @@ def road_centerline(hsv, tuning, seed_x_ratio=None, previous_points=None, previo
     observed = np.zeros(height, dtype=bool)
     dual = np.zeros(height, dtype=bool)
     widths = np.full(height, np.nan)
+    left_edge = np.full(height, np.nan)
+    right_edge = np.full(height, np.nan)
     width_reference = np.full(height, np.nan)
     if previous_widths is not None and len(previous_widths) >= 2:
         wp = np.asarray(previous_widths, dtype=float)
@@ -1315,6 +1414,10 @@ def road_centerline(hsv, tuning, seed_x_ratio=None, previous_points=None, previo
         if found and abs(value-last_x) > max_step*(missing+1)+1:
             break  # a disconnected lateral jump is not a valid continuation
         center[y] = value
+        if left > 0:
+            left_edge[y] = left
+        if right < width-1:
+            right_edge[y] = right
         observed[y] = left > 0 or right < width-1
         dual[y] = left > 0 and right < width-1
         if dual[y]:
@@ -1366,8 +1469,9 @@ def road_centerline(hsv, tuning, seed_x_ratio=None, previous_points=None, previo
                         *errors[1:], widths=width_points, dual_fraction=dual_fraction, single_edge=single_edge, near_gap_ratio=near_gap,
                         branch_rows=branch_rows, route_locked=branch == "left" and (branch_rows > 0 or errors[0] < -.10 or errors[2] < errors[1]-.10),
                         route_observed=bool(not single_edge and near_gap <= .02 and np.min(global_points[:,1]) <= (tuning.road_mid_y_ratio+.04)*full_h),
-                        exit_boundary=exit_boundary)
-
+                        exit_boundary=exit_boundary,
+                        left_edge=np.column_stack((left_edge[valid & np.isfinite(left_edge)], np.flatnonzero(valid & np.isfinite(left_edge))+y0)),
+                        right_edge=np.column_stack((right_edge[valid & np.isfinite(right_edge)], np.flatnonzero(valid & np.isfinite(right_edge))+y0)))
 
 def detect_crosswalk(dark, hsv, tuning):
     """Multiple regular dark bars with bright gaps; never a lone track line."""
@@ -1724,7 +1828,23 @@ class RoundaboutRouter:
     def crosswalk_armed(self,now,tuning):
         return self.crosswalk_block_reason(now,tuning)=="armed"
 
-    def _observe_vv_entry(self,cue,now,tuning,elapsed,travel,command):
+    def contour_entry_retry_allowed(self, now, tuning):
+        # A real corner can appear just after a generic dash latch used
+        # its approach budget. Retry once from that crossing, on geometry
+        # alone, without weakening the cooldown for other dash candidates.
+        return (bool(tuning.roundabout_enabled) and self.phase == "SEEK"
+                and self.ring_release_source == "entry_approach_distance_limit"
+                and self.retry_started_at is not None and self.retry_origin_distance is not None
+                and 0 <= now-self.retry_started_at <= tuning.roundabout_retry_seconds
+                and 0 <= self.distance-self.retry_origin_distance <= tuning.roundabout_retry_distance_m)
+
+    def _start_ring_entry(self, now, tuning, reason):
+        deadline = self.ring_deadline(tuning)
+        self.entry_started_in_grace = deadline is not None and deadline <= now < deadline+1.20
+        self._phase("ENTRY", now)
+        self.entry_detection_reason = reason
+
+    def _observe_vv_entry(self,cue,now,tuning,elapsed,travel,command,entry_corner=False):
         """Latch one dash frame, follow current route for distance, then LEFT probe."""
         if self.vv_last_at is not None and now<=self.vv_last_at:
             return
@@ -1743,7 +1863,10 @@ class RoundaboutRouter:
             return
         self.vv_streak=1 if hit and moving else 0
         if self.phase=="SEEK":
-            if hit and moving and self.gate_detection_allowed(now,tuning):
+            if moving and entry_corner and self.contour_entry_retry_allowed(now, tuning):
+                self._start_ring_entry(now, tuning, "contour_entry_after_distance_limit")
+                return
+            if (hit or entry_corner) and moving and self.gate_detection_allowed(now,tuning):
                 self.first_marker_at=now
                 self.first_marker_distance=self.distance
                 self._phase("APPROACH",now)
@@ -1751,7 +1874,7 @@ class RoundaboutRouter:
                 self.entry_detection_reason="vv_latched_advance_current_route"
             return
         if self.phase=="APPROACH":
-            if hit and entry_branch is not None and entry_branch.valid:
+            if entry_corner or (hit and entry_branch is not None and entry_branch.valid):
                 self.entry_left_seen_at = now
             if now-self.phase_at >= tuning.roundabout_approach_max_seconds:
                 self._release_ring(now,tuning,"entry_advance_timeout")
@@ -1760,10 +1883,7 @@ class RoundaboutRouter:
             distance_ready = advance >= tuning.ring_entry_advance_m
             left_ready = self.entry_left_seen_at is not None and now-self.entry_left_seen_at <= .35
             if moving and distance_ready and left_ready and advance <= tuning.ring_entry_approach_max_m:
-                deadline = self.ring_deadline(tuning)
-                self.entry_started_in_grace = deadline is not None and deadline <= now < deadline+1.20
-                self._phase("ENTRY",now)
-                self.entry_detection_reason="vv_distance_complete_left_probe"
+                self._start_ring_entry(now, tuning, "contour_left_corner" if entry_corner else "vv_distance_complete_left_probe")
             elif advance >= tuning.ring_entry_approach_max_m:
                 self._release_ring(now,tuning,"entry_approach_distance_limit")
             elif distance_ready:
@@ -1772,7 +1892,7 @@ class RoundaboutRouter:
                 self.entry_detection_reason="vv_advancing_current_route"
 
     def observe(self,gate,score,now,tuning,command=(0.,0.),pose=None,
-                gate_near=0.,exit_solid=False,crosswalk=False,gate_tracked=False,heading=None,entry_ready=False,dash_cue=None):
+                gate_near=0.,exit_solid=False,crosswalk=False,gate_tracked=False,heading=None,entry_ready=False,dash_cue=None,exit_corner=False,entry_corner=False):
         self.resume(now)
         if self.started_at is None:
             self.started_at=now
@@ -1866,7 +1986,7 @@ class RoundaboutRouter:
         self.gate_cleared|=self.clear_frames>=tuning.roundabout_path_confirm_frames
 
         if self.phase in ("SEEK","APPROACH") and tuning.roundabout_enabled:
-            self._observe_vv_entry(dash_cue,now,tuning,dt,travel,command)
+            self._observe_vv_entry(dash_cue,now,tuning,dt,travel,command,entry_corner=entry_corner)
         elif self.phase=="FOLLOW":
             actual=self.measured_turn.fresh(now,tuning) and tuning.roundabout_heading_enabled
             turn_progress=self.measured_turn.angle if actual else self.ring_yaw
@@ -1878,9 +1998,10 @@ class RoundaboutRouter:
                 ready=ready and self.measured_turn.angle>=math.radians(tuning.roundabout_visual_exit_min_turn_deg)
             if ready:
                 self.solid_frames=self.solid_frames+1 if exit_solid else 0
+                self.near_frames=self.near_frames+1 if exit_corner else 0
                 self.evidence=max(0.,min(5.,self.evidence+(1. if strong else .35 if weak else -.30)))
                 if (self.evidence>=tuning.roundabout_gate_evidence
-                        or self.solid_frames>=tuning.roundabout_path_confirm_frames):
+                        or max(self.solid_frames,self.near_frames)>=tuning.roundabout_path_confirm_frames):
                     self._phase("EXIT",now)
         elif self.phase=="COOLDOWN":
             if (age>=tuning.roundabout_rearm_seconds
@@ -1957,7 +2078,7 @@ class RoundaboutRouter:
             return
         good=bool(path.valid and path.route_locked)
         if self.phase=="ENTRY":
-            good=good and path.route_observed and not path.rescue and getattr(self,"entry_dash_proven",False)
+            good=good and path.route_observed and not path.rescue and (path.entry_boundary is not None or getattr(self,"entry_dash_proven",False))
             if tuning.roundabout_entry_commit_enabled:
                 turn=self.measured_turn.angle if self.measured_turn.fresh(now,tuning) else self.left_yaw
                 good=good and turn>=max(tuning.roundabout_entry_min_yaw_rad,math.radians(tuning.roundabout_entry_acquire_yaw_deg))
@@ -2009,7 +2130,7 @@ class RoundaboutRouter:
         if self.phase=="ENTRY":
             visual = bool(path is not None and path.valid and path.route_locked
                           and path.route_observed and not path.rescue and not path.handoff
-                          and self.entry_dash_proven)
+                          and (path.entry_boundary is not None or self.entry_dash_proven))
             speed = min(tuning.fixed_speed_m_s, tuning.search_recovery_speed_m_s)
             if self.entry_visual_tracking:
                 if visual:
