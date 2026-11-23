@@ -55,7 +55,8 @@ patrol_test:
   # V13普通巡线路径选择/转向控制恢复V11；V12的B1回正保护和额外黑线回切门已删除。
   # ===== C. 黑线主导 / 轮廓补线 / 短失线 =====
   # 黑线主巡线开关，0/1；用原包黑线掩膜和路径提取，只跳过原比赛速度分支。
-  black_enabled: 1
+  # 纯轮廓验证阶段：0关闭黑线转向输入，虚线/横道仍可独立检测。
+  black_enabled: 0
   # 普通黑线最低可信度，0..1，默认0.26对齐基线；增大更易交给轮廓。
   # 基线认可的近端单带救线单独保留，不用提高全局门槛把急弯真线丢掉。
   black_min_confidence: 0.26
@@ -136,13 +137,13 @@ patrol_test:
   image_timeout_seconds: 0.35
 
   # ===== D. 白赛道二值化：轮廓不对才调，黑线提取仍沿用基线 =====
-  # 普通巡线和虚线检测使用裁剪图。环岛蓝色拐点保留左右全宽，仅裁掉顶部8%。
+  # 纯轮廓保留左右全宽，顶部裁4%；道路控制排除底部18%的车体区域。
   # 道路ROI在裁剪后的图像内取值，越小越远。
-  crop_left_ratio: 0.13
-  crop_right_ratio: 0.13
-  crop_top_ratio: 0.24
-  roi_top_ratio: 0.25
-  roi_bottom_ratio: 0.98
+  crop_left_ratio: 0.0
+  crop_right_ratio: 0.0
+  crop_top_ratio: 0.04
+  roi_top_ratio: 0.04
+  roi_bottom_ratio: 0.82
   # 蓝背景HSV阈值；H范围0..179，S/V范围0..255；扩大H范围可接纳更多蓝色，但可能误排道路。
   blue_h_min: 90
   blue_h_max: 140
@@ -193,15 +194,15 @@ patrol_test:
   max_repair_gap_rows: 6
   # ===== E. 道路轮廓预瞄行：近端主导，避免平均远弯导致提前切弯 =====
   # 理想近端行：占整图高度0..1，大=更近；默认0.86。
-  road_near_y_ratio: 0.86
+  road_near_y_ratio: 0.40
   # 真实道路边界暂缺近端多少图高仍可使用最近真实观测，0..(near-mid)，默认0.18。
   # 增大减少no_center_in_error_rows，但过大预瞄变远。必须仍有真实边界，不补造全白，不跨已知蓝区。
-  road_near_gap_ratio: 0.18
+  road_near_gap_ratio: 0.12
   # 中端行：默认0.60，辅助航向，不能推翻近端位置；必须远<中<近且在ROI内。
-  road_mid_y_ratio: 0.60
+  road_mid_y_ratio: 0.25
   # 远端行：默认0.38，只弱辅助形状判断，不用全图平均直接拉方向。
   # 黑线仍用原提取器的近/中/远与单带语义，不受道路采样行二次否决。
-  road_far_y_ratio: 0.38
+  road_far_y_ratio: 0.12
 
   # ===== F. 环岛任务：先选左侧道路，再由统一巡线控制，不是全程强制左转 =====
   # 0只测普通巡线（须同时关闭横道以免误解任务），1开启环岛入口/内部/出口；默认1。

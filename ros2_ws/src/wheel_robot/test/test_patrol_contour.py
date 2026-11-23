@@ -533,7 +533,7 @@ def test_file_reload_atomic_replace_reject_and_recover(tmp_path):
 def test_shipped_config_has_all_documented_values():
     path = SCRIPTS.parent / "config" / "patrol_test.yaml"
     tuning, message = PatrolFileWatcher(path).poll()
-    assert tuning == replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0., crop_left_ratio=.13, crop_right_ratio=.13, crop_top_ratio=.24, contour_order_enabled=1, roundabout_exit_corner_enabled=1, ring_entry_probe_seconds=.50, ring_entry_advance_m=.22), message
+    assert tuning == replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0., black_enabled=0, crop_left_ratio=0., crop_right_ratio=0., crop_top_ratio=.04, roi_top_ratio=.04, roi_bottom_ratio=.82, road_near_y_ratio=.40, road_mid_y_ratio=.25, road_far_y_ratio=.12, road_near_gap_ratio=.12, contour_order_enabled=1, roundabout_exit_corner_enabled=1, ring_entry_probe_seconds=.50, ring_entry_advance_m=.22), message
 
 
 @pytest.fixture
@@ -2532,7 +2532,7 @@ def test_v10_new_tuning_snapshot_validation(changes):
 def test_v10_complete_live_yaml_has_all_fields_and_preserves_non_ring_values():
     current,message=PatrolFileWatcher(SCRIPTS.parent/"config/patrol_test.yaml").poll()
     assert current is not None,message
-    assert current==replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0., crop_left_ratio=.13, crop_right_ratio=.13, crop_top_ratio=.24, contour_order_enabled=1, roundabout_exit_corner_enabled=1, ring_entry_probe_seconds=.50, ring_entry_advance_m=.22)
+    assert current==replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0., black_enabled=0, crop_left_ratio=0., crop_right_ratio=0., crop_top_ratio=.04, roi_top_ratio=.04, roi_bottom_ratio=.82, road_near_y_ratio=.40, road_mid_y_ratio=.25, road_far_y_ratio=.12, road_near_gap_ratio=.12, contour_order_enabled=1, roundabout_exit_corner_enabled=1, ring_entry_probe_seconds=.50, ring_entry_advance_m=.22)
     assert current.fixed_speed_m_s==.65
     assert (current.crosswalk_stop_seconds,current.crosswalk_clear_seconds)==(3.,3.)
 
@@ -3455,3 +3455,30 @@ def test_only_current_contour_evidence_can_retry_after_approach_distance_limit()
     router._release_ring(.4, tuning, "entry_tracking_lost")
     router.observe(False, 0., .5, tuning, (.3, 0.), entry_corner=True)
     assert router.phase == "SEEK"
+
+def test_contour_mask_rejoins_neutral_paint_without_filling_blue_separator():
+    from patrol_contour_runtime import road_surface_mask
+
+    hsv = np.full((100, 320, 3), (0, 0, 230), np.uint8)
+    hsv[:, 140:176] = (0, 0, 25)
+    hsv[:, 220:250] = (110, 220, 150)
+    tuning = PatrolTuning()
+    blue, white = road_masks(hsv, tuning)
+    surface = road_surface_mask(hsv, blue, white, tuning)
+    assert np.all(surface[:, 140:176] == 255)
+    assert np.all(surface[:, 220:250] == 0)
+
+
+def test_pure_contour_observes_blue_sides_and_rejects_featureless_white():
+    from patrol_contour_runtime import contour_boundary_path
+
+    hsv = np.full((240, 320, 3), (110, 220, 160), np.uint8)
+    hsv[:, 70:250] = (0, 0, 230)
+    hsv[:, 145:180] = (0, 0, 20)
+    tuning = PatrolTuning()
+    path = contour_boundary_path(hsv, tuning)
+    assert path.valid and len(path.left_edge) > 20 and len(path.right_edge) > 20
+    assert np.all(path.left_edge[:, 0] == 70)
+    assert np.all(path.right_edge[:, 0] == 249)
+    blank = np.full((240, 320, 3), (0, 0, 230), np.uint8)
+    assert not contour_boundary_path(blank, tuning).valid

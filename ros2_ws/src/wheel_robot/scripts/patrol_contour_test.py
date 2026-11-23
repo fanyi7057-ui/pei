@@ -14,7 +14,7 @@ import icn as base
 from patrol_contour_runtime import (
     FixedSpeedController, CornerExitGuard, RingCandidateSearch, PathEstimate, PathSelector, PatrolFileWatcher,
     PatrolTuning, RoundaboutRouter, ExitRouteCommit, RingRouteMemory, observed_route,
-    black_usable, road_centerline, ring_corner_path, road_masks, crop_patrol_frame, path_errors, detect_crosswalk,
+    black_usable, contour_boundary_path, road_centerline, ring_corner_path, road_masks, crop_patrol_frame, path_errors, detect_crosswalk,
 )
 
 from patrol_dash_entry import ApproachBranchConfirmation, DashObservation, detect_vv_dashes, detect_vv_dashes_compatible, match_entry_dashes
@@ -319,13 +319,18 @@ class PatrolVision(base.CourseVision):
         if tuning.contour_enabled:
             widths = self.road_widths if self.last_dual_at is not None and now-self.last_dual_at < tuning.road_single_edge_hold_seconds else None
             road_tuning=replace(tuning,contour_order_enabled=0) if routing or committing else tuning
-            road = road_centerline(hsv, road_tuning, self.seed_x_ratio, self.previous_points, widths,
-                                   branch="left" if self.router.left_lock and routing else "nearest", masks=(blue, _white),
-                                   exit_guide=self.router.phase=="EXIT")
-            if road.valid and road.single_edge and widths is None:
+            pure_contour = not tuning.black_enabled and not routing and not committing
+            if pure_contour:
+                road = contour_boundary_path(hsv, tuning, self.seed_x_ratio, widths,
+                                             masks=(blue, _white))
+            else:
+                road = road_centerline(hsv, road_tuning, self.seed_x_ratio, self.previous_points, widths,
+                                       branch="left" if self.router.left_lock and routing else "nearest",
+                                       masks=(blue, _white), exit_guide=self.router.phase=="EXIT")
+            if road.valid and road.single_edge and widths is None and (road.widths is None or len(road.widths) < 3):
                 road.valid, road.reason = False, "single_edge_width_expired"
             if road.valid:
-                road.route_observed=observed_route(road,width,height,tuning) and (not road.single_edge or widths is not None)
+                road.route_observed=observed_route(road,width,height,tuning) and (not road.single_edge or widths is not None or (road.widths is not None and len(road.widths)>=3))
             if road.valid and self.previous_points is not None and len(self.previous_points):
                 previous = self.previous_points[np.argsort(self.previous_points[:, 1])]
                 y = tuning.road_near_y_ratio*height
@@ -335,7 +340,7 @@ class PatrolVision(base.CourseVision):
                 if abs(current_x-previous_x) > tuning.road_max_near_jump_ratio*width and not (self.router.phase=="EXIT" and road.exit_boundary is not None):
                     road.valid, road.reason = False, "road_near_disagrees_with_recent_path"
             width_agrees=not black_usable(black,tuning) or max(abs(road.near_error-black.near_error),abs(road.mid_error-black.mid_error))<=tuning.roundabout_path_agreement
-            if road.valid and width_agrees and not road.single_edge and road.widths is not None and len(road.widths) >= 2:
+            if road.valid and width_agrees and (pure_contour or not road.single_edge) and road.widths is not None and len(road.widths) >= 3:
                 # Single-edge continuation NEVER renews the width deadline.
                 self.road_widths = road.widths.copy()
                 self.last_dual_at = now
@@ -437,6 +442,8 @@ class PatrolVision(base.CourseVision):
             for candidate in (black, road):
                 if candidate.valid:
                     candidate.error = float(np.clip(candidate.near_error+tuning.roundabout_heading_gain*(candidate.mid_error-candidate.near_error), -1., 1.))
+        if not tuning.black_enabled:
+            black = PathEstimate(False, reason="contour_only_control")
         self.black_estimate, self.road_estimate = black, road
         committed=self.exit_commit.select(black,road,now,self.motion_command[0],tuning)
         if committed is None:
@@ -836,7 +843,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
                                            steering_kd=tuning.steering_kd*factor,
                                            angular_accel_rad_s2=tuning.angular_accel_rad_s2*factor)
             if (candidate_left or (router is not None and router.phase in ("APPROACH", "ENTRY"))
-                    or (path.valid and path.source == "road" and (path.single_edge or path.handoff))):
+                    or (path.valid and path.source == "road" and (not tuning.black_enabled or path.single_edge or path.handoff))):
                 control_tuning=replace(control_tuning,fixed_speed_m_s=min(control_tuning.fixed_speed_m_s,tuning.search_recovery_speed_m_s))
             exit_turn=router.exit_search_turn(path,done,tuning,getattr(self.vision,"motion_heading",None)) if router is not None else None
             linear, angular, mode = self.patrol_controller.command(path, done, control_tuning,
@@ -867,6 +874,9 @@ class PatrolTestNode(base.WheelLegRaceNode):
                      approach_branch_status=self.vision.approach_branch_status if approach_advance is not None else "",
                      approach_branch_nearest_row=self.vision.approach_branch_rows if approach_advance is not None else "",
                      approach_end_reason=approach_end_reason,
+                     road_left_rows=0 if self.vision.road_estimate.left_edge is None else len(self.vision.road_estimate.left_edge),
+                     road_right_rows=0 if self.vision.road_estimate.right_edge is None else len(self.vision.road_estimate.right_edge),
+                     road_width_age="" if self.vision.last_dual_at is None else done-self.vision.last_dual_at,
                      reason=path.reason,error=path.error,near=path.near_error,mid=path.mid_error,
                      confidence=path.confidence,cmd_v=linear,cmd_w=angular,far=path.far_error,
                      far_bend=int(self.patrol_controller.far_bend_visible),

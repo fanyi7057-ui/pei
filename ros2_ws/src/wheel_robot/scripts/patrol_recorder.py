@@ -40,7 +40,8 @@ class PatrolRecorder:
             with (self.directory/'frames.csv').open('w',newline='',encoding='utf-8') as f:
                 fields=['video_frame','capture_monotonic','control_monotonic','sequence','source','mode','phase','reason','error','near','mid','far','far_bend','bend_slow','straight_limited','confidence','cmd_v','cmd_w','queue_dropped','config_sha256',
                         'approach_advance_m','approach_progress_source','approach_branch_status',
-                        'approach_branch_nearest_row','approach_end_reason']
+                        'approach_branch_nearest_row','approach_end_reason',
+                        'road_left_rows','road_right_rows','road_width_age']
                 rows=csv.DictWriter(f,fieldnames=fields);rows.writeheader()
                 while not self.stop.is_set() or not self.queue.empty():
                     try:frame,debug,row=self.queue.get(timeout=.1)

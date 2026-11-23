@@ -1142,6 +1142,23 @@ def road_surface_mask(hsv, blue, white, tuning):
         bridged = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, paint_kernel)
         neutral_dark = (hsv[:, :, 1] <= tuning.white_s_max) & (hsv[:, :, 2] < tuning.white_v_min)
         binary[(bridged > 0) & neutral_dark] = 255
+    # Fill only bounded neutral paint runs with independently white pixels
+    # on both sides. Width scales with processing resolution.
+    max_paint = max(tuning.black_gap_fill_px, int(.16*hsv.shape[1]))
+    neutral_dark = (hsv[:, :, 1] <= tuning.white_s_max) & (hsv[:, :, 2] < tuning.white_v_min)
+    columns = np.arange(binary.shape[1])[None, :]
+    known_white = binary > 0
+    left_white = np.maximum.accumulate(np.where(known_white, columns, -1), axis=1)
+    right_white = np.minimum.accumulate(np.where(known_white, columns, binary.shape[1])[:, ::-1], axis=1)[:, ::-1]
+    blocked = (blue > 0) | (~known_white & ~neutral_dark)
+    blocked_sum = np.pad(np.cumsum(blocked, axis=1), ((0, 0), (1, 0)))
+    rows = np.arange(len(binary))[:, None]
+    lo = np.clip(left_white+1, 0, binary.shape[1])
+    hi = np.clip(right_white, 0, binary.shape[1])
+    enclosed = ((left_white >= 0) & (right_white < binary.shape[1])
+                & (right_white-left_white-1 <= max_paint)
+                & (blocked_sum[rows, hi]-blocked_sum[rows, lo] == 0))
+    binary[enclosed & neutral_dark] = 255
     binary[blue > 0] = 0  # reapply AFTER every morphology/repair operation
     return binary
 
@@ -1242,6 +1259,81 @@ def ring_corner_path(hsv, blue, white, seed, tuning, entering, control_size, to_
                                 entry_boundary=boundary if entering else None,
                                 exit_boundary=None if entering else boundary)
     return None
+
+
+def contour_boundary_path(hsv, tuning, seed_x_ratio=None, previous_widths=None, masks=None):
+    """Trace blue/white sides in one near-connected road component."""
+    height, width = hsv.shape[:2]
+    blue, white = road_masks(hsv, tuning) if masks is None else masks
+    mask = road_surface_mask(hsv, blue, white, tuning)
+    _, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=4)
+    seed = tuning.target_x_ratio if seed_x_ratio is None else float(np.clip(seed_x_ratio, .1, .9))
+    seed_x = int(seed*width)
+    anchor_y = int(.65*height)
+    candidates = np.unique(labels[max(0,anchor_y-5):min(height,anchor_y+6), max(0,seed_x-12):min(width,seed_x+13)])
+    candidates = [i for i in candidates if i and stats[i,cv2.CC_STAT_AREA] >= tuning.min_road_area_ratio*width*height]
+    if not candidates:
+        return PathEstimate(False, mask=mask, reason="contour_no_connected_seed")
+    label = min(candidates, key=lambda i: abs(stats[i,cv2.CC_STAT_LEFT]+stats[i,cv2.CC_STAT_WIDTH]/2-seed_x))
+    road = np.uint8(labels == label)*255
+    selected = []
+    reference = seed_x
+    # Walk from near toward far, tracking overlapping cross-sections.
+    last_run = None
+    for y in range(int(.82*height), int(tuning.roi_top_ratio*height), -1):
+        changes = np.flatnonzero(np.diff(np.pad((road[y] > 0).astype(np.int8), (1, 1))))
+        runs = []
+        for left, end in zip(changes[::2], changes[1::2]):
+            right = end-1
+            if right-left < tuning.min_road_width_ratio*width:
+                continue
+            if last_run is not None and (left > last_run[1] or right < last_run[0]):
+                continue
+            left_seen = left > 0 and np.any(blue[y,max(0,left-3):left] > 0)
+            right_seen = right < width-1 and np.any(blue[y,right+1:min(width,right+4)] > 0)
+            runs.append((max(left-reference,reference-right,0),left,right,left_seen,right_seen))
+        if not runs:
+            continue
+        _, left, right, ls, rs = min(runs)
+        selected.append((y,left,right,ls,rs))
+        last_run = (left,right)
+        if ls and rs:
+            reference = (left+right)/2
+    measured = sorted((y,r-l) for y,l,r,ls,rs in selected if ls and rs)
+    widths = np.asarray(measured,dtype=float).reshape(-1,2)[:,::-1]
+    reference_widths = widths if len(widths) >= 3 else previous_widths
+    points, left_edge, right_edge = [], [], []
+    dual = 0
+    for y,left,right,ls,rs in reversed(selected):
+        center = None
+        if ls and rs:
+            center = (left+right)/2
+            dual += 1
+        elif ls != rs and reference_widths is not None and len(reference_widths) >= 2:
+            wp = reference_widths[np.argsort(reference_widths[:,1])]
+            if wp[0,1]-.06*height <= y <= wp[-1,1]+.12*height:
+                span = float(np.interp(y, wp[:,1], wp[:,0]))
+                center = left+span/2 if ls else right-span/2
+        if ls:
+            left_edge.append((left,y))
+        if rs:
+            right_edge.append((right,y))
+        if center is not None and left < center < right and not blue[y,int(center)]:
+            points.append((center,y))
+    points = np.asarray(points,dtype=float).reshape(-1,2)
+    if len(points) < max(6,int(.08*height)) or np.ptp(points[:,1]) < .08*height:
+        return PathEstimate(False, mask=road, reason="contour_edges_insufficient")
+    near_gap = max(0., tuning.road_near_y_ratio-points[-1,1]/height)
+    if near_gap > .16:
+        return PathEstimate(False, mask=road, points=points, reason="contour_edges_too_far")
+    errors = path_errors(points,width,height,tuning)
+    return PathEstimate(True,errors[0],min(1.,len(points)/(.35*height)),points,road,
+                        "contour_two_edges" if dual >= len(points)*.6 else "contour_one_edge",
+                        *errors[1:], widths=widths, dual_fraction=dual/max(1,len(points)),
+                        single_edge=dual < len(points)*.6, route_observed=near_gap <= .08,
+                        near_gap_ratio=near_gap,
+                        left_edge=np.asarray(left_edge,dtype=float).reshape(-1,2),
+                        right_edge=np.asarray(right_edge,dtype=float).reshape(-1,2))
 
 
 def road_centerline(hsv, tuning, seed_x_ratio=None, previous_points=None, previous_widths=None, branch="nearest", masks=None, exit_guide=False):
