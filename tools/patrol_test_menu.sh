@@ -63,7 +63,7 @@ esac
 case "$patrol_option" in
   1) patrol_motion=false; patrol_base=false ;;
   2)
-    printf '当前普通巡线采用左右边线轮廓中线，black_enabled=0；蓝白掩膜包含有白路包围的中性黑漆。配置巡航目标0.65m/s，纯轮廓实际速度额外受search_recovery_speed_m_s上限约束。单边只短时复用实测宽度，画面显示两边线和中线。环岛拐点仍由现有状态机处理，入环最小接近0.22米，上限0.60米。运行前完成调零/使能，并保持遥控急停可用。\n'
+    printf '当前普通巡线采用左右边线轮廓中线，black_enabled=0；蓝白掩膜包含有白路包围的中性黑漆。纯轮廓速度按配置分为稳定直道0.40、转弯/不稳定边线0.25、漏边0.10m/s，平滑切换。单边按行短时复用实测宽度，推算不刷新有效期，画面显示两边线和中线。环岛拐点仍由现有状态机处理，入环最小接近0.22米，上限0.60米。运行前完成调零/使能，并保持遥控急停可用。\n'
     read -r -p '确认在安全普通赛道测试：1继续，其他取消：' patrol_confirm
     [[ "$patrol_confirm" == 1 ]] || exit 0
     patrol_motion=true; patrol_base=true ;;

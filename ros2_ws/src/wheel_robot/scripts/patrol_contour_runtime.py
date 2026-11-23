@@ -44,6 +44,11 @@ class PatrolTuning:
     road_max_near_jump_ratio: float = 0.25
     road_single_edge_hold_seconds: float = 0.40
     road_width_probe_seconds: float = 0.20
+    contour_cruise_speed_m_s: float = 0.40
+    contour_turn_speed_m_s: float = 0.25
+    contour_blind_speed_m_s: float = 0.10
+    contour_memory_seconds: float = 0.35
+    contour_width_hold_seconds: float = 0.65
     loss_hold_seconds: float = 0.80
     search_enabled: int = 1
     search_max_seconds: float = 3.0
@@ -346,6 +351,12 @@ class PatrolTuning:
             raise ValueError("contour_order_enabled must be 0 or 1")
         if self.bounded_recovery_enabled not in (0, 1):
             raise ValueError("bounded_recovery_enabled must be 0 or 1")
+        if not (0 < self.contour_blind_speed_m_s <= self.contour_turn_speed_m_s <= self.contour_cruise_speed_m_s):
+            raise ValueError("contour speeds must satisfy 0 < blind <= turn <= cruise")
+        if not 0 < self.contour_width_hold_seconds <= 1.:
+            raise ValueError("contour width hold must be within (0, 1] seconds")
+        if not 0 < self.contour_memory_seconds <= self.loss_hold_seconds:
+            raise ValueError("contour memory must fit within the path loss hold")
         if not self.black_enabled and not self.contour_enabled:
             raise ValueError("黑线与轮廓不能同时关闭；停车请设enabled=0")
         for name in ("fixed_speed_m_s", "max_turn_rad_s", "steering_gain", "steering_kd", "max_error_derivative", "handoff_seconds", "loss_hold_seconds", "road_single_edge_hold_seconds", "search_turn_rad_s", "roundabout_arm_seconds", "roundabout_arm_distance_m", "roundabout_entry_min_seconds", "roundabout_entry_distance_m", "roundabout_entry_min_yaw_rad", "roundabout_follow_min_seconds", "roundabout_exit_distance_m", "roundabout_rearm_seconds", "roundabout_rearm_distance_m", "roundabout_search_turn_rad_s"):
@@ -1261,6 +1272,31 @@ def ring_corner_path(hsv, blue, white, seed, tuning, entering, control_size, to_
     return None
 
 
+class RoadWidthProfile:
+    """Expire measured rows individually; inferred widths never refresh age."""
+
+    def __init__(self):
+        self.samples = {}
+
+    def reset(self):
+        self.samples.clear()
+
+    def observe(self, widths, now, hold_seconds):
+        self.samples = {y: sample for y, sample in self.samples.items()
+                        if 0 <= now-sample[1] < hold_seconds}
+        if widths is not None and len(widths) >= 3:
+            for width, y in widths:
+                if not (math.isfinite(width) and math.isfinite(y) and width > 0):
+                    continue
+                key = int(round(y))
+                previous = self.samples.get(key)
+                measured = width if previous is None else .65*previous[0]+.35*width
+                self.samples[key] = (float(measured), now)
+        if len(self.samples) < 3:
+            return None
+        return np.array([(width, y) for y, (width, _) in sorted(self.samples.items())])
+
+
 def contour_boundary_path(hsv, tuning, seed_x_ratio=None, previous_widths=None, masks=None):
     """Trace blue/white sides in one near-connected road component."""
     height, width = hsv.shape[:2]
@@ -1301,7 +1337,16 @@ def contour_boundary_path(hsv, tuning, seed_x_ratio=None, previous_widths=None, 
             reference = (left+right)/2
     measured = sorted((y,r-l) for y,l,r,ls,rs in selected if ls and rs)
     widths = np.asarray(measured,dtype=float).reshape(-1,2)[:,::-1]
-    reference_widths = widths if len(widths) >= 3 else previous_widths
+    reference_widths = previous_widths
+    if len(widths) >= 3:
+        if previous_widths is None:
+            reference_widths = widths
+        else:
+            # Current measurements replace only matching rows, preserving
+            # recent measurements at other image heights.
+            joined = np.vstack((widths, previous_widths))
+            _, first = np.unique(joined[:, 1], return_index=True)
+            reference_widths = joined[first]
     points, left_edge, right_edge = [], [], []
     dual = 0
     for y,left,right,ls,rs in reversed(selected):
@@ -1322,10 +1367,10 @@ def contour_boundary_path(hsv, tuning, seed_x_ratio=None, previous_widths=None, 
             points.append((center,y))
     points = np.asarray(points,dtype=float).reshape(-1,2)
     if len(points) < max(6,int(.08*height)) or np.ptp(points[:,1]) < .08*height:
-        return PathEstimate(False, mask=road, reason="contour_edges_insufficient")
+        return PathEstimate(False, mask=road, widths=widths, reason="contour_edges_insufficient")
     near_gap = max(0., tuning.road_near_y_ratio-points[-1,1]/height)
     if near_gap > .16:
-        return PathEstimate(False, mask=road, points=points, reason="contour_edges_too_far")
+        return PathEstimate(False, mask=road, points=points, widths=widths, reason="contour_edges_too_far")
     errors = path_errors(points,width,height,tuning)
     return PathEstimate(True,errors[0],min(1.,len(points)/(.35*height)),points,road,
                         "contour_two_edges" if dual >= len(points)*.6 else "contour_one_edge",
@@ -2448,6 +2493,8 @@ class FixedSpeedController:
         self.bend_clear_frames = 0
         self.bend_slow = False
         self._recent_bend_preview = None
+        self.contour_straight_frames = 0
+        self.contour_target_speed = 0.
         self.far_bend_visible = False
         self.straight_limited = False
         self.loss_black_guided = False
@@ -2692,6 +2739,15 @@ class FixedSpeedController:
                 angular=float(np.clip(search_heading_turn,-tuning.max_turn_rad_s,tuning.max_turn_rad_s))
                 self.raw_angular=angular
                 mode="yaw_exit_recovery"
+            elif ordinary_guidance and not tuning.black_enabled:
+                # Short losses retain a decaying measured heading. A missing
+                # straight road never supplies evidence for a default turn.
+                remembered = float(np.clip(self.loss_command[1], -.35, .35))
+                fade = max(0., 1.-age/tuning.contour_memory_seconds)
+                angular = remembered*fade
+                linear = min(self.loss_command[0], tuning.contour_blind_speed_m_s)
+                self.raw_angular = angular
+                mode = "contour_memory_bridge" if fade > 0 else "contour_missing_slow"
             elif active:
                 # Freeze the chosen episode direction; elapsed time alone
                 # must not flip a right search into the default left turn.
@@ -2730,7 +2786,7 @@ class FixedSpeedController:
                 if soft_time or soft_distance:
                     self.degraded=True
                     linear=min(linear,tuning.search_degraded_speed_m_s)
-                    if not path.valid and search_heading_turn is None:
+                    if not path.valid and search_heading_turn is None and not (ordinary_guidance and not tuning.black_enabled):
                         angular=math.copysign(min(tuning.search_turn_rad_s,tuning.max_turn_rad_s),self.search_turn_goal or tuning.search_default_direction)
                         self.raw_angular=angular
                     mode="degraded_reacquire" if path.valid else "degraded_search"
@@ -2763,6 +2819,22 @@ class FixedSpeedController:
             edge_progress = float(np.clip((abs(path.near_error)-.45)/.35, 0., 1.))
             edge_speed = tuning.search_recovery_speed_m_s*(1.-.20*edge_progress)
             linear = min(linear, edge_speed)
+        if ordinary_guidance and not tuning.black_enabled:
+            stable = (path.valid and path.source == "road" and path.route_observed
+                      and not path.handoff and path.confidence >= .65 and path.near_gap_ratio <= .03
+                      and max(abs(path.near_error), abs(path.mid_error)) <= .18
+                      and max(abs(path.near_error-path.mid_error), abs(path.mid_error-path.far_error)) <= .12)
+            self.contour_straight_frames = self.contour_straight_frames+1 if stable and not recovering else 0
+            if not path.valid:
+                limit = tuning.contour_blind_speed_m_s
+            elif self.contour_straight_frames >= tuning.reacquire_confirm_frames:
+                limit = tuning.contour_cruise_speed_m_s
+            else:
+                limit = tuning.contour_turn_speed_m_s
+            self.contour_target_speed = min(tuning.fixed_speed_m_s, limit)
+            linear = min(linear, self.contour_target_speed)
+        else:
+            self.contour_straight_frames = 0
         previous = self.last_command
         linear_rate = tuning.linear_accel_m_s2
         if ordinary_guidance and (self.bend_slow or edge_braking) and linear < previous[0]:

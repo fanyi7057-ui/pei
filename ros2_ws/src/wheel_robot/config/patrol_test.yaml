@@ -84,6 +84,14 @@ patrol_test:
   # 只缓存与黑线一致的真实双边宽度；突然只剩一边时可借用上面0.40秒，不等失线才学习路宽。
   # 减小更及时但多耗图像计算；增大更省时但近弯路宽可能较旧。探测不抢走可信黑线控制。
   road_width_probe_seconds: 0.20
+  # 纯轮廓普通巡线：稳定直道、转弯/单边、无路径的速度上限，m/s。
+  contour_cruise_speed_m_s: 0.40
+  contour_turn_speed_m_s: 0.25
+  contour_blind_speed_m_s: 0.10
+  # 短暂漏边时保持并衰减实际转向的时间，秒。不能延长实测宽度有效期。
+  contour_memory_seconds: 0.35
+  # 纯轮廓宽度按每一行的实测时间过期，秒。
+  contour_width_hold_seconds: 0.65
   # 没有明确急弯方向时，先保持已输出指令的秒数，>=0；到期进入主动找线，不再直接停走。
   # 若近期已有明确急弯方向，直接主动找线；全程不因切换重启速度，盲区是否趋近巡航由maintain开关决定。
   loss_hold_seconds: 0.80

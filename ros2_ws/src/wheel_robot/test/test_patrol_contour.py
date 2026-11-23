@@ -260,7 +260,7 @@ def test_v12_new_fields_reject_invalid_snapshot(changes):
 
 @pytest.mark.parametrize("name,expected",[
     ("PathSelector","89813ecd017f3c049a034960b1f8d5b053f124903149aca0d29909a37ae6d9cf"),
-    ("FixedSpeedController","3f2582119e0cdc7c486c11498b26e5bb3097e33c2d757e7e50232d1ac48a77dc"),
+    ("FixedSpeedController","aa3679b9e1caa59337af84b957893df570c8a50a3a087050208fff87818987c0"),
 ])
 def test_ordinary_classes_match_reviewed_source(name,expected):
     import ast
@@ -947,7 +947,7 @@ def test_road_near_side_wins_over_opposite_far_curve():
 def test_road_width_single_edge_window_is_not_renewed(monkeypatch):
     module = load_actual_vision_module(monkeypatch)
     vision = module.PatrolVision()
-    tuning = replace(PatrolTuning(), black_enabled=0)
+    tuning = replace(PatrolTuning(), black_enabled=0, contour_width_hold_seconds=.40)
     dual = np.full((240,320,3),(255,0,0),np.uint8)
     dual[:,60:261] = 245
     single = np.full((240,320,3),(255,0,0),np.uint8)
@@ -3482,3 +3482,56 @@ def test_pure_contour_observes_blue_sides_and_rejects_featureless_white():
     assert np.all(path.right_edge[:, 0] == 249)
     blank = np.full((240, 320, 3), (0, 0, 230), np.uint8)
     assert not contour_boundary_path(blank, tuning).valid
+
+def test_contour_width_rows_expire_without_being_refreshed_by_inference():
+    from patrol_contour_runtime import RoadWidthProfile
+
+    cache = RoadWidthProfile()
+    first = np.array([[120., 35.], [130., 36.], [140., 37.]])
+    current = np.array([[145., 50.], [150., 51.], [155., 52.]])
+    assert len(cache.observe(first, 1., .65)) == 3
+    joined = cache.observe(current, 1.3, .65)
+    assert len(joined) == 6
+    expired = cache.observe(None, 1.7, .65)
+    assert np.all(expired[:, 1] >= 50.)
+    assert cache.observe(None, 2., .65) is None
+
+
+def test_pure_contour_loss_never_invents_default_turn_after_soft_limit():
+    tuning = replace(PatrolTuning(), black_enabled=0, bounded_recovery_enabled=1,
+                     search_max_seconds=1., search_hard_max_seconds=4.,
+                     search_max_distance_m=.5, search_hard_max_distance_m=2.)
+    controller = FixedSpeedController()
+    road = PathEstimate(True, confidence=.9, source="road", route_observed=True)
+    for now in np.arange(0., .5, .05):
+        controller.command(road, now, tuning, ordinary_guidance=True)
+    for now in np.arange(.5, 2.5, .05):
+        v, w, mode = controller.command(PathEstimate(False), now, tuning, ordinary_guidance=True)
+        assert abs(w) < 1e-9
+        if now >= 1.:
+            assert v <= tuning.contour_blind_speed_m_s+1e-9
+    assert not controller.fault_latched
+
+
+def test_pure_contour_speed_recovers_only_on_consistent_straight_geometry():
+    tuning = replace(PatrolTuning(), black_enabled=0, bounded_recovery_enabled=1)
+    controller = FixedSpeedController()
+    road = PathEstimate(True, confidence=.9, source="road", route_observed=True)
+    for now in np.arange(0., 1.5, .05):
+        v, w, _ = controller.command(road, now, tuning, ordinary_guidance=True)
+    assert v == pytest.approx(tuning.contour_cruise_speed_m_s)
+    bend = replace(road, near_error=.3, mid_error=.6, far_error=.7, error=.4)
+    for now in np.arange(1.5, 2., .05):
+        v, _, _ = controller.command(bend, now, tuning, ordinary_guidance=True)
+    assert v <= tuning.contour_turn_speed_m_s+1e-9
+
+
+@pytest.mark.parametrize("updates", [
+    {"contour_blind_speed_m_s": 0.},
+    {"contour_turn_speed_m_s": .5},
+    {"contour_width_hold_seconds": 2.},
+    {"contour_memory_seconds": 1.},
+])
+def test_invalid_contour_control_parameters_are_rejected(updates):
+    with pytest.raises(ValueError):
+        replace(PatrolTuning(), **updates).validate()
