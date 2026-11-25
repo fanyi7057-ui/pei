@@ -533,7 +533,7 @@ def test_file_reload_atomic_replace_reject_and_recover(tmp_path):
 def test_shipped_config_has_all_documented_values():
     path = SCRIPTS.parent / "config" / "patrol_test.yaml"
     tuning, message = PatrolFileWatcher(path).poll()
-    assert tuning == replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0., crop_left_ratio=.12, crop_right_ratio=.12, crop_top_ratio=.22, contour_order_enabled=1, ring_entry_probe_seconds=.50, search_turn_rad_s=1.1, roundabout_search_turn_rad_s=1.1, ring_entry_advance_m=.25, contour_takeover_enabled=1, ring_entry_main_curve_enabled=0, max_turn_rad_s=1.5), message
+    assert tuning == replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0., crop_left_ratio=.12, crop_right_ratio=.12, crop_top_ratio=.22, contour_order_enabled=1, ring_entry_probe_seconds=.50, search_turn_rad_s=1.1, roundabout_search_turn_rad_s=1.1, ring_entry_advance_m=.25, ring_entry_approach_max_m=.90, contour_takeover_enabled=1, ring_entry_main_curve_enabled=0, max_turn_rad_s=1.5), message
 
 
 @pytest.fixture
@@ -2722,7 +2722,7 @@ def test_v10_new_tuning_snapshot_validation(changes):
 def test_v10_complete_live_yaml_has_all_fields_and_preserves_non_ring_values():
     current,message=PatrolFileWatcher(SCRIPTS.parent/"config/patrol_test.yaml").poll()
     assert current is not None,message
-    assert current==replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0., crop_left_ratio=.12, crop_right_ratio=.12, crop_top_ratio=.22, contour_order_enabled=1, ring_entry_probe_seconds=.50, search_turn_rad_s=1.1, roundabout_search_turn_rad_s=1.1, ring_entry_advance_m=.25, contour_takeover_enabled=1, ring_entry_main_curve_enabled=0, max_turn_rad_s=1.5)
+    assert current==replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0., crop_left_ratio=.12, crop_right_ratio=.12, crop_top_ratio=.22, contour_order_enabled=1, ring_entry_probe_seconds=.50, search_turn_rad_s=1.1, roundabout_search_turn_rad_s=1.1, ring_entry_advance_m=.25, ring_entry_approach_max_m=.90, contour_takeover_enabled=1, ring_entry_main_curve_enabled=0, max_turn_rad_s=1.5)
     assert current.fixed_speed_m_s==.65
     assert (current.crosswalk_stop_seconds,current.crosswalk_clear_seconds)==(3.,3.)
 
@@ -3570,3 +3570,23 @@ def test_far_bend_needs_visible_points_and_two_frames():
     assert controller.far_bend_visible and not controller.bend_slow
     controller.command(path, .15, tuning, ordinary_guidance=True)
     assert controller.bend_slow
+
+def test_entry_current_left_branch_keeps_priority_over_generic_mainline(monkeypatch):
+    from patrol_dash_entry import DashObservation
+
+    module = load_actual_vision_module(monkeypatch)
+    vision = module.PatrolVision()
+    tuning = PatrolTuning()
+    vision.router._phase("ENTRY", 0.)
+    vision.router.started_at = 0.
+    main = PathEstimate(True, confidence=.8, route_observed=True,
+                        points=np.array([[160., 100.], [160., 210.]]))
+    branch = PathEstimate(True, -.3, .8, np.array([[80., 110.], [120., 210.]]),
+                          near_error=-.25, mid_error=-.45, far_error=-.5,
+                          route_observed=True, route_locked=True)
+    cue = DashObservation(valid=True, blocks=4, main=main, branch=branch)
+    monkeypatch.setattr(module, "detect_vv_dashes_compatible", lambda *args, **kwargs: cue)
+    image = np.full((240, 320, 3), 245, np.uint8)
+    path = vision.estimate(image, tuning, .1)
+    assert path.valid and path.route_locked and path.error < -.2
+    assert vision.router.entry_dash_proven
