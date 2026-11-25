@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# V16测试子菜单；纯轮廓巡线，保留偏航C++修复，加载本包。
+# V16测试子菜单；普通巡线V11，保留偏航C++修复，加载本包。
 set -u
 PATROL_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)" || exit 1
 PATROL_WS="$PATROL_ROOT/ros2_ws"
@@ -53,7 +53,7 @@ if [[ "$patrol_nodes" == *"/wheelleg_vision_race"* || "$patrol_nodes" == *"/wl_b
   printf '已有比赛或底盘节点在运行，请先在原终端Ctrl+C退出；禁止两个程序抢/cmd_vel。\n'
   exit 1
 fi
-printf '\n===== V16巡线＋环岛＋横道/终点（纯轮廓巡线，不执行台阶）=====\n'
+printf '\n===== V16巡线＋环岛＋横道/终点（普通巡线V11，不执行台阶）=====\n'
 case "${1:-}" in
   --dry) patrol_option=1 ;;
   --real) patrol_option=2 ;;
@@ -63,7 +63,7 @@ esac
 case "$patrol_option" in
   1) patrol_motion=false; patrol_base=false ;;
   2)
-    printf '当前普通巡线采用左右边线轮廓中线，black_enabled=0；蓝白掩膜包含有白路包围的中性黑漆。纯轮廓速度按配置分为稳定直道0.40、转弯/不稳定边线0.25、漏边0.10m/s，平滑切换。单边按行短时复用实测宽度，推算不刷新有效期，画面显示两边线和中线。环岛拐点仍由现有状态机处理，入环最小接近0.22米，上限0.60米。运行前完成调零/使能，并保持遥控急停可用。\n'
+    printf '当前入口：合格虚线单帧锁存，沿当前路线低速前进0.12至0.60米，有近期发散左支证据才左探，最多0.5秒；不再先5后4。按patrol_test.yaml运行：普通0.65m/s，确认环内1.3倍；台阶1/2仅占位跳过；失败/30或45秒控制预算到期只重找当前环岛，绝不提前授权横道。横道停3秒后恢复巡线、5秒内防重复；两圈环岛与横道凭据齐全后，第二横道后走1m结束。丢线软边界先低速恢复，最终故障保护仍在；不跳台阶、不录像。先将环内倍率设1.0对照检查，再决定是否1.3；完成调零/使能、清场并保持遥控急停可用。\n'
     read -r -p '确认在安全普通赛道测试：1继续，其他取消：' patrol_confirm
     [[ "$patrol_confirm" == 1 ]] || exit 0
     patrol_motion=true; patrol_base=true ;;

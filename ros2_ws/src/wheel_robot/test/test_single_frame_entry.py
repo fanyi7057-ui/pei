@@ -61,12 +61,21 @@ def test_locked_ordinary_line_cannot_confirm_follow_without_dash_evidence():
     assert r.phase=="ENTRY" and not r.ring_route_acquired
 
 def test_entry_probe_extension_needs_current_left_evidence_and_keeps_hard_deadline():
+    # No current evidence at the base deadline: release immediately, no blind extension.
+    r, t = fixture()
+    r.distance = .121
+    r._observe_vv_entry(left_cue(), .5, t, .03, .01, (.3, 0.))
+    assert r.motion_override(.81, t, entry_branch_visible=False) == (0., 0., "roundabout_entry_release")
+    assert r.ring_release_source == "entry_probe_no_route" and not any(r.course.rings)
+
+    # With current evidence the probe extends to the configured max seconds,
+    # then still releases; it never becomes an unbounded blind turn.
     r, t = fixture()
     r.distance = .121
     r._observe_vv_entry(left_cue(), .5, t, .03, .01, (.3, 0.))
     assert r.motion_override(.81, t, entry_branch_visible=True)[2] == "roundabout_left_acquire"
-    assert r.route_status == "entry_left_branch_route_rejected"
-    assert r.motion_override(1.06, t, entry_branch_visible=True) == (0., 0., "roundabout_entry_release")
+    assert r.motion_override(1.06, t, entry_branch_visible=True)[2] == "roundabout_left_acquire"
+    assert r.motion_override(1.45, t, entry_branch_visible=True) == (0., 0., "roundabout_entry_release")
     assert r.ring_release_source == "entry_confirm_timeout" and not any(r.course.rings)
 
 def test_converging_exit_cancels_generic_approach_without_ring_receipt():
@@ -109,16 +118,3 @@ def test_approach_distance_cap_requires_left_evidence_and_rejects_late_fork():
         assert not any(r.course.rings)
         if expected == "SEEK":
             assert r.ring_release_source == "entry_approach_distance_limit"
-
-def test_sparse_entry_evidence_needs_two_frames_and_cannot_hold_indefinitely():
-    router, tuning = fixture()
-    router._phase("ENTRY", .5)
-    assert router.motion_override(.81, tuning, entry_sparse_visible=True)[2] == "roundabout_entry_release"
-
-    router, tuning = fixture()
-    router._phase("ENTRY", .5)
-    assert router.motion_override(.77, tuning, entry_sparse_visible=True)[2] == "roundabout_left_acquire"
-    assert router.motion_override(.81, tuning, entry_sparse_visible=True)[2] == "roundabout_left_acquire"
-    assert not router.entry_dash_proven and not router.ring_route_acquired
-    assert router.motion_override(1.06, tuning, entry_sparse_visible=True)[2] == "roundabout_entry_release"
-    assert router.ring_release_source == "entry_confirm_timeout"

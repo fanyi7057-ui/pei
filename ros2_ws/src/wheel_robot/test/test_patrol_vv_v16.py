@@ -2,6 +2,7 @@
 from dataclasses import replace
 import ast
 import hashlib
+import math
 from pathlib import Path
 
 import cv2
@@ -9,7 +10,7 @@ import numpy as np
 import pytest
 
 from test_patrol_contour import load_actual_vision_module
-from patrol_contour_runtime import PatrolTuning, RoundaboutRouter, PathEstimate, FixedSpeedController
+from patrol_contour_runtime import PatrolTuning, RoundaboutRouter, PathEstimate, FixedSpeedController, SearchSideMemory
 from patrol_dash_entry import DashObservation, detect_vv_dashes
 
 
@@ -82,6 +83,48 @@ def test_reject_non_entry_cues(kind):
     assert not got.valid or (kind=="right" and not got.branch.valid)
 
 
+def test_entry_accepts_a_left_curving_main_chain_without_a_branch():
+    """2026-11-23: some entry poses only show a left-curving main dash chain."""
+    r,t=armed()
+    main=PathEstimate(True,near_error=-.12,mid_error=-.25,route_observed=True)
+    c=DashObservation(valid=True,blocks=4,near_ratio=.88,main=main)
+    r.observe(False,0.,0.,t,(.65,0.))
+    r.observe(True,1.,.10,t,(.65,0.),dash_cue=c)
+    assert r.phase=="APPROACH"
+    r.distance=r.first_marker_distance+t.ring_entry_advance_m+.01
+    r.observe(True,1.,.20,t,(.65,0.),dash_cue=c)
+    r.observe(True,1.,.30,t,(.65,0.),dash_cue=c)
+    assert r.phase=="ENTRY" and r.entry_detection_reason=="vv_main_curve_left_probe"
+
+
+def test_main_curve_fallback_needs_the_dashes_to_be_close():
+    r,t=armed()
+    main=PathEstimate(True,near_error=-.12,mid_error=-.25,route_observed=True)
+    far=DashObservation(valid=True,blocks=4,near_ratio=.40,main=main)
+    r.observe(False,0.,0.,t,(.65,0.))
+    r.observe(True,1.,.10,t,(.65,0.),dash_cue=far)
+    assert r.phase=="APPROACH"
+    r.distance=r.first_marker_distance+t.ring_entry_advance_m+.01
+    for i in range(3):
+        r.observe(True,1.,.2+i*.1,t,(.65,0.),dash_cue=far)
+    assert r.phase=="APPROACH"
+
+
+def test_main_curve_fallback_rejects_an_already_far_left_line():
+    """If the main chain is already at -0.55 it is the car's own deviation, not
+    a ring entry line (2026-11-23 19:15 false probe)."""
+    r,t=armed()
+    main=PathEstimate(True,near_error=-.55,mid_error=-.64,route_observed=True)
+    c=DashObservation(valid=True,blocks=4,near_ratio=.89,main=main)
+    r.observe(False,0.,0.,t,(.65,0.))
+    r.observe(True,1.,.10,t,(.65,0.),dash_cue=c)
+    assert r.phase=="APPROACH"
+    r.distance=r.first_marker_distance+t.ring_entry_advance_m+.01
+    for i in range(4):
+        r.observe(True,1.,.2+i*.1,t,(.65,0.),dash_cue=c)
+    assert r.phase=="APPROACH"
+
+
 def test_first_marker_never_immediately_turns_even_if_it_looks_like_entry():
     r,t=armed()
     r.observe(False,0.,0.,t,(.65,0.))
@@ -131,8 +174,8 @@ def test_reviewed_ordinary_algorithms_and_numeric_speed_defaults():
     scripts=Path(__file__).resolve().parents[1]/"scripts"
     text=(scripts/"patrol_contour_runtime.py").read_text(encoding="utf-8-sig")
     tree=ast.parse(text)
-    for name,digest in (("PathSelector","89813ecd017f3c049a034960b1f8d5b053f124903149aca0d29909a37ae6d9cf"),
-                        ("FixedSpeedController","aa3679b9e1caa59337af84b957893df570c8a50a3a087050208fff87818987c0")):
+    for name,digest in (("PathSelector","8e5d914aff1fe47fd4039d05214dae936fbf56fd79d36ade94128af131015224"),
+                        ("FixedSpeedController","55b2b8c1dff6f20ec57c842309786a1754fa61e77726baa4cf1ce4a7d4813f37")):
         item=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name==name)
         assert hashlib.sha256(ast.get_source_segment(text,item).strip().encode()).hexdigest()==digest
     t=PatrolTuning();c=FixedSpeedController()
@@ -150,6 +193,205 @@ def test_current_incremental_manifest_includes_vv_and_matches_files():
     assert "ros2_ws/src/wheel_robot/test/test_patrol_vv_v16.py" in entries
     for relative,digest in entries.items():
         assert hashlib.sha256((root/relative).read_bytes()).hexdigest()==digest,relative
+
+
+def branch_cue(branch=True,exit_branch=False):
+    return DashObservation(valid=True,blocks=4,branch=PathEstimate(branch),
+                           exit_branch=PathEstimate(exit_branch))
+
+
+def failed_approach_inside_retry_lock():
+    """Real sequence: 0.60m APPROACH limit -> SEEK with retry lock still active."""
+    r,t=armed()
+    r.observe(False,0.,0.,t,(.3,0.))
+    r.observe(True,1.,.1,t,(.3,0.),dash_cue=DashObservation(valid=True,blocks=4))
+    assert r.phase=="APPROACH"
+    r.distance=r.first_marker_distance+t.ring_entry_approach_max_m
+    r.observe(True,1.,.2,t,(.3,0.),dash_cue=DashObservation(valid=True,blocks=4))
+    assert r.phase=="SEEK" and r.retry_started_at is not None
+    assert not r.gate_detection_allowed(.3,t)
+    return r,t
+
+
+def test_confirmed_left_branch_rearms_inside_retry_lock_and_enters():
+    r,t=failed_approach_inside_retry_lock()
+    # A plain dash frame must still respect the failed-attempt lock.
+    r.observe(True,1.,.3,t,(.3,0.),dash_cue=DashObservation(valid=True,blocks=4))
+    assert r.phase=="SEEK"
+    # The fork that appears inside the lock is new evidence: latch immediately.
+    r.observe(True,1.,.4,t,(.3,0.),dash_cue=branch_cue())
+    assert r.phase=="APPROACH"
+    assert r.entry_detection_reason=="vv_rearm_on_confirmed_left_branch"
+    r.distance=r.first_marker_distance+t.ring_entry_advance_m+.001
+    r.observe(True,1.,.5,t,(.3,0.),dash_cue=branch_cue())
+    assert r.phase=="ENTRY"
+
+
+def test_branch_rearm_switch_off_keeps_old_lock_and_detection_widens():
+    r,t=failed_approach_inside_retry_lock()
+    off=replace(t,roundabout_entry_branch_rearm_enabled=0)
+    assert r.detection_allowed(.3,off)
+    r.observe(True,1.,.3,off,(.3,0.),dash_cue=branch_cue())
+    assert r.phase=="SEEK"
+    # Not a hidden latch path: the same cue still cannot bypass the lock.
+    assert not r.gate_detection_allowed(.3,off,branch_confirmed=True)
+
+
+def test_branch_rearm_never_bypasses_initial_arm_gate():
+    r=RoundaboutRouter()
+    r.observe(False,0.,0.,PatrolTuning(),(.3,0.))
+    r.distance=2.
+    assert not r.gate_detection_allowed(1.,PatrolTuning(),branch_confirmed=True)
+    r.observe(True,1.,1.,PatrolTuning(),(.3,0.),dash_cue=branch_cue())
+    assert r.phase=="SEEK"
+
+
+def test_converging_exit_branch_does_not_rearm():
+    r,t=failed_approach_inside_retry_lock()
+    r.observe(True,1.,.3,t,(.3,0.),dash_cue=branch_cue(branch=False,exit_branch=True))
+    assert r.phase=="SEEK"
+
+
+def straight_dashes():
+    dark=np.zeros((240,320),np.uint8)
+    for y in (210,185,160,135,110,85):
+        cv2.rectangle(dark,(171,y-5),(179,y+5),255,-1)
+    return dark,np.where(dark==0,255,0).astype(np.uint8)
+
+
+def test_actual_vision_measures_then_rearms_on_branch_inside_lock(monkeypatch):
+    m=load_actual_vision_module(monkeypatch);v=m.PatrolVision();_,t=armed()
+    r=v.router;r.started_at=0.;r.distance=4.;r.phase="SEEK";r.phase_at=0.
+    r.retry_started_at=2.0;r.retry_origin_distance=3.5
+    r.entry_block_until=4.0;r.entry_block_distance=4.0
+    v.motion_command=(.3,0.)
+    assert not r.gate_detection_allowed(2.1,t) and r.detection_allowed(2.1,t)
+    straight,_=straight_dashes()
+    v.estimate(cv2.cvtColor(255-straight,cv2.COLOR_GRAY2BGR),t,2.1)
+    v.estimate(cv2.cvtColor(255-straight,cv2.COLOR_GRAY2BGR),t,2.13)
+    # Measurement runs during the lock, but a plain chain must not latch.
+    assert v.dash_observation.valid and r.phase=="SEEK"
+    dark,_=masks()
+    v.estimate(cv2.cvtColor(255-dark,cv2.COLOR_GRAY2BGR),t,2.16)
+    assert r.phase=="APPROACH"
+    assert r.entry_detection_reason=="vv_rearm_on_confirmed_left_branch"
+
+
+def entry_probe_router():
+    r=RoundaboutRouter();r.started_at=0.;r._phase("ENTRY",0.)
+    t=replace(PatrolTuning(),ring_entry_probe_seconds=.5,
+              ring_entry_probe_max_seconds=.9,ring_entry_probe_max_turn_deg=60.)
+    return r,t
+
+
+def test_entry_probe_extends_only_with_evidence_and_stops_at_turn_limit():
+    r,t=entry_probe_router()
+    assert r.motion_override(.6,t,path=None,entry_branch_visible=True)[2]=="roundabout_left_acquire"
+
+    r,t=entry_probe_router()
+    assert r.motion_override(.6,t,path=None,entry_branch_visible=False)==(0.,0.,"roundabout_entry_release")
+    assert r.phase=="SEEK" and r.ring_release_source=="entry_probe_no_route"
+
+    r,t=entry_probe_router()
+    r.left_yaw=math.radians(60.5)
+    assert r.motion_override(.6,t,path=None,entry_branch_visible=True)==(0.,0.,"roundabout_entry_release")
+    assert r.ring_release_source=="entry_probe_turn_limit"
+
+
+def test_entry_probe_extension_respects_max_seconds_and_switch():
+    r,t=entry_probe_router()
+    assert r.motion_override(.6,t,path=None,entry_branch_visible=True)[2]=="roundabout_left_acquire"
+    assert r.entry_probe_extended
+    assert r.motion_override(.95,t,path=None,entry_branch_visible=True)==(0.,0.,"roundabout_entry_release")
+    assert r.ring_release_source=="entry_confirm_timeout"
+
+    r,t=entry_probe_router()
+    off=replace(t,ring_entry_probe_extend_enabled=0)
+    assert r.motion_override(.8,off,path=None,entry_branch_visible=True)==(0.,0.,"roundabout_entry_release")
+
+
+def test_failed_left_probe_keeps_an_immediate_left_search_window():
+    r=RoundaboutRouter();t=replace(PatrolTuning(),roundabout_entry_search_seconds=.8)
+    r._phase("ENTRY",0.)
+    assert not r._release_ring(1.,t,"entry_probe_no_route")
+    assert r.phase=="SEEK" and r.entry_search_side==1
+    assert r.entry_search_active(1.1,t) and not r.entry_search_active(1.9,t)
+    # Non-entry failures never arm it, and a real exit clears it.
+    r2=RoundaboutRouter();r2._phase("APPROACH",0.)
+    assert not r2._release_ring(1.,t,"time_fallback")
+    assert r2.entry_search_until==0 and not r2.entry_search_active(1.1,t)
+    r.entry_search_until=0
+    r._phase("EXIT",2.);r.ring_route_acquired=True;r.course.lap=0
+    assert r._release_ring(2.,t,"visual_exit")
+    assert r.entry_search_until==0 and not r.entry_search_active(2.1,t)
+
+
+def test_repeated_failed_probes_stop_instead_of_circling():
+    r=RoundaboutRouter();t=replace(PatrolTuning(),roundabout_max_failed_entries=2)
+    r._phase("ENTRY",0.)
+    assert not r._release_ring(1.,t,"entry_probe_no_route")
+    assert r.failed_entries==1 and not r.fault and r.entry_search_active(1.1,t)
+    r._phase("ENTRY",2.)
+    assert not r._release_ring(3.,t,"entry_probe_no_route")
+    assert r.failed_entries==2 and r.fault=="ring_entry_unconfirmed"
+    assert r.route_status=="ring_entry_unconfirmed" and not r.entry_search_active(3.1,t)
+    # An approach-distance release is not a probe failure and never counts.
+    r2=RoundaboutRouter();r2._phase("APPROACH",0.)
+    assert not r2._release_ring(1.,t,"entry_approach_distance_limit")
+    assert r2.failed_entries==0 and not r2.fault
+    # Operator resume clears the fault and the retry count.
+    r.pause(4.);r.resume(5.,clear_fault=True)
+    assert r.fault=="" and r.failed_entries==0
+
+
+def test_post_exit_guard_only_arms_after_real_visual_exit():
+    r=RoundaboutRouter();t=replace(PatrolTuning(),roundabout_post_exit_guard_seconds=3.)
+    r.last_heading=("imu",.1,5.)
+    r._phase("EXIT",0.);r.ring_route_acquired=True;r.course.lap=0
+    assert r._release_ring(1.,t,"visual_exit")
+    assert r.phase=="SEEK_CROSSWALK" and r.post_exit_until==4.
+    assert r.post_exit_guard_active(2.,t) and not r.post_exit_guard_active(4.1,t)
+    assert not r.post_exit_guard_active(2.,replace(t,roundabout_post_exit_guard_enabled=0))
+    r2=RoundaboutRouter();r2._phase("ENTRY",0.)
+    assert not r2._release_ring(1.,t,"entry_probe_no_route")
+    assert r2.post_exit_until==0 and not r2.post_exit_guard_active(1.1,t)
+
+
+def test_post_exit_guard_limits_are_validated():
+    for changes in ({"roundabout_post_exit_guard_enabled":2},
+                    {"roundabout_post_exit_guard_seconds":0},
+                    {"roundabout_post_exit_guard_seconds":11},
+                    {"roundabout_post_exit_left_limit_rad_s":-0.1},
+                    {"roundabout_post_exit_left_limit_rad_s":2.5}):
+        with pytest.raises(ValueError):replace(PatrolTuning(),**changes).validate()
+
+
+def test_entry_probe_new_limits_are_validated():
+    for changes in ({"ring_entry_probe_max_seconds":.29},{"ring_entry_probe_max_seconds":2.5},
+                    {"ring_entry_probe_max_turn_deg":0},{"ring_entry_probe_max_turn_deg":200},
+                    {"ring_entry_probe_extend_enabled":2}):
+        with pytest.raises(ValueError):replace(PatrolTuning(),**changes).validate()
+
+
+def test_search_side_memory_points_to_last_clearly_seen_line():
+    m=SearchSideMemory()
+    assert m.update(PathEstimate(True,near_error=-.8,mid_error=-.7,confidence=.4),1.0) is None
+    assert m.update(PathEstimate(False),1.05)==1      # line was left -> search left
+    assert m.update(PathEstimate(False),1.5) is None  # stale hint expires
+    m.update(PathEstimate(True,near_error=.6,mid_error=.5),2.0)
+    assert m.update(PathEstimate(False),2.1)==-1      # line right -> search right
+    # Crossed, weak or handoff observations cannot establish a side.
+    m2=SearchSideMemory()
+    m2.update(PathEstimate(True,near_error=.2,mid_error=-.5),1.0)
+    assert m2.update(PathEstimate(False),1.1) is None
+    m2.update(PathEstimate(True,near_error=.8,mid_error=.7,handoff=True),2.0)
+    assert m2.update(PathEstimate(False),2.1) is None
+    m2.update(PathEstimate(True,near_error=-.8,mid_error=-.7,rescue=True),3.0)
+    assert m2.update(PathEstimate(False),3.1) is None
+    # A shallow near point with a strong mid bend is still a real side hint.
+    m3=SearchSideMemory()
+    m3.update(PathEstimate(True,near_error=-.31,mid_error=-.77),1.0)
+    assert m3.update(PathEstimate(False),1.1)==1
 
 
 

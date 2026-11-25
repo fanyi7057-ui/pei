@@ -26,46 +26,6 @@ class DashObservation:
     reason: str = "no_dash_blocks"
     mask_source: str = "corrected"
     block_points: tuple = ()
-    entry_match_status: str = "not_checked"
-    right_fork: bool = False
-
-
-class ApproachBranchConfirmation:
-    """Confirm a current fork observation using at most one missed frame."""
-
-    def __init__(self):
-        self.reset()
-
-    def reset(self):
-        self.last_sample = None
-        self.missed = False
-
-    def observe(self, cue, now, height, tuning):
-        branch = cue.branch
-        if cue.exit_branch.valid or cue.right_fork:
-            self.reset()
-            return "conflicting_fork"
-        if not (cue.valid and branch.valid and branch.points is not None and len(branch.points) >= 2):
-            if self.missed:
-                self.reset()
-            elif self.last_sample is not None:
-                self.missed = True
-            return cue.reason
-        if branch.points[:, 1].max() < .45*height:
-            self.reset()
-            return "left_branch_too_far"
-        previous = self.last_sample
-        errors = (branch.mid_error, branch.far_error)
-        self.last_sample = (now, errors)
-        self.missed = False
-        if previous is None:
-            return "left_branch_first_frame"
-        previous_at, previous_errors = previous
-        if not 0 < now-previous_at <= min(.15, tuning.roundabout_path_max_gap_seconds):
-            return "left_branch_first_frame"
-        if max(abs(a-b) for a, b in zip(errors, previous_errors)) > tuning.roundabout_entry_path_delta:
-            return "left_branch_discontinuous"
-        return "left_branch_confirmed"
 
 
 def _path(points,width,height,tuning,reason):
@@ -170,21 +130,11 @@ def detect_vv_dashes(events,white,tuning,reference_x_ratio=None, tracking_entry=
     # Compare only within the main chain's observed row span. A detached
     # near block must not reverse the inferred direction by extrapolation.
     branch = []
-    right_blocks = []
     for x, y, _ in candidates:
         if main[0, 1] <= y*height/56 <= main[-1, 1]:
             gap = np.interp(y*height/56, main[:, 1], main[:, 0]) - x*width/80
             if .035*width <= gap <= .45*width:
                 branch.append((x*width/80, y*height/56, gap))
-            elif -.45*width <= gap <= -.035*width:
-                right_blocks.append((y*height/56, -gap))
-    right_blocks.sort()
-    if len(right_blocks) >= 2:
-        right_rows, right_gaps = zip(*right_blocks)
-        gap_steps = np.diff(right_gaps)
-        result.right_fork = bool(right_rows[-1]-right_rows[0] >= .10*height
-                                 and abs(right_gaps[-1]-right_gaps[0]) >= .0375*width
-                                 and (np.all(gap_steps <= 0) or np.all(gap_steps >= 0)))
     branch.sort(key=lambda point: point[1])
     direction = ""
     if len(branch) >= 2 and branch[-1][1]-branch[0][1] >= .10*height:
@@ -233,57 +183,35 @@ def detect_vv_dashes_compatible(events,white,tuning,reference_x_ratio=None,legac
 
 
 def match_entry_dashes(observation, guide, width, height, tuning):
-    """Match current pixels to the existing left branch despite modest yaw and forward motion."""
-    observation.entry_match_status = "no_recent_guide"
-    if observation.exit_branch.valid:
-        observation.entry_match_status = "exit_fork_excluded"
-        return None
-    if guide is None or guide.points is None:
+    """Match current pixels to the existing left branch despite modest yaw."""
+    if guide is None or guide.points is None or observation.exit_branch.valid:
         return None
     reference = guide.points[np.argsort(guide.points[:, 1])]
     if len(reference) < 2:
         return None
     main = observation.main
     main_points = main.points if observation.valid and main.valid else None
-    branch_blocks = []
+    candidates = []
     for x, y in observation.block_points:
+        if not reference[0, 1] <= y <= reference[-1, 1]:
+            continue
         if main_points is not None and main_points[0, 1] <= y <= main_points[-1, 1]:
             if np.interp(y, main_points[:, 1], main_points[:, 0]) - x < .04*width:
                 continue
-        branch_blocks.append((x, y))
-
+        shift = x-np.interp(y, reference[:, 1], reference[:, 0])
+        if abs(shift) <= .14*width:
+            candidates.append((x,y,shift))
     matches = {}
-    sparse_groups = set()
-    # Forward motion brings the same markings lower in the image. Compare
-    # them against a bounded shift of the last genuinely observed route.
-    for row_shift in (0., .025, .05, .075):
-        candidates = []
-        for x, y in branch_blocks:
-            reference_y = y-row_shift*height
-            if not reference[0, 1] <= reference_y <= reference[-1, 1]:
-                continue
-            shift = x-np.interp(reference_y, reference[:, 1], reference[:, 0])
-            if abs(shift) <= .14*width:
-                candidates.append((x, y, shift))
-        for _, _, shift in candidates:
-            group = tuple(sorted(((x, y) for x, y, dx in candidates
-                                  if abs(dx-shift) <= .025*width), key=lambda p:p[1]))
-            if group in matches or len(group) < 2 or min(np.diff([p[1] for p in group])) < .035*height:
-                continue
-            candidate = _path(np.asarray(group), width, height, tuning, "vv_entry_tracked_dashes")
-            if candidate.route_observed:
-                matches[group] = candidate
-            else:
-                sparse_groups.add(group)
+    for _, _, shift in candidates:
+        group = sorted((p for p in candidates if abs(p[2]-shift) <= .025*width),
+                       key=lambda p:p[1])
+        if len(group) < 2 or min(np.diff([p[1] for p in group])) < .035*height:
+            continue
+        candidate = _path(np.asarray(group)[:, :2],width,height,tuning,"vv_entry_tracked_dashes")
+        if candidate.route_observed:
+            matches[tuple(group)] = candidate
     if len(matches) != 1:
-        if len(matches) > 1 or len(sparse_groups) > 1:
-            observation.entry_match_status = "ambiguous_match"
-        elif sparse_groups:
-            observation.entry_match_status = "matched_without_near_mid_coverage"
-        else:
-            observation.entry_match_status = "no_matching_dash_pair"
         return None
-    observation.entry_match_status = "matched_observed_route"
     candidate = next(iter(matches.values()))
     candidate.route_locked = True
     return candidate

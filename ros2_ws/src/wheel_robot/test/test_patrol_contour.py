@@ -259,8 +259,8 @@ def test_v12_new_fields_reject_invalid_snapshot(changes):
 
 
 @pytest.mark.parametrize("name,expected",[
-    ("PathSelector","89813ecd017f3c049a034960b1f8d5b053f124903149aca0d29909a37ae6d9cf"),
-    ("FixedSpeedController","aa3679b9e1caa59337af84b957893df570c8a50a3a087050208fff87818987c0"),
+    ("PathSelector","8e5d914aff1fe47fd4039d05214dae936fbf56fd79d36ade94128af131015224"),
+    ("FixedSpeedController","55b2b8c1dff6f20ec57c842309786a1754fa61e77726baa4cf1ce4a7d4813f37"),
 ])
 def test_ordinary_classes_match_reviewed_source(name,expected):
     import ast
@@ -533,7 +533,7 @@ def test_file_reload_atomic_replace_reject_and_recover(tmp_path):
 def test_shipped_config_has_all_documented_values():
     path = SCRIPTS.parent / "config" / "patrol_test.yaml"
     tuning, message = PatrolFileWatcher(path).poll()
-    assert tuning == replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0., black_enabled=0, crop_left_ratio=0., crop_right_ratio=0., crop_top_ratio=.04, roi_top_ratio=.04, roi_bottom_ratio=.82, road_near_y_ratio=.40, road_mid_y_ratio=.25, road_far_y_ratio=.12, road_near_gap_ratio=.12, contour_order_enabled=1, roundabout_exit_corner_enabled=1, ring_entry_probe_seconds=.50, ring_entry_advance_m=.22), message
+    assert tuning == replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0., crop_left_ratio=.12, crop_right_ratio=.12, crop_top_ratio=.22, contour_order_enabled=1, ring_entry_probe_seconds=.50, search_turn_rad_s=1.1, roundabout_search_turn_rad_s=1.1, ring_entry_advance_m=.25, contour_takeover_enabled=1, ring_entry_main_curve_enabled=0, max_turn_rad_s=1.5), message
 
 
 @pytest.fixture
@@ -620,6 +620,164 @@ def test_real_node_duplicate_fresh_frame_only_republishes(node_module, monkeypat
     node.vision.estimate = lambda *_args, **_kwargs: pytest.fail("old image processed twice")
     node._run_control_cycle()
     assert commands == [(.5, .2)]
+
+
+def test_real_node_loss_search_uses_last_seen_side(node_module, monkeypatch):
+    node, commands = make_node(node_module, monkeypatch)
+    left=PathEstimate(True,error=-.1,confidence=.9,near_error=-.8,mid_error=-.7,
+                      source="black",route_observed=True)
+    lost=PathEstimate(False,reason="synthetic_loss")
+    states=iter([left,lost])
+    node.vision.estimate=lambda *_args, **_kwargs: next(states)
+    times=iter([10.,10.,10.1,10.1])
+    monkeypatch.setattr(node_module.time,"monotonic",lambda: next(times))
+    node._run_control_cycle()
+    assert node._search_side_memory.side==1
+    # Stale curve memory points right; the new side hint must override it.
+    node.patrol_controller.last_curve_turn=-0.8
+    node.patrol_controller.last_curve_at=10.0
+    node._frame_sequence=2
+    node._latest_frame_time=10.1
+    node._latest_frame=np.zeros((240,320,3),np.uint8)
+    node._run_control_cycle()
+    # The line was last clearly seen on the left; the loss search must not
+    # inherit an unrelated/stale right turn.
+    assert commands[-1][1] > 0
+
+
+def test_real_node_caps_speed_when_line_is_at_frame_edge(node_module, monkeypatch):
+    node, commands = make_node(node_module, monkeypatch)
+    edge=PathEstimate(True,error=.7,confidence=.9,near_error=.7,mid_error=.6,
+                      source="black",route_observed=True)
+    node.vision.estimate=lambda *_args, **_kwargs: edge
+    clock=[10.0]
+    monkeypatch.setattr(node_module.time,"monotonic",lambda: clock[0])
+    for _ in range(24):
+        node._frame_sequence += 1
+        node._latest_frame_time=clock[0]
+        node._latest_frame=np.zeros((240,320,3),np.uint8)
+        node._run_control_cycle()
+        clock[0]+=0.05
+    # Large edge error must slow the car to the recovery cap before the
+    # steering reversal, instead of holding 0.65 m/s through the curve.
+    assert commands[-1][0] <= 0.32
+
+
+def test_real_node_limits_large_left_after_real_exit(node_module, monkeypatch):
+    node, commands = make_node(node_module, monkeypatch)
+    router=node_module.RoundaboutRouter()
+    router.phase="SEEK_CROSSWALK"
+    router.post_exit_until=999.
+    router.last_heading=("imu",0.,10.)
+    node.vision.router=router
+    node.vision.motion_heading=("imu",0.,10.)
+    left=PathEstimate(True,error=-.6,confidence=.9,near_error=-.7,mid_error=-.6,
+                      source="black",route_observed=True)
+    node.vision.estimate=lambda *_args, **_kwargs: left
+    clock=[10.0]
+    monkeypatch.setattr(node_module.time,"monotonic",lambda: clock[0])
+    node._frame_sequence=2
+    node._latest_frame_time=10.0
+    node._latest_frame=np.zeros((240,320,3),np.uint8)
+    node._run_control_cycle()
+    # A post-exit left/return branch must not produce a large left command.
+    assert commands[-1][1] <= 0.2001
+
+
+def test_real_node_starts_left_search_right_after_failed_probe(node_module, monkeypatch):
+    node, commands = make_node(node_module, monkeypatch)
+    router=node_module.RoundaboutRouter()
+    router.phase="SEEK"
+    router.entry_search_until=999.
+    router.entry_search_side=1
+    node.vision.router=router
+    seen=PathEstimate(True,error=0.,confidence=.9,source="black",route_observed=True)
+    node.vision.estimate=lambda *_args, **_kwargs: seen
+    clock=[10.0]
+    monkeypatch.setattr(node_module.time,"monotonic",lambda: clock[0])
+    node._frame_sequence=2
+    node._latest_frame_time=10.0
+    node._latest_frame=np.zeros((240,320,3),np.uint8)
+    node._run_control_cycle()
+    clock[0]+=0.05
+    node.vision.estimate=lambda *_args, **_kwargs: PathEstimate(False)
+    for _ in range(10):
+        node._frame_sequence += 1
+        node._latest_frame_time=clock[0]
+        node._run_control_cycle()
+        clock[0]+=0.05
+    # No (0,0) hold: the failed probe must continue as an active left search.
+    assert commands[-1][1] > .5
+
+
+def test_real_node_keeps_right_corrections_after_real_exit(node_module, monkeypatch):
+    node, commands = make_node(node_module, monkeypatch)
+    router=node_module.RoundaboutRouter()
+    router.phase="SEEK_CROSSWALK"
+    router.post_exit_until=999.
+    node.vision.router=router
+    right=PathEstimate(True,error=.6,confidence=.9,near_error=.7,mid_error=.6,
+                       source="black",route_observed=True)
+    node.vision.estimate=lambda *_args, **_kwargs: right
+    clock=[10.0]
+    monkeypatch.setattr(node_module.time,"monotonic",lambda: clock[0])
+    node._frame_sequence=2
+    node._latest_frame_time=10.0
+    node._latest_frame=np.zeros((240,320,3),np.uint8)
+    node._run_control_cycle()
+    assert commands[-1][1] < 0
+
+
+def test_real_node_slows_on_low_confidence_road_fallback(node_module, monkeypatch):
+    node, commands = make_node(node_module, monkeypatch)
+    weak=PathEstimate(True,error=.1,confidence=.30,near_error=.10,mid_error=.10,
+                      source="road",route_observed=True)
+    node.vision.estimate=lambda *_args, **_kwargs: weak
+    clock=[10.0]
+    monkeypatch.setattr(node_module.time,"monotonic",lambda: clock[0])
+    node._frame_sequence=2
+    node._latest_frame_time=10.0
+    node._latest_frame=np.zeros((240,320,3),np.uint8)
+    for _ in range(12):
+        node._frame_sequence += 1
+        node._latest_frame_time=clock[0]
+        node._run_control_cycle()
+        clock[0]+=0.05
+    # road conf 0.30 < 0.45: follow it, but only at the recovery speed.
+    assert commands[-1][0] <= 0.32
+
+
+def test_real_node_caps_speed_earlier_at_curve_entry(node_module, monkeypatch):
+    node, commands = make_node(node_module, monkeypatch)
+    edge=PathEstimate(True,error=.42,confidence=.9,near_error=.42,mid_error=.42,
+                      source="black",route_observed=True)
+    node.vision.estimate=lambda *_args, **_kwargs: edge
+    clock=[10.0]
+    monkeypatch.setattr(node_module.time,"monotonic",lambda: clock[0])
+    for _ in range(12):
+        node._frame_sequence += 1
+        node._latest_frame_time=clock[0]
+        node._latest_frame=np.zeros((240,320,3),np.uint8)
+        node._run_control_cycle()
+        clock[0]+=0.05
+    # 0.42 would not have triggered the old 0.55 edge gate.
+    assert commands[-1][0] <= 0.32
+
+
+def test_real_node_slows_down_on_a_steering_reversal(node_module, monkeypatch):
+    node, commands = make_node(node_module, monkeypatch)
+    path=PathEstimate(True,error=.5,confidence=.9,near_error=.10,mid_error=.10,
+                      source="black",route_observed=True)
+    node.vision.estimate=lambda *_args, **_kwargs: path
+    node.patrol_controller.last_command=(0.65,1.6)   # previous strong LEFT steer
+    clock=[10.0]
+    monkeypatch.setattr(node_module.time,"monotonic",lambda: clock[0])
+    node._frame_sequence=2
+    node._latest_frame_time=10.0
+    node._latest_frame=np.zeros((240,320,3),np.uint8)
+    node._run_control_cycle()
+    # Line is now right while the last command was a strong left: reversal.
+    assert commands[-1][0] < 0.64
 
 
 def test_real_node_slow_processing_stops(node_module, monkeypatch):
@@ -947,7 +1105,7 @@ def test_road_near_side_wins_over_opposite_far_curve():
 def test_road_width_single_edge_window_is_not_renewed(monkeypatch):
     module = load_actual_vision_module(monkeypatch)
     vision = module.PatrolVision()
-    tuning = replace(PatrolTuning(), black_enabled=0, contour_width_hold_seconds=.40)
+    tuning = replace(PatrolTuning(), black_enabled=0)
     dual = np.full((240,320,3),(255,0,0),np.uint8)
     dual[:,60:261] = 245
     single = np.full((240,320,3),(255,0,0),np.uint8)
@@ -1184,6 +1342,39 @@ def test_v5_low_confidence_rescue_retains_tracking_not_full_corner():
     for now in np.arange(2.03, 2.8, .03):
         v, w, _ = c.command(PathEstimate(True, -.85, .31, source="black", rescue=True), now, t)
     assert v == pytest.approx(t.fixed_speed_m_s) and .5 < w < 1.8
+
+
+def test_v2_2_corner_authority_is_gated_by_confidence():
+    """低置信度的大误差不得拿到满急弯权限——这是出弯后抖动的直接来源。"""
+    controller, tuning = FixedSpeedController(), PatrolTuning()
+    controller.previous_source = "black"
+    controller.filtered_error = 0.0
+    controller._steer(PathEstimate(True, 0.80, 0.30, source="black"), 0.0, tuning, 0.03)
+    assert controller.corner_strength == pytest.approx(0.0)
+
+    strong = FixedSpeedController()
+    strong.previous_source = "black"
+    strong.filtered_error = 0.0
+    strong._steer(PathEstimate(True, 0.80, 0.95, source="black"), 0.0, tuning, 0.03)
+    assert strong.corner_strength == pytest.approx(1.0)
+
+    mid = FixedSpeedController()
+    mid.previous_source = "black"
+    mid.filtered_error = 0.0
+    mid._steer(PathEstimate(True, 0.80, 0.60, source="black"), 0.0, tuning, 0.03)
+    assert 0.0 < mid.corner_strength < 1.0
+
+
+def test_v2_2_corner_mode_keeps_the_configured_error_filtering():
+    """急弯时 alpha 用上限而不是 1.0；旧行为会完全不滤波。"""
+    controller, tuning = FixedSpeedController(), PatrolTuning()
+    controller.previous_source = "black"
+    controller.filtered_error = 0.0
+    controller._steer(PathEstimate(True, 0.80, 0.95, source="black"), 0.0, tuning, 0.03)
+    assert controller.corner_strength == pytest.approx(1.0)
+    # alpha=0.88 而不是 1.00：混入历史 0.0，所以不会恰好等于 0.80
+    assert controller.filtered_error == pytest.approx(0.88 * 0.80, abs=1e-9)
+    assert controller.filtered_error < 0.80
 
 
 def test_v5_single_opposite_path_flash_needs_consistent_confirmation():
@@ -2136,7 +2327,7 @@ def test_v9_healthy_black_caches_real_width_before_one_edge_disappears(monkeypat
     assert v.last_dual_at==1.  # single-edge frames cannot renew width history
 
 
-def test_contour_is_measured_every_frame_and_preserves_valid_black(monkeypatch):
+def test_v9_width_probe_is_low_rate_and_cannot_override_valid_black(monkeypatch):
     module=load_actual_vision_module(monkeypatch)
     v=module.PatrolVision()
     frame=np.full((240,320,3),(255,0,0),np.uint8)
@@ -2151,8 +2342,7 @@ def test_contour_is_measured_every_frame_and_preserves_valid_black(monkeypatch):
     for now in np.arange(0.,1.,1/30):
         p=v.estimate(frame,PatrolTuning(),now)
         assert p.valid and v.source=="black"
-    assert len(calls) == 30
-    assert v.road_estimate.left_edge is not None and v.road_estimate.right_edge is not None
+    assert 3<=len(calls)<=5  # not every camera frame
 
 
 def test_v9_bounded_search_continues_past_old_one_meter_then_safely_waits():
@@ -2532,7 +2722,7 @@ def test_v10_new_tuning_snapshot_validation(changes):
 def test_v10_complete_live_yaml_has_all_fields_and_preserves_non_ring_values():
     current,message=PatrolFileWatcher(SCRIPTS.parent/"config/patrol_test.yaml").poll()
     assert current is not None,message
-    assert current==replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0., black_enabled=0, crop_left_ratio=0., crop_right_ratio=0., crop_top_ratio=.04, roi_top_ratio=.04, roi_bottom_ratio=.82, road_near_y_ratio=.40, road_mid_y_ratio=.25, road_far_y_ratio=.12, road_near_gap_ratio=.12, contour_order_enabled=1, roundabout_exit_corner_enabled=1, ring_entry_probe_seconds=.50, ring_entry_advance_m=.22)
+    assert current==replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0., crop_left_ratio=.12, crop_right_ratio=.12, crop_top_ratio=.22, contour_order_enabled=1, ring_entry_probe_seconds=.50, search_turn_rad_s=1.1, roundabout_search_turn_rad_s=1.1, ring_entry_advance_m=.25, contour_takeover_enabled=1, ring_entry_main_curve_enabled=0, max_turn_rad_s=1.5)
     assert current.fixed_speed_m_s==.65
     assert (current.crosswalk_stop_seconds,current.crosswalk_clear_seconds)==(3.,3.)
 
@@ -3380,158 +3570,3 @@ def test_far_bend_needs_visible_points_and_two_frames():
     assert controller.far_bend_visible and not controller.bend_slow
     controller.command(path, .15, tuning, ordinary_guidance=True)
     assert controller.bend_slow
-
-
-@pytest.mark.parametrize("following_mid,following_far,following_time,limited", [
-    (.36, .49, .17, False),  # Middle and far support the new S bend.
-    (.04, .49, .17, True),  # A lone far segment is insufficient.
-    (.12, -.12, .22, False),  # The previous preview has expired.
-])
-def test_bend_reversal_limits_brief_conflict_without_delaying_next_bend(
-        following_mid, following_far, following_time, limited):
-    tuning = replace(PatrolTuning(), steering_kd=0., error_filter_alpha=1.,
-                     angular_accel_rad_s2=100., corner_angular_accel_rad_s2=100.,
-                     unwind_angular_accel_rad_s2=100.)
-    controller = FixedSpeedController()
-    first_bend = PathEstimate(True, -.45, .95, source="black", route_observed=True,
-                              points=np.array([[90., 80.], [115., 145.], [135., 220.]]),
-                              near_error=-.15, mid_error=-.36, far_error=-.65)
-    for now in (0., .05):
-        controller.command(first_bend, now, tuning, ordinary_guidance=True)
-    ambiguous = replace(first_bend, error=.65, near_error=.65, mid_error=.12, far_error=-.12)
-    controller.command(ambiguous, .10, tuning, ordinary_guidance=True)
-    assert controller.command(ambiguous, .15, tuning, ordinary_guidance=True)[1] == pytest.approx(-.55)
-
-    following = replace(ambiguous, mid_error=following_mid, far_error=following_far)
-    angular = controller.command(following, following_time, tuning, ordinary_guidance=True)[1]
-    assert (angular >= -.55) == limited
-
-@pytest.mark.parametrize("entering,polygon", [
-    (True, [(0, 10), (85, 12), (64, 47), (0, 46)]),
-    (False, [(5, 102), (84, 57), (319, 58), (319, 122), (120, 104)]),
-])
-def test_wide_ring_corner_builds_left_guide_on_white_surface(entering, polygon):
-    from patrol_contour_runtime import ring_corner_path
-
-    hsv = np.full((240, 320, 3), (0, 0, 235), np.uint8)
-    cv2.fillPoly(hsv, [np.asarray(polygon)], (110, 220, 160))
-    tuning = PatrolTuning()
-    blue, white = road_masks(hsv, tuning)
-    guide = ring_corner_path(hsv, blue, white, .5, tuning, entering,
-                             (320, 240), lambda points: points)
-    assert guide is not None and guide.route_locked
-    assert guide.mid_error < guide.near_error
-    assert (guide.entry_boundary is not None) == entering
-    assert (guide.exit_boundary is not None) == (not entering)
-    x, y = guide.points.astype(int).T
-    assert np.all(blue[y, x] == 0)
-    blank = np.zeros_like(blue)
-    assert ring_corner_path(hsv, blank, white, .5, tuning, entering,
-                            (320, 240), lambda points: points) is None
-
-
-def test_contour_entry_can_arm_without_black_dashes_and_keeps_distance_gate():
-    tuning = replace(PatrolTuning(), roundabout_arm_seconds=0., roundabout_arm_distance_m=0.)
-    router = RoundaboutRouter()
-    router.observe(False, 0., 0., tuning)
-    router.observe(False, 0., .1, tuning, (.3, 0.), entry_corner=True)
-    assert router.phase == "APPROACH"
-    router.observe(False, 0., .2, tuning, (.3, 0.), entry_corner=True)
-    assert router.phase == "APPROACH"
-    router.distance = router.first_marker_distance+tuning.ring_entry_advance_m
-    router.observe(False, 0., .3, tuning, (.3, 0.), entry_corner=True)
-    assert router.phase == "ENTRY" and router.entry_detection_reason == "contour_left_corner"
-
-def test_only_current_contour_evidence_can_retry_after_approach_distance_limit():
-    tuning = replace(PatrolTuning(), roundabout_arm_seconds=0., roundabout_arm_distance_m=0.)
-    router = RoundaboutRouter()
-    router.observe(False, 0., 0., tuning)
-    router._release_ring(.1, tuning, "entry_approach_distance_limit")
-    router.observe(False, 0., .2, tuning, (.3, 0.))
-    assert router.phase == "SEEK"
-    router.observe(False, 0., .3, tuning, (.3, 0.), entry_corner=True)
-    assert router.phase == "ENTRY"
-    assert router.entry_detection_reason == "contour_entry_after_distance_limit"
-    router._release_ring(.4, tuning, "entry_tracking_lost")
-    router.observe(False, 0., .5, tuning, (.3, 0.), entry_corner=True)
-    assert router.phase == "SEEK"
-
-def test_contour_mask_rejoins_neutral_paint_without_filling_blue_separator():
-    from patrol_contour_runtime import road_surface_mask
-
-    hsv = np.full((100, 320, 3), (0, 0, 230), np.uint8)
-    hsv[:, 140:176] = (0, 0, 25)
-    hsv[:, 220:250] = (110, 220, 150)
-    tuning = PatrolTuning()
-    blue, white = road_masks(hsv, tuning)
-    surface = road_surface_mask(hsv, blue, white, tuning)
-    assert np.all(surface[:, 140:176] == 255)
-    assert np.all(surface[:, 220:250] == 0)
-
-
-def test_pure_contour_observes_blue_sides_and_rejects_featureless_white():
-    from patrol_contour_runtime import contour_boundary_path
-
-    hsv = np.full((240, 320, 3), (110, 220, 160), np.uint8)
-    hsv[:, 70:250] = (0, 0, 230)
-    hsv[:, 145:180] = (0, 0, 20)
-    tuning = PatrolTuning()
-    path = contour_boundary_path(hsv, tuning)
-    assert path.valid and len(path.left_edge) > 20 and len(path.right_edge) > 20
-    assert np.all(path.left_edge[:, 0] == 70)
-    assert np.all(path.right_edge[:, 0] == 249)
-    blank = np.full((240, 320, 3), (0, 0, 230), np.uint8)
-    assert not contour_boundary_path(blank, tuning).valid
-
-def test_contour_width_rows_expire_without_being_refreshed_by_inference():
-    from patrol_contour_runtime import RoadWidthProfile
-
-    cache = RoadWidthProfile()
-    first = np.array([[120., 35.], [130., 36.], [140., 37.]])
-    current = np.array([[145., 50.], [150., 51.], [155., 52.]])
-    assert len(cache.observe(first, 1., .65)) == 3
-    joined = cache.observe(current, 1.3, .65)
-    assert len(joined) == 6
-    expired = cache.observe(None, 1.7, .65)
-    assert np.all(expired[:, 1] >= 50.)
-    assert cache.observe(None, 2., .65) is None
-
-
-def test_pure_contour_loss_never_invents_default_turn_after_soft_limit():
-    tuning = replace(PatrolTuning(), black_enabled=0, bounded_recovery_enabled=1,
-                     search_max_seconds=1., search_hard_max_seconds=4.,
-                     search_max_distance_m=.5, search_hard_max_distance_m=2.)
-    controller = FixedSpeedController()
-    road = PathEstimate(True, confidence=.9, source="road", route_observed=True)
-    for now in np.arange(0., .5, .05):
-        controller.command(road, now, tuning, ordinary_guidance=True)
-    for now in np.arange(.5, 2.5, .05):
-        v, w, mode = controller.command(PathEstimate(False), now, tuning, ordinary_guidance=True)
-        assert abs(w) < 1e-9
-        if now >= 1.:
-            assert v <= tuning.contour_blind_speed_m_s+1e-9
-    assert not controller.fault_latched
-
-
-def test_pure_contour_speed_recovers_only_on_consistent_straight_geometry():
-    tuning = replace(PatrolTuning(), black_enabled=0, bounded_recovery_enabled=1)
-    controller = FixedSpeedController()
-    road = PathEstimate(True, confidence=.9, source="road", route_observed=True)
-    for now in np.arange(0., 1.5, .05):
-        v, w, _ = controller.command(road, now, tuning, ordinary_guidance=True)
-    assert v == pytest.approx(tuning.contour_cruise_speed_m_s)
-    bend = replace(road, near_error=.3, mid_error=.6, far_error=.7, error=.4)
-    for now in np.arange(1.5, 2., .05):
-        v, _, _ = controller.command(bend, now, tuning, ordinary_guidance=True)
-    assert v <= tuning.contour_turn_speed_m_s+1e-9
-
-
-@pytest.mark.parametrize("updates", [
-    {"contour_blind_speed_m_s": 0.},
-    {"contour_turn_speed_m_s": .5},
-    {"contour_width_hold_seconds": 2.},
-    {"contour_memory_seconds": 1.},
-])
-def test_invalid_contour_control_parameters_are_rejected(updates):
-    with pytest.raises(ValueError):
-        replace(PatrolTuning(), **updates).validate()

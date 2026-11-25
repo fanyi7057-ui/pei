@@ -32,7 +32,9 @@ patrol_test:
   # 不是速度上限。默认3.0沿用基线，增大响应尖锐、过大放大噪声。
   max_error_derivative: 3.0
   # 最大转向角速度，rad/s，有限非负，无额外上限；0禁止转向。只限制转向，不降线速度。
-  max_turn_rad_s: 2.0
+  # 2026-11-25 19:20/19:22：第二个左弯 w 顶到 +2.0 后过头，线跳到右侧再反向丢线；
+  # 先单变量把上限 2.0→1.5 试（0.30m/s 下半径0.2m），不行再调 steering_kd。
+  max_turn_rad_s: 1.5
   # 起步/保存新速度后的线速度变化率，m/s²，>0；不是弯道限速，最终跟踪fixed_speed_m_s。
   linear_accel_m_s2: 0.65
   # 转向变化率，rad/s²，>0；增大反应快、减小柔和但有延迟。
@@ -43,6 +45,46 @@ patrol_test:
   # 急弯满转向误差，(start,1]；默认0.70，达到后比例目标能用到max_turn_rad_s。
   # 不是固定左转：方向由当前路径误差决定；增大更温和，减小更早强转。
   corner_full_error: 0.70
+  # 急弯权限的置信度门控下限，(0,1)，默认0.45；低于此置信度不授予急弯满权限。
+  # 低置信度的大误差通常是画面在两块黑结构之间跳动，不是真急弯。
+  corner_min_confidence: 0.45
+  # 急弯权限的置信度门控上限，(min,1]，默认0.75；达到此置信度才给满权限。
+  corner_full_confidence: 0.75
+  # 急弯时误差滤波上限，(error_filter_alpha,1]，默认0.88；旧写法到1.0完全不滤波。
+  # 降低更抗抖但急弯响应更钝；只在corner_strength>0时抬高，普通段仍用error_filter_alpha。
+  corner_filter_alpha_ceiling: 0.88
+  # ----- 轮廓/拐点巡线（patrol_contour_line.py）-----
+  # 0/1，默认0；2026-11-17 19:50 实车：拐点拉线在低置信度道路路径上误触发，
+  # 与右转抢方向、且每帧轮廓计算把控制环拖到约12fps。先关闭，只保留轮廓辅助接管。
+  contour_corner_enabled: 0
+  # 0/1，默认1：黑线/道路路径都无效时，用连通域道路中线做短时接管。
+  contour_takeover_enabled: 1
+  # 轮廓接管最长时间，秒(0,2]，默认0.60；只接管短时丢线，避免“在空地上随意前进”。
+  contour_takeover_max_seconds: 0.60
+  # 距最近一次黑线有效最长时间，秒(0,1]，默认0.35；超过按真正丢线去搜索，不接管。
+  contour_takeover_max_gap_seconds: 0.35
+  # 轮廓接管与最近黑线路径的 near/mid 允许差，默认0.30；防止接管到另一条线。
+  contour_takeover_agree_delta: 0.30
+  # 轮廓观测最小间隔，秒(0,1]，默认0.15；轮廓是辅助，不能每帧都算拖慢主控制环。
+  contour_update_seconds: 0.15
+  # 入环拐点后至少多少秒才允许出环拐点，秒(0,5]，默认1.5；防止刚进就误出。
+  contour_corner_min_ring_seconds: 1.50
+  # 连通域道路掩膜的不确定灰色最低亮度V，0..255，默认70；蓝色仍排除，白色仍为目标。
+  contour_corner_gray_v_min: 70.0
+  # 连通域最小面积占ROI比例，(0,1]，默认0.04；滤掉碎块。
+  contour_corner_min_area_ratio: 0.04
+  # 拐点判定最小转角，度(20,150]，默认55；越小越敏感。
+  contour_corner_min_angle_deg: 55.0
+  # 入环左上拐点的横向拉线量（归一化误差），(0,1]，默认0.28；正值使车向左进入环岛。
+  contour_corner_entry_pull: 0.28
+  # 入环拉线持续时间，秒(0,3]，默认0.80。
+  contour_corner_entry_seconds: 0.80
+  # 出环右侧折角的横向拉线量，默认0.22；出环时看不到黑线，靠右折角把车向左带回。
+  contour_corner_exit_pull: 0.22
+  # 出环拉线持续时间，秒(0,3]，默认0.90。
+  contour_corner_exit_seconds: 0.90
+  # 同一类拐点重复触发最小间隔，秒>=0，默认2.0；避免连续多帧重复触发。
+  contour_corner_cooldown_seconds: 2.0
   # 急弯/主动找线转向变化率，rad/s²，>0；默认10.0，减少旧方向残留。
   # 普通小误差仍用angular_accel_rad_s2；增大更快但过大抽动，仍受max_turn_rad_s约束。
   corner_angular_accel_rad_s2: 10.0
@@ -55,8 +97,7 @@ patrol_test:
   # V13普通巡线路径选择/转向控制恢复V11；V12的B1回正保护和额外黑线回切门已删除。
   # ===== C. 黑线主导 / 轮廓补线 / 短失线 =====
   # 黑线主巡线开关，0/1；用原包黑线掩膜和路径提取，只跳过原比赛速度分支。
-  # 纯轮廓验证阶段：0关闭黑线转向输入，虚线/横道仍可独立检测。
-  black_enabled: 0
+  black_enabled: 1
   # 普通黑线最低可信度，0..1，默认0.26对齐基线；增大更易交给轮廓。
   # 基线认可的近端单带救线单独保留，不用提高全局门槛把急弯真线丢掉。
   black_min_confidence: 0.26
@@ -84,14 +125,6 @@ patrol_test:
   # 只缓存与黑线一致的真实双边宽度；突然只剩一边时可借用上面0.40秒，不等失线才学习路宽。
   # 减小更及时但多耗图像计算；增大更省时但近弯路宽可能较旧。探测不抢走可信黑线控制。
   road_width_probe_seconds: 0.20
-  # 纯轮廓普通巡线：稳定直道、转弯/单边、无路径的速度上限，m/s。
-  contour_cruise_speed_m_s: 0.40
-  contour_turn_speed_m_s: 0.25
-  contour_blind_speed_m_s: 0.10
-  # 短暂漏边时保持并衰减实际转向的时间，秒。不能延长实测宽度有效期。
-  contour_memory_seconds: 0.35
-  # 纯轮廓宽度按每一行的实测时间过期，秒。
-  contour_width_hold_seconds: 0.65
   # 没有明确急弯方向时，先保持已输出指令的秒数，>=0；到期进入主动找线，不再直接停走。
   # 若近期已有明确急弯方向，直接主动找线；全程不因切换重启速度，盲区是否趋近巡航由maintain开关决定。
   loss_hold_seconds: 0.80
@@ -121,16 +154,62 @@ patrol_test:
   # Ordinary lost-path/reacquisition speed cap; normal cruise is unchanged.
   # Local V23 corner unwind; measured entry cue permits at most 0.6s left search.
   # One qualified dash frame -> current-route advance -> bounded left probe.
-  ring_entry_advance_m: 0.22
+  # 2026-11-16实验：0.12->0.25。20:05采集显示左探0.5s时入环纵向虚线已被甩到画面右缘，
+  # 车随后回正、错过横向支线。先只延后探左起点（保持左探1.2rad/s），验证“偏转过早”。
+  # 若25cm后变成压过支线，再把本值调回0.18~0.20；接近上限0.60。
+  ring_entry_advance_m: 0.25
   # Maximum approach distance from the same latch point. No left probe without a confirmed fork.
-  ring_entry_approach_max_m: 0.60
+  ring_entry_approach_max_m: 0.90
+  # 2026-11-23：入环位姿可能没有分叉左支，只有向左弯的主虚线链；允许主链连续左弯
+  # 作为探左证据。enabled 0/1；near/mid 上限（负=向左）；连续帧数；近端比例下限。
+  # 2026-11-23 19:53：主链左弯证据会在“车自己正在走弯”时误触发，提前/错误进环；
+  # 先关闭，回到只认分叉左支（更specific）。代码保留，后续用更强证据再开。
+  ring_entry_main_curve_enabled: 0
+  ring_entry_main_curve_near: -0.03
+  ring_entry_main_curve_mid: -0.08
+  ring_entry_main_curve_frames: 2
+  # 主链不能已经偏到画面边（那是车自己偏了，不是入环线）；|near|/|mid| 上限。
+  ring_entry_main_curve_max_near: 0.25
+  ring_entry_main_curve_max_mid: 0.30
+  ring_entry_main_curve_min_near_ratio: 0.75
+  # Fixed left-probe segment. 1.20rad/s * 0.50s is about 34 degrees.
   ring_entry_probe_seconds: 0.50
+  # 0/1，默认1：ENTRY后仅当当前帧仍确认发散左支或已看到环内路线时，才把探左延长到 ring_entry_probe_max_seconds。
+  # 证据消失立即按原0.25s扩展/超时退出，不是无条件盲转；0回到固定0.50s+0.25s上限。
+  ring_entry_probe_extend_enabled: 1
+  # 证据持续时的探左最长时间，s，默认0.90；必须>=ring_entry_probe_seconds且<=2。1.20rad/s下约62度。
+  ring_entry_probe_max_seconds: 0.90
+  # 证据持续时允许的最大累计转角，度，默认60；达到后以 entry_probe_turn_limit 退出，避免无限左转。
+  ring_entry_probe_max_turn_deg: 60.0
+  # 左探失败释放后的立即左找窗口，秒(0,2]，默认0.80。
+  # 旧流程释放时任务命令归零，先直行/停车约0.5s，再等普通找线0.8s才左转，车已离开环口。
+  # 窗口内只在SEEK且路径无效时把找线方向设为左，不确认路线、不续环岛时间、不改变速度任务。
+  roundabout_entry_search_seconds: 0.80
+  # 同一环岛连续左探失败的最大次数，整数0..10，默认2；0=不限制。
+  # 达到后报 ring_entry_unconfirmed 并停车等人工，避免在环内无限绕圈、每圈重试。
+  # 真实出环/重置课程/人工恢复会清零；approach 距离上限等非探针失败不计入。
+  roundabout_max_failed_entries: 2
   corner_exit_confirm_frames: 3
   corner_exit_error: 0.12
   ring_candidate_hold_seconds: 0.60
   bounded_recovery_enabled: 1
   search_recovery_speed_m_s: 0.30
-  search_turn_rad_s: 0.80
+  # 道路/轮廓兜底路径置信度低于此值时降速到 search_recovery_speed_m_s，0=关闭。
+  # 2026-11-23 19:15：road conf 0.23~0.34 仍以 0.65 走 S 弯，随后丢线。
+  road_low_confidence_cap: 0.45
+  # SEEK 弯前降速门：max(|near|,|mid|)>=该值先降到 search_recovery_speed_m_s。
+  # 2026-11-23 19:32：原0.55太晚，0.65m/s入弯减速不及丢线；改0.40更早减速。
+  search_edge_cap_error: 0.40
+  # 上一帧转向>=该比例max_turn且误差>=0.30时也降速，默认0.60。
+  search_edge_cap_prev_ratio: 0.60
+  # 换向帧额外降速：上一帧转向与当前误差方向相反时降到该速度，默认0.22；0=关闭。
+  reversal_speed_m_s: 0.22
+  # 判定“正在反向”的上一帧转向阈值比例，0..1，默认0.50。
+  reversal_angular_ratio: 0.50
+  # 主动找线转向强度，rad/s；默认1.10（原0.80）。0.30m/s下0.80对应半径0.375m。
+  # 2026-11-16两段采集：丢线后0.80要1.5~2.5s才搜回；环口左找/右修都偏弱，提高到1.10。
+  # 仍受max_turn_rad_s约束；入环左探用独立roundabout_entry_turn_rad_s=1.20。
+  search_turn_rad_s: 1.10
   # 没有近期明确转向证据时的默认方向：1左、-1右；默认左。
   # 初始完全没看到路径时不会盲起步，这个方向只用于已经开始巡线后的找线。
   search_default_direction: 1
@@ -145,13 +224,13 @@ patrol_test:
   image_timeout_seconds: 0.35
 
   # ===== D. 白赛道二值化：轮廓不对才调，黑线提取仍沿用基线 =====
-  # 纯轮廓保留左右全宽，顶部裁4%；道路控制排除底部18%的车体区域。
-  # 道路ROI在裁剪后的图像内取值，越小越远。
-  crop_left_ratio: 0.0
-  crop_right_ratio: 0.0
-  crop_top_ratio: 0.04
-  roi_top_ratio: 0.04
-  roi_bottom_ratio: 0.82
+  # 道路ROI上/下边界，占整图高度0..1；小=更远，大=更近，必须top<bottom。左右不裁剪避免漏急弯。
+  # Source-image crop, before resize and all patrol/ring masks. Bottom retained.
+  crop_left_ratio: 0.12
+  crop_right_ratio: 0.12
+  crop_top_ratio: 0.22
+  roi_top_ratio: 0.25
+  roi_bottom_ratio: 0.98
   # 蓝背景HSV阈值；H范围0..179，S/V范围0..255；扩大H范围可接纳更多蓝色，但可能误排道路。
   blue_h_min: 90
   blue_h_max: 140
@@ -202,15 +281,15 @@ patrol_test:
   max_repair_gap_rows: 6
   # ===== E. 道路轮廓预瞄行：近端主导，避免平均远弯导致提前切弯 =====
   # 理想近端行：占整图高度0..1，大=更近；默认0.86。
-  road_near_y_ratio: 0.40
+  road_near_y_ratio: 0.86
   # 真实道路边界暂缺近端多少图高仍可使用最近真实观测，0..(near-mid)，默认0.18。
   # 增大减少no_center_in_error_rows，但过大预瞄变远。必须仍有真实边界，不补造全白，不跨已知蓝区。
-  road_near_gap_ratio: 0.12
+  road_near_gap_ratio: 0.18
   # 中端行：默认0.60，辅助航向，不能推翻近端位置；必须远<中<近且在ROI内。
-  road_mid_y_ratio: 0.25
+  road_mid_y_ratio: 0.60
   # 远端行：默认0.38，只弱辅助形状判断，不用全图平均直接拉方向。
   # 黑线仍用原提取器的近/中/远与单带语义，不受道路采样行二次否决。
-  road_far_y_ratio: 0.12
+  road_far_y_ratio: 0.38
 
   # ===== F. 环岛任务：先选左侧道路，再由统一巡线控制，不是全程强制左转 =====
   # 0只测普通巡线（须同时关闭横道以免误解任务），1开启环岛入口/内部/出口；默认1。
@@ -285,6 +364,10 @@ patrol_test:
   roundabout_retry_seconds: 2.0
   # 同次失败后还须前行多少米才可重找，m>=0，默认0.50；与时间同时满足，增大防重复但可能绕过入口。
   roundabout_retry_distance_m: 0.50
+  # 0/1，默认1：重找冷却期内若当前帧已确认发散左支，允许立即重新锁存APPROACH，不再等冷却走完。
+  # 只豁免重找冷却，不绕过最初6秒/1米启用门；0回到旧行为（冷却期不锁存，可能错过只短暂可见的岔口）。
+  # 实车记录2026-11-15显示左支只在冷却期出现，冷却结束重新锁存时已消失；置0可现场对照。
+  roundabout_entry_branch_rearm_enabled: 1
   # ===== F0c. V15候选区防抢线：普通SEEK控制器不改，只在APPROACH优先同路观测 =====
   # 独立主路线观测最多保留秒数，(0,2]，默认0.80；链本身、单带救线、交接帧不刷新。
   # 增大容忍近场主线短缺，过大可能参考旧弯；过期放回普通V11选路，不拿记忆像素伪造路线。
@@ -337,10 +420,10 @@ patrol_test:
   # 不会单靠12秒到时重新进环；横道关闭时才使用旧COOLDOWN独立循环。
   roundabout_rearm_seconds: 12.0
   roundabout_rearm_distance_m: 3.0
-  # 入环建立左转/入口出口无路线时的左找线角速度rad/s>=0，默认0.8；受显式max_turn_rad_s约束。
+  # 入环建立左转/入口出口无路线时的左找线角速度rad/s>=0，默认1.10（原0.8）；受显式max_turn_rad_s约束。
   # ENTRY建立转向现在使用下方独立entry_turn参数；本项用于环岛丢线搜回，不是入环力度。
   # 此段仍有route_max_seconds故障边界，不永久盲转；普通巡线与出口不强加固定左转。
-  roundabout_search_turn_rad_s: 0.8
+  roundabout_search_turn_rad_s: 1.10
   # 黑线与任务已选道路近/中误差允许差值，归一化(0,1]，默认0.30=15%图宽。
   # 超出则拒绝黑线抢回直行/右支；减小更严格，过小会拒绝真实内线。不是固定画面中心左偏。
   roundabout_path_agreement: 0.30
@@ -403,11 +486,11 @@ patrol_test:
   # 与旧max_gap/x跳变阈值共用；这里只补充入口证据，不覆盖原始gate分数。
   roundabout_partial_gate_min_seconds: 0.10
 
-  # ----- F4. 出环拐点补线 -----
-  # FOLLOW满足绕行条件后可用连续的宽视角右拐点提名EXIT。
-  # EXIT使用虚拟右边线引导左转，待真实出口路线稳定后才完成出环。
-  # 0关闭拐点补线，继续使用既有出环控制。
-  roundabout_exit_corner_enabled: 1
+  # ----- F4. 出环拐点补线：只有EXIT阶段启用，不凭一个拐点触发出环 -----
+  # 0沿用左通道预引导（V11默认0）；1尝试“左通道内侧右拐点->同通道上方左边界点”作虚拟右边线。
+  # 左边线仍用实测边界，重新算中线；连线/中线必须落在连通白路内、不跨已知蓝色。
+  # 找不到可靠拐点/边界则不造线，回到已验证左路线；FOLLOW不使用这项强行出环。
+  roundabout_exit_corner_enabled: 0
   # 拐点与上方目标点至少跨多少整图高度，(0,1]，默认0.12；增大排除小毛刺，也更易无补线。
   roundabout_exit_corner_min_span_ratio: 0.12
   # 右边界张开/拐点横向变化最小占图宽比例，(0,1]，默认0.08；增大更严，减小易把抖动当拐点。
@@ -483,6 +566,14 @@ patrol_test:
   # 必须与最近出口近端一致、有真实像素；弱观测不移动锚点、不续时限。到期解除轮廓优先回V11选路。
   # 增大能容忍更多短失线但可能保持旧出口身份太久；不改正常巡线，不取消定位安全保护。
   roundabout_exit_recovery_seconds: 0.40
+  # ----- F6c. 真实出环后的短时航向保护：只压大左转，不压右修 -----
+  # 0/1，默认1；仅真实visual_exit后启动3秒；失败入环/时间释放/未确认出口不启动。
+  roundabout_post_exit_guard_enabled: 1
+  # 保护时间，秒(0,10]，默认3.0；暂停会顺延，不靠这层延长环岛任务或横道许可。
+  roundabout_post_exit_guard_seconds: 3.0
+  # 保护期内允许的最大左转角速度，rad/s，0..max_turn_rad_s，默认0.20；右转不受限。
+  # 出环后视觉若又被出口左支/回环分支吸引，只能小幅左修，避免物理卷回环岛。
+  roundabout_post_exit_left_limit_rad_s: 0.20
   # 实测可用时，视觉虚线/实线要在净左转至少多少度后才能触发EXIT，0..360，默认240；防入口误当出口。
   roundabout_visual_exit_min_turn_deg: 240.0
 
