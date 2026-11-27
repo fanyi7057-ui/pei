@@ -3690,3 +3690,58 @@ def test_entry_current_left_branch_keeps_priority_over_generic_mainline(monkeypa
     path = vision.estimate(image, tuning, .1)
     assert path.valid and path.route_locked and path.error < -.2
     assert vision.router.entry_dash_proven
+
+def test_initial_ring_probe_is_not_limited_as_post_acquisition_loss(node_module, monkeypatch):
+    node, commands = make_node(node_module, monkeypatch)
+    router = node_module.RoundaboutRouter()
+    router._phase("ENTRY", 9.95)
+    node.vision.router = router
+    node.vision.estimate = lambda *_args, **_kwargs: PathEstimate(False)
+    clock = [10.]
+    monkeypatch.setattr(node_module.time, "monotonic", lambda: clock[0])
+    for _ in range(5):
+        node._frame_sequence += 1
+        node._latest_frame_time = clock[0]
+        node._run_control_cycle()
+        clock[0] += .05
+    assert commands[-1][0] > node_module.PatrolTuning().ring_dash_recovery_speed_m_s
+    assert commands[-1][1] > node_module.PatrolTuning().ring_dash_recovery_turn_rad_s
+    assert not getattr(node, "_ring_loss_episode", False)
+
+
+def test_entry_phase_reset_retains_fresh_approach_branch_without_refresh(monkeypatch):
+    from patrol_dash_entry import DashObservation
+
+    module = load_actual_vision_module(monkeypatch)
+    vision = module.PatrolVision()
+    vision.router._phase("APPROACH", 0.)
+    vision.router.started_at = 0.
+    branch = PathEstimate(True, confidence=.8, points=np.array([[80., 120.], [100., 160.]]))
+    cue = DashObservation(valid=True, blocks=4, branch=branch)
+    monkeypatch.setattr(module, "detect_vv_dashes_compatible", lambda *args, **kwargs: cue)
+    monkeypatch.setattr(vision.router, "observe", lambda *args, **kwargs: None)
+    image = np.full((240, 320, 3), 245, np.uint8)
+    vision.estimate(image, PatrolTuning(), .1)
+    assert vision.approach_dash_anchor[0] == .1
+    cue = DashObservation()
+    monkeypatch.setattr(vision.router, "observe",
+                        lambda *args, **kwargs: vision.router._phase("ENTRY", .2))
+    vision.estimate(image, PatrolTuning(), .2)
+    assert vision.entry_dash_anchor is not None
+    assert vision.entry_dash_anchor[0] == .1
+    assert np.array_equal(vision.entry_dash_anchor[1].points, branch.points)
+
+def test_failed_entry_hands_valid_path_back_without_zero_command(node_module, monkeypatch):
+    node, commands = make_node(node_module, monkeypatch)
+    router = node_module.RoundaboutRouter()
+    router._phase("ENTRY", 9.)
+    node.vision.router = router
+    node.vision.estimate = lambda *_args, **_kwargs: PathEstimate(
+        True, .05, .9, route_observed=True, source="black")
+    node.patrol_controller.last_time = 9.97
+    node.patrol_controller.last_valid_at = 9.97
+    node.patrol_controller.last_command = (.3, .1)
+    node._last_command = (.3, .1)
+    node._run_control_cycle()
+    assert router.phase == "SEEK" and not router.fault
+    assert commands[-1][0] > 0.

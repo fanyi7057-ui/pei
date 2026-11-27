@@ -48,6 +48,7 @@ class PatrolVision(base.CourseVision):
         self.entry_sparse_sample = None
         self.entry_sparse_frames = 0
         self.entry_dash_anchor = None
+        self.approach_dash_anchor = None
         self.entry_trigger = "none"
         self.exit_commit = ExitRouteCommit()
         self.ring_memory = RingRouteMemory()
@@ -80,6 +81,8 @@ class PatrolVision(base.CourseVision):
         self.motion_heading=None
 
     def reset_path(self,preserve_approach=False):
+        approach_anchor = getattr(self, "approach_dash_anchor", None) if preserve_approach else None
+        self.approach_dash_anchor = approach_anchor
         self.ring_candidate_search = RingCandidateSearch()
         self.dash_observation = DashObservation()
         self.entry_ready = False
@@ -209,6 +212,15 @@ class PatrolVision(base.CourseVision):
                 detected,self.crosswalk_score=detect_crosswalk(events,hsv,zebra_tuning)
                 self.router.observe_crosswalk_visual_release(detected,now,tuning)
                 crosswalk=detected and self.router.crosswalk_armed(now,tuning)
+        cue = self.dash_observation
+        if self.router.phase in ("SEEK", "APPROACH"):
+            if cue.exit_branch.valid:
+                self.approach_dash_anchor = None
+            elif cue.branch.valid and cue.branch.points is not None and len(cue.branch.points) >= 2:
+                self.approach_dash_anchor = (now, cue.branch)
+            elif (self.approach_dash_anchor is not None
+                  and not 0 <= now-self.approach_dash_anchor[0] <= .30):
+                self.approach_dash_anchor = None
         self.router.observe(gate,self.gate_score,now,tuning,self.motion_command,self.motion_pose,
                             gate_near=self.gate_near,exit_solid=exit_solid,crosswalk=crosswalk,gate_tracked=self.gate_tracked,
                             heading=self.motion_heading,dash_cue=self.dash_observation)
@@ -221,11 +233,15 @@ class PatrolVision(base.CourseVision):
             cue=self.dash_observation
             entry=self.dash_observation.branch
             self.entry_trigger=self.router.entry_detection_reason
-            # Current real guide seeds identity, NOT acquisition proof.
+            # Keep a recent measured left branch through the control-phase
+            # reset; its timestamp is not refreshed by a missing frame.
+            approach_anchor = self.approach_dash_anchor
             self.reset_path()
             self.dash_observation=cue  # retain this fresh frame for diagnostics
             if entry.valid and entry.points is not None and len(entry.points) >= 2:
                 self.entry_dash_anchor = (now, entry)
+            elif approach_anchor is not None and 0 <= now-approach_anchor[0] <= .30:
+                self.entry_dash_anchor = approach_anchor
             if self.ring_memory.at is None or now - self.ring_memory.at > tuning.roundabout_route_memory_seconds:
                 self.ring_memory.reset()
             if entry.valid and entry.route_observed:
@@ -824,6 +840,11 @@ class PatrolTestNode(base.WheelLegRaceNode):
             done, tuning, getattr(self.vision, "motion_pose", None), path=path,
             entry_branch_visible=bool(cue is not None and (cue.branch.valid or getattr(self.vision,"entry_sparse_frames",0)>=2)),
         ) if router is not None else None
+        if (override is not None and override[2] == "roundabout_entry_release"
+                and router is not None and not router.fault):
+            # The ring attempt ended. Reuse the current path/controller
+            # instead of issuing one hard zero followed by acceleration.
+            override = None
         if route_before == "ENTRY" and router is not None and router.phase == "SEEK":
             self.get_logger().info(
                 f"RING_ENTRY_END reason={router.ring_release_source} path={path.reason} "
@@ -930,9 +951,21 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 self.patrol_controller.last_command = (linear, angular)
             planned_target=min(control_tuning.fixed_speed_m_s,control_tuning.search_degraded_speed_m_s) if self.patrol_controller.degraded else control_tuning.fixed_speed_m_s
         in_ring = router is not None and router.phase in ("ENTRY", "FOLLOW")
+        if router is not None and router.phase == "ENTRY":
+            entry_session = (id(router), router.phase_at)
+            if getattr(self, "_ring_entry_session", None) != entry_session:
+                self._ring_entry_session = entry_session
+                self._ring_had_guide = False
+                self._ring_loss_episode = False
+                self._ring_reacquire_frames = 0
         owned_ring_path = (path.valid and path.route_observed and path.route_locked
                            and not path.rescue and not path.handoff)
-        ring_path_missing = in_ring and not owned_ring_path
+        if in_ring and owned_ring_path:
+            self._ring_had_guide = True
+        acquired_before = (router is not None and (
+            router.phase == "FOLLOW" or getattr(self, "_ring_had_guide", False)
+            or getattr(router, "entry_visual_tracking", False)))
+        ring_path_missing = in_ring and acquired_before and not owned_ring_path
         if router is None or not base.ENABLE_MOTION or router.phase in ("EXIT", "SEEK_CROSSWALK", "FINISHED"):
             self._ring_loss_episode = False
         elif ring_path_missing or (not path.valid and router.entry_search_active(done, tuning)):
