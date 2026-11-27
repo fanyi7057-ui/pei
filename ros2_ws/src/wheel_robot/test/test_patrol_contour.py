@@ -533,7 +533,7 @@ def test_file_reload_atomic_replace_reject_and_recover(tmp_path):
 def test_shipped_config_has_all_documented_values():
     path = SCRIPTS.parent / "config" / "patrol_test.yaml"
     tuning, message = PatrolFileWatcher(path).poll()
-    assert tuning == replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0., crop_left_ratio=.12, crop_right_ratio=.12, crop_top_ratio=.22, contour_order_enabled=1, ring_entry_probe_seconds=.50, search_turn_rad_s=1.1, roundabout_search_turn_rad_s=1.1, ring_entry_advance_m=.25, ring_entry_approach_max_m=.90, contour_takeover_enabled=1, ring_entry_main_curve_enabled=0, max_turn_rad_s=1.5), message
+    assert tuning == replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0., crop_left_ratio=.12, crop_right_ratio=.12, crop_top_ratio=.22, contour_order_enabled=1, ring_entry_probe_seconds=.50, search_turn_rad_s=1.1, roundabout_search_turn_rad_s=1.1, ring_entry_advance_m=.25, ring_entry_approach_max_m=.9, contour_takeover_enabled=1, ring_entry_main_curve_enabled=0, max_turn_rad_s=1.5), message
 
 
 @pytest.fixture
@@ -778,6 +778,30 @@ def test_real_node_slows_down_on_a_steering_reversal(node_module, monkeypatch):
     node._run_control_cycle()
     # Line is now right while the last command was a strong left: reversal.
     assert commands[-1][0] < 0.64
+
+
+def test_real_node_keeps_recovery_speed_through_the_post_probe_search_window(node_module, monkeypatch):
+    node, commands = make_node(node_module, monkeypatch)
+    router=node_module.RoundaboutRouter()
+    router.phase="SEEK"
+    router.entry_search_until=10.8
+    router.entry_search_side=1
+    node.vision.router=router
+    centered=PathEstimate(True,error=.02,confidence=.95,near_error=.02,mid_error=.01,
+                          source="black",route_observed=True)
+    node.vision.estimate=lambda *_args, **_kwargs: centered
+    clock=[10.0]
+    monkeypatch.setattr(node_module.time,"monotonic",lambda: clock[0])
+    for _ in range(12):
+        node._frame_sequence += 1
+        node._latest_frame_time=clock[0]
+        node._latest_frame=np.zeros((240,320,3),np.uint8)
+        node._run_control_cycle()
+        clock[0]+=0.05
+    # 2026-11-25 19:33: right after entry_approach_distance_limit the phase
+    # dropped to SEEK and the car jumped 0.30 -> 0.61 m/s, driving past the
+    # ring mouth. The recovery cap must cover the post-probe search window.
+    assert commands[-1][0] <= 0.33
 
 
 def test_real_node_slow_processing_stops(node_module, monkeypatch):
@@ -2603,6 +2627,72 @@ def test_v10_entry_to_follow_keeps_route_and_rejects_outside_right_black(monkeyp
     assert v.ring_memory.path.near_error<0
 
 
+def test_v10_entry_accepts_the_new_line_after_the_committed_left_probe(monkeypatch):
+    """2026-11-25: after the probe actually turns the car, the pre-turn guide
+    can no longer describe the camera pose; the freshly tracked line must own
+    the route so ENTRY can reach FOLLOW (both captures died on
+    black_outside_locked_route here)."""
+    module=load_actual_vision_module(monkeypatch)
+    v=module.PatrolVision()
+    t=PatrolTuning()
+    v.router._phase("ENTRY",0.)
+    v.router.entry_dash_proven=True
+    v.router.phase_distance=1.
+    v.router.left_yaw=1.1  # committed turn, past the 55-degree acquire angle
+    # Remembered pre-turn branch guide: far left, stale for this pose.
+    guide=PathEstimate(True,-.8,confidence=.9,near_error=-.6,mid_error=-.9,
+                       route_locked=True,route_observed=True)
+    v.ring_memory.path=guide
+    v.ring_memory.at=0.5
+    frame=np.full((240,320,3),245,np.uint8)
+    cv2.line(frame,(110,0),(110,239),(0,0,0),7)
+    for now in np.arange(1.,1.32,.04):
+        p=v.estimate(frame,t,float(now))
+        assert p.valid and p.route_observed
+    assert v.router.phase=="FOLLOW"
+
+
+def test_v10_entry_rejects_the_new_line_before_the_committed_turn(monkeypatch):
+    module=load_actual_vision_module(monkeypatch)
+    v=module.PatrolVision()
+    t=PatrolTuning()
+    v.router._phase("ENTRY",0.)
+    v.router.entry_dash_proven=True
+    v.router.phase_distance=0.
+    v.router.left_yaw=.10  # still inside the blind probe, no commit yet
+    guide=PathEstimate(True,-.8,confidence=.9,near_error=-.6,mid_error=-.9,
+                       route_locked=True,route_observed=True)
+    v.ring_memory.path=guide
+    v.ring_memory.at=0.5
+    frame=np.full((240,320,3),245,np.uint8)
+    cv2.line(frame,(110,0),(110,239),(0,0,0),7)
+    p=v.estimate(frame,t,1.0)
+    assert not p.valid and v.black_estimate.reason=="black_outside_locked_route"
+
+
+def test_v10_entry_follow_existing_curve_accepts_the_tracked_line(monkeypatch):
+    """2026-11-25 20:16: fork latched while already on the ring's left curve.
+
+    No blind ramp is added, so there is no committed turn yet; the tracked line
+    must still own the ENTRY route (otherwise the car has no path and searches
+    blind again)."""
+    module=load_actual_vision_module(monkeypatch)
+    v=module.PatrolVision()
+    t=PatrolTuning()
+    v.router._phase("ENTRY",0.)
+    v.router.entry_dash_proven=True
+    v.router.entry_follow_only=True
+    v.router.left_yaw=0.
+    guide=PathEstimate(True,-.8,confidence=.9,near_error=-.6,mid_error=-.9,
+                       route_locked=True,route_observed=True)
+    v.ring_memory.path=guide
+    v.ring_memory.at=0.5
+    frame=np.full((240,320,3),245,np.uint8)
+    cv2.line(frame,(110,0),(110,239),(0,0,0),7)
+    p=v.estimate(frame,t,1.0)
+    assert p.valid and p.route_locked and p.route_observed
+
+
 def test_v10_owned_route_can_continuously_move_right_and_correct_right(monkeypatch):
     v,t=enter_actual_black_without_blue(monkeypatch)
     for i,x in enumerate((125,140,155,170,185,200)):
@@ -2722,7 +2812,7 @@ def test_v10_new_tuning_snapshot_validation(changes):
 def test_v10_complete_live_yaml_has_all_fields_and_preserves_non_ring_values():
     current,message=PatrolFileWatcher(SCRIPTS.parent/"config/patrol_test.yaml").poll()
     assert current is not None,message
-    assert current==replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0., crop_left_ratio=.12, crop_right_ratio=.12, crop_top_ratio=.22, contour_order_enabled=1, ring_entry_probe_seconds=.50, search_turn_rad_s=1.1, roundabout_search_turn_rad_s=1.1, ring_entry_advance_m=.25, ring_entry_approach_max_m=.90, contour_takeover_enabled=1, ring_entry_main_curve_enabled=0, max_turn_rad_s=1.5)
+    assert current==replace(PatrolTuning(), bounded_recovery_enabled=1, roundabout_arm_seconds=0., roundabout_arm_distance_m=0., crop_left_ratio=.12, crop_right_ratio=.12, crop_top_ratio=.22, contour_order_enabled=1, ring_entry_probe_seconds=.50, search_turn_rad_s=1.1, roundabout_search_turn_rad_s=1.1, ring_entry_advance_m=.25, ring_entry_approach_max_m=.9, contour_takeover_enabled=1, ring_entry_main_curve_enabled=0, max_turn_rad_s=1.5)
     assert current.fixed_speed_m_s==.65
     assert (current.crosswalk_stop_seconds,current.crosswalk_clear_seconds)==(3.,3.)
 
@@ -3570,23 +3660,3 @@ def test_far_bend_needs_visible_points_and_two_frames():
     assert controller.far_bend_visible and not controller.bend_slow
     controller.command(path, .15, tuning, ordinary_guidance=True)
     assert controller.bend_slow
-
-def test_entry_current_left_branch_keeps_priority_over_generic_mainline(monkeypatch):
-    from patrol_dash_entry import DashObservation
-
-    module = load_actual_vision_module(monkeypatch)
-    vision = module.PatrolVision()
-    tuning = PatrolTuning()
-    vision.router._phase("ENTRY", 0.)
-    vision.router.started_at = 0.
-    main = PathEstimate(True, confidence=.8, route_observed=True,
-                        points=np.array([[160., 100.], [160., 210.]]))
-    branch = PathEstimate(True, -.3, .8, np.array([[80., 110.], [120., 210.]]),
-                          near_error=-.25, mid_error=-.45, far_error=-.5,
-                          route_observed=True, route_locked=True)
-    cue = DashObservation(valid=True, blocks=4, main=main, branch=branch)
-    monkeypatch.setattr(module, "detect_vv_dashes_compatible", lambda *args, **kwargs: cue)
-    image = np.full((240, 320, 3), 245, np.uint8)
-    path = vision.estimate(image, tuning, .1)
-    assert path.valid and path.route_locked and path.error < -.2
-    assert vision.router.entry_dash_proven

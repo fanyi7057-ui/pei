@@ -310,6 +310,116 @@ def test_entry_probe_extension_respects_max_seconds_and_switch():
     assert r.motion_override(.8,off,path=None,entry_branch_visible=True)==(0.,0.,"roundabout_entry_release")
 
 
+def test_entry_probe_holds_after_evidence_drops_once_dash_is_proven():
+    """2026-11-25: the diverging branch only survives ~0.2s of a 1.2rad/s ramp.
+
+    Once the VV dash was proven at ENTRY start the probe must keep turning up
+    to the commit angle instead of dropping the whole ring task at the first
+    evidence-free frame (that produced every entry_probe_no_route).
+    """
+    r,t=entry_probe_router()
+    r.entry_dash_proven=True
+    r.left_yaw=.20
+    assert r.motion_override(.6,t,path=None,entry_branch_visible=False)[2]=="roundabout_left_acquire"
+    assert r.phase=="ENTRY"
+    # Without the dash proof the old evidence rule still releases immediately.
+    r2,t2=entry_probe_router()
+    r2.left_yaw=.20
+    assert r2.motion_override(.6,t2,path=None,entry_branch_visible=False)==(0.,0.,"roundabout_entry_release")
+    assert r2.ring_release_source=="entry_probe_no_route"
+
+
+def test_committed_entry_hands_to_tracking_instead_of_dropping_the_ring():
+    """A proven dash + a real entry turn is enough to keep the ring task alive.
+
+    The remembered pre-turn guide cannot describe the post-turn pose, so the
+    committed probe hands over to ordinary tracking; the bounded ENTRY/FOLLOW
+    contract (turn/distance/stable route) still decides confirmation.
+    """
+    r,t=entry_probe_router()
+    r.entry_dash_proven=True
+    r.left_yaw=.55
+    assert r.motion_override(.95,t,path=None,entry_branch_visible=False) is None
+    assert r.phase=="ENTRY" and r.entry_visual_tracking
+    assert r.route_status=="entry_commit_follow"
+
+
+def test_entry_turn_commit_uses_measured_heading_when_fresh():
+    r,t=entry_probe_router()
+    assert not r.entry_turn_committed(.1,t)
+    r.left_yaw=.5
+    assert r.entry_turn_committed(.1,t)
+    r._phase("SEEK",.2)
+    assert not r.entry_turn_committed(.3,t)
+
+
+def test_time_fallback_starts_a_new_failed_entry_epoch():
+    r,t=RoundaboutRouter(),replace(PatrolTuning(),roundabout_max_failed_entries=2)
+    r._phase("ENTRY",0.)
+    assert not r._release_ring(1.,t,"entry_probe_no_route")
+    assert r.failed_entries==1
+    r._phase("APPROACH",2.)
+    # A lap-scale deadline release is a new attempt epoch: earlier probe
+    # failures must not accumulate into a freeze on a later ring encounter.
+    assert not r._release_ring(3.,t,"time_fallback")
+    assert r.failed_entries==0 and not r.fault
+
+
+def entry_with_previous_steering(prev_w):
+    r,t=armed()
+    main=PathEstimate(True,near_error=-.12,mid_error=-.25,route_observed=True)
+    branch=PathEstimate(True,near_error=-.35,mid_error=-.45,route_observed=True,route_locked=True)
+    c=DashObservation(valid=True,blocks=4,near_ratio=.88,main=main,branch=branch)
+    r.observe(False,0.,0.,t,(.65,prev_w))
+    r.observe(True,1.,.10,t,(.65,prev_w),dash_cue=c)
+    assert r.phase=="APPROACH"
+    r.distance=r.first_marker_distance+t.ring_entry_advance_m+.01
+    r.observe(True,1.,.20,t,(.65,prev_w),dash_cue=c)
+    assert r.phase=="ENTRY"
+    return r,t
+
+
+def test_entry_follows_an_existing_left_curve_without_a_second_blind_ramp():
+    """2026-11-25 20:16: the fork latched while already turning hard left.
+
+    A second 1.2rad/s ramp then over-rotated into the island. When the previous
+    command is already a strong left, ordinary tracking owns steering instead.
+    """
+    r,t=entry_with_previous_steering(1.2)
+    assert r.entry_follow_only and r.entry_dash_proven
+    assert r.entry_detection_reason=="vv_follow_existing_curve"
+    assert r.motion_override(.30,t,path=None,entry_branch_visible=False) is None
+    assert r.phase=="ENTRY" and r.route_status=="entry_follow_existing_left_curve"
+    # Bounded: an unconfirmed follow-existing entry still expires.
+    assert r.motion_override(.20+t.roundabout_entry_acquire_max_seconds,t,path=None)==(0.,0.,"roundabout_entry_release")
+    assert r.phase=="SEEK" and r.ring_release_source=="entry_no_route_abort"
+
+
+def test_entry_follows_an_existing_curve_from_cumulative_recent_turn():
+    """20:38: the car already circles the roundabout dash circle when the fork
+    latches; per-frame w is moderate but the last second accumulated ~0.5rad."""
+    r,t=armed()
+    main=PathEstimate(True,near_error=-.12,mid_error=-.25,route_observed=True)
+    branch=PathEstimate(True,near_error=-.35,mid_error=-.45,route_observed=True,route_locked=True)
+    c=DashObservation(valid=True,blocks=4,near_ratio=.88,main=main,branch=branch)
+    r.observe(False,0.,0.,t,(.65,0.))
+    for i in range(1,7):
+        r.observe(False,0.,i*.1,t,(.65,.8))
+    r.observe(True,1.,.70,t,(.65,.8),dash_cue=c)
+    assert r.phase=="APPROACH" and r.recent_turn_abs>=.35
+    r.distance=r.first_marker_distance+t.ring_entry_advance_m+.01
+    r.observe(True,1.,.80,t,(.65,.8),dash_cue=c)
+    assert r.phase=="ENTRY" and r.entry_follow_only
+    assert r.entry_detection_reason=="vv_follow_existing_curve"
+
+
+def test_entry_still_probes_when_approach_was_not_already_turning_left():
+    r,t=entry_with_previous_steering(0.1)
+    assert not r.entry_follow_only
+    assert r.entry_detection_reason=="vv_distance_complete_left_probe"
+    assert r.motion_override(.30,t,path=None,entry_branch_visible=False)[2]=="roundabout_left_acquire"
+
+
 def test_failed_left_probe_keeps_an_immediate_left_search_window():
     r=RoundaboutRouter();t=replace(PatrolTuning(),roundabout_entry_search_seconds=.8)
     r._phase("ENTRY",0.)

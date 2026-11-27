@@ -45,9 +45,6 @@ class PatrolVision(base.CourseVision):
         self.router = RoundaboutRouter()
         self.dash_observation = DashObservation()
         self.entry_ready = False
-        self.entry_sparse_sample = None
-        self.entry_sparse_frames = 0
-        self.entry_dash_anchor = None
         self.entry_trigger = "none"
         self.exit_commit = ExitRouteCommit()
         self.ring_memory = RingRouteMemory()
@@ -83,9 +80,6 @@ class PatrolVision(base.CourseVision):
         self.ring_candidate_search = RingCandidateSearch()
         self.dash_observation = DashObservation()
         self.entry_ready = False
-        self.entry_sparse_sample = None
-        self.entry_sparse_frames = 0
-        self.entry_dash_anchor = None
         self.exit_commit.reset()
         self.reset_tracking()
         self._last_good_band_x = [None for _ in base.LOOKAHEAD_Y_RATIOS]
@@ -227,8 +221,6 @@ class PatrolVision(base.CourseVision):
             # Current real guide seeds identity, NOT acquisition proof.
             self.reset_path()
             self.dash_observation=cue  # retain this fresh frame for diagnostics
-            if entry.valid and entry.points is not None and len(entry.points) >= 2:
-                self.entry_dash_anchor = (now, entry)
             if self.ring_memory.at is None or now - self.ring_memory.at > tuning.roundabout_route_memory_seconds:
                 self.ring_memory.reset()
             if entry.valid and entry.route_observed:
@@ -297,39 +289,27 @@ class PatrolVision(base.CourseVision):
                 # Single-edge continuation NEVER renews the width deadline.
                 self.road_widths = road.widths.copy()
                 self.last_dual_at = now
-        entry_guide = None
         if self.router.phase == "ENTRY":
             branch = self.dash_observation.branch
-            if not (branch.valid and branch.route_observed):
-                branch = None
-                anchor = self.entry_dash_anchor
-                if anchor is not None and 0 <= now-anchor[0] <= .30:
-                    branch = match_entry_dashes(self.dash_observation,anchor[1],width,height,tuning)
-                elif self.ring_memory.at is not None and 0 <= now-self.ring_memory.at <= .30:
-                    branch = match_entry_dashes(self.dash_observation,self.ring_memory.path,width,height,tuning)
-            if branch is not None and branch.valid:
-                self.entry_dash_anchor = (now, branch)
-                if branch.route_observed:
-                    self.ring_memory.remember(branch,now)
-                    self.router.entry_dash_proven = True
-                    entry_guide = replace(branch,mask=dark,route_locked=True)
-                    black = entry_guide
-                    self.entry_sparse_frames = 0
-                    self.entry_sparse_sample = None
-                else:
-                    previous = self.entry_sparse_sample
-                    errors = (branch.mid_error,branch.far_error)
-                    consecutive = (previous is not None and 0 < now-previous[0] <= tuning.roundabout_path_max_gap_seconds
-                                   and max(abs(a-b) for a,b in zip(errors,previous[1])) <= tuning.roundabout_entry_path_delta)
-                    self.entry_sparse_frames = self.entry_sparse_frames+1 if consecutive else 1
-                    self.entry_sparse_sample = (now,errors)
-            else:
-                self.entry_sparse_frames = 0
-                self.entry_sparse_sample = None
-        else:
-            self.entry_sparse_frames = 0
-            self.entry_sparse_sample = None
-            self.entry_dash_anchor = None
+            if not branch.route_observed and self.ring_memory.at is not None and now-self.ring_memory.at <= .30:
+                tracked = match_entry_dashes(self.dash_observation,self.ring_memory.path,width,height,tuning)
+                if tracked is not None:
+                    branch = tracked
+                    black = replace(tracked, mask=dark)
+            if branch.valid and branch.route_observed:
+                # A fresh diverging fork identifies the branch in the current
+                # camera pose. The router still requires continuous geometry
+                # before it hands over steering.
+                self.ring_memory.remember(branch, now)
+                self.router.entry_dash_proven = True
+                main = self.dash_observation.main
+                # The extracted black route may still be the straight fork.
+                # Prefer the current measured left branch when it is ambiguous.
+                if main.valid and (not black.route_observed
+                    or self.ring_memory.agrees(black, now, tuning) is not True
+                    or max(abs(black.near_error-main.near_error), abs(black.mid_error-main.mid_error))
+                    <= max(abs(black.near_error-branch.near_error), abs(black.mid_error-branch.mid_error))):
+                    black = replace(branch, mask=dark)
         if self.router.phase == "APPROACH":
             main = self.dash_observation.main
             branch = self.dash_observation.branch
@@ -358,7 +338,7 @@ class PatrolVision(base.CourseVision):
                     reference = PathEstimate(True, errors[0], near_error=errors[1], mid_error=errors[2], far_error=errors[3])
             if road.valid and self.router.branch_acquired:
                 road.route_locked = True
-            if black.valid and black is not entry_guide:
+            if black.valid:
                 agrees = reference is not None and max(abs(black.near_error-reference.near_error), abs(black.mid_error-reference.mid_error)) <= tuning.roundabout_path_agreement
                 left_shape = black.error < -.10 and black.mid_error <= .10
                 if self.router.phase=="FOLLOW":
@@ -396,13 +376,16 @@ class PatrolVision(base.CourseVision):
                 entry_committed_route=False
                 if (not allowed and self.router.phase=="ENTRY"
                         and getattr(self.router,"entry_dash_proven",False)
-                        and self.router.entry_turn_committed(now,tuning)
+                        and (self.router.entry_turn_committed(now,tuning)
+                             or getattr(self.router,"entry_follow_only",False))
                         and black.route_observed and not black.rescue):
                     # 2026-11-25: the remembered pre-turn branch guide cannot
                     # describe the post-turn camera pose. After the probe has
-                    # actually turned the car, accept the newly seen stable
-                    # line as the ring route; otherwise EVERY entry died on
-                    # black_outside_locked_route and the task never left ENTRY.
+                    # actually turned the car (or when the fork was latched while
+                    # already following the ring's left curve), accept the newly
+                    # seen stable line as the ring route; otherwise EVERY entry
+                    # died on black_outside_locked_route and the task never left
+                    # ENTRY.
                     allowed=True
                     entry_committed_route=True
                     self.router.entry_dash_proven = True
@@ -822,7 +805,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
         cue = getattr(self.vision, "dash_observation", None)
         override = router.motion_override(
             done, tuning, getattr(self.vision, "motion_pose", None), path=path,
-            entry_branch_visible=bool(cue is not None and (cue.branch.valid or getattr(self.vision,"entry_sparse_frames",0)>=2)),
+            entry_branch_visible=bool(cue is not None and cue.branch.valid),
         ) if router is not None else None
         if (override is not None and tuning.contour_corner_enabled
                 and getattr(self.vision, "corner_state", None) is not None
@@ -830,11 +813,6 @@ class PatrolTestNode(base.WheelLegRaceNode):
             # The contour corner method owns ring steering during its bounded
             # pull window; do not let the legacy VV blind-left probe fight it.
             override = None
-        if route_before == "ENTRY" and router is not None and router.phase == "SEEK":
-            self.get_logger().info(
-                f"RING_ENTRY_END reason={router.ring_release_source} "
-                f"match={cue.entry_match_status if cue is not None else 'unavailable'} "
-                f"sparse_frames={getattr(self.vision, 'entry_sparse_frames', 0)} path={path.reason}")
         if router is not None and router.ring_release_source=="entry_probe_no_route" and getattr(self,"_probe_release_seen",-1)!=router.release_serial:
             self._probe_release_seen=router.release_serial
             self.patrol_controller.last_good_turn=0.

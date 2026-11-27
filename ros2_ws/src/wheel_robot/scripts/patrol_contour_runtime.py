@@ -1633,6 +1633,9 @@ class RoundaboutRouter:
 
         self.entry_started_in_grace = False
         self.entry_main_curve_frames = 0
+        # Rolling ~1s commanded-yaw magnitude, entry pose classifier evidence.
+        self.turn_window_start = None
+        self.recent_turn_abs = 0.
         self.first_marker_at=None
         self.first_marker_distance=0.
         self.marker_moving_seconds=0.
@@ -1805,6 +1808,7 @@ class RoundaboutRouter:
             self.entry_lost_at = None
             self.entry_probe_extended = False
             self.entry_dash_proven = False
+            self.entry_follow_only = False
         self.phase_distance=self.left_yaw=self.evidence=0.
         self.path_streak=self.clear_frames=self.near_frames=self.solid_frames=0
         self.gate_cleared=self.branch_acquired=False
@@ -1997,9 +2001,30 @@ class RoundaboutRouter:
                 deadline = self.ring_deadline(tuning)
                 self.entry_started_in_grace = deadline is not None and deadline <= now < deadline+1.20
                 self._phase("ENTRY",now)
-                self.entry_detection_reason=("vv_main_curve_left_probe"
-                                             if self.entry_left_seen_at is None
-                                             else "vv_distance_complete_left_probe")
+                # 2026-11-25 20:16/20:38: at some entry poses the car is ALREADY
+                # following a curve when the VV fork latches - the ring's left
+                # turn (20:16) or the roundabout's own clockwise dash circle
+                # (20:38, where the car circles the ring and the fork is
+                # re-detected every lap). A second blind 1.2rad/s ramp then
+                # yanks the car out of the curve it is already tracking: camera
+                # ends up across the ring interior, the line is lost for
+                # seconds, the post-release left search adds more yaw and the
+                # car visibly shakes its head while reacquiring. When the VV
+                # fork is detected while the car has already turned >=~20deg
+                # within the last second (either direction), keep ordinary
+                # tracking on the existing curve instead of adding a blind
+                # ramp. The measured curve still has to satisfy the bounded
+                # ENTRY/FOLLOW contract before the ring task owns it.
+                prev_w = float(command[1]) if command is not None else 0.
+                self.entry_follow_only = bool(prev_w >= .75*tuning.roundabout_entry_turn_rad_s
+                                              or self.recent_turn_abs >= .35)
+                if self.entry_follow_only:
+                    self.entry_dash_proven = True
+                    self.entry_detection_reason = "vv_follow_existing_curve"
+                else:
+                    self.entry_detection_reason=("vv_main_curve_left_probe"
+                                                 if self.entry_left_seen_at is None
+                                                 else "vv_distance_complete_left_probe")
             elif advance >= tuning.ring_entry_approach_max_m:
                 self._release_ring(now,tuning,"entry_approach_distance_limit")
             elif distance_ready:
@@ -2019,6 +2044,14 @@ class RoundaboutRouter:
         elapsed=0. if self.last_time is None else max(0.,now-self.last_time)
         dt=min(.1,elapsed)
         travel,yaw=abs(command[0])*dt,command[1]*dt
+        # Rolling 1s window of commanded |yaw|: evidence that the car is
+        # already following a curve when the VV fork latches (entry pose
+        # classifier). Not a route proof, only a "do not add a second blind
+        # ramp" guard.
+        if self.turn_window_start is None or now-self.turn_window_start>1.0:
+            self.turn_window_start=now
+            self.recent_turn_abs=0.
+        self.recent_turn_abs+=abs(yaw)
         measured_travel=0.
         self.progress_source="command_estimate"
         if pose is not None:
@@ -2249,6 +2282,18 @@ class RoundaboutRouter:
                           and path.route_observed and not path.rescue and not path.handoff
                           and self.entry_dash_proven)
             speed = min(tuning.fixed_speed_m_s, tuning.search_recovery_speed_m_s)
+            if getattr(self,"entry_follow_only",False):
+                # The VV fork was latched while the car was already turning hard
+                # left into the ring curve. Ordinary tracking owns steering: no
+                # second blind ramp (over-rotation) and no forced left search
+                # oscillation. The bounded ENTRY contract still has to confirm
+                # from measured turn/travel/stable route, and the acquire
+                # timeout still releases the task if it cannot.
+                if now-self.phase_at>=tuning.roundabout_entry_acquire_max_seconds:
+                    self._release_ring(now,tuning,"entry_no_route_abort")
+                    return 0.,0.,"roundabout_entry_release"
+                self.route_status="entry_follow_existing_left_curve"
+                return None
             if self.entry_visual_tracking:
                 if visual:
                     self.entry_lost_at = None
@@ -2270,7 +2315,8 @@ class RoundaboutRouter:
                 # the commit angle instead of dropping the whole ring task at
                 # the first evidence-free frame. Still a turn bound, not a
                 # timer: the 60 deg max_turn_deg check below still applies.
-                committed_hold=(bool(self.entry_dash_proven)
+                committed_hold=(bool(tuning.roundabout_entry_commit_enabled)
+                                and bool(self.entry_dash_proven)
                                 and turn_progress<math.radians(tuning.roundabout_entry_acquire_yaw_deg))
                 if not pending and committed_hold:
                     pending = True
@@ -2292,6 +2338,19 @@ class RoundaboutRouter:
                         reason = "entry_probe_turn_limit"
                     else:
                         reason = "entry_confirm_timeout" if self.entry_probe_extended else "entry_probe_no_route"
+                    # Committed left probe: the VV fork AND the entry turn are
+                    # already proven. Hand control back to ordinary line
+                    # tracking and let the bounded ENTRY/FOLLOW contract
+                    # (measured turn + travel + stable route) confirm, instead
+                    # of throwing the whole ring task away at the 0.5s probe
+                    # deadline. The task timeouts in observe() still bound it.
+                    if (tuning.roundabout_entry_commit_enabled and self.entry_dash_proven
+                            and turn_progress >= tuning.roundabout_entry_min_yaw_rad):
+                        self.entry_visual_tracking = True
+                        self.entry_lost_at = None
+                        self.entry_probe_extended = False
+                        self.route_status = "entry_commit_follow"
+                        return None
                     self._release_ring(now, tuning, reason)
                     return 0., 0., "roundabout_entry_release"
                 self.entry_probe_extended = True

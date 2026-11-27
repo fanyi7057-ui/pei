@@ -26,7 +26,6 @@ class DashObservation:
     reason: str = "no_dash_blocks"
     mask_source: str = "corrected"
     block_points: tuple = ()
-    entry_match_status: str = "not_checked"
 
 
 def _path(points,width,height,tuning,reason):
@@ -184,48 +183,35 @@ def detect_vv_dashes_compatible(events,white,tuning,reference_x_ratio=None,legac
 
 
 def match_entry_dashes(observation, guide, width, height, tuning):
-    """Match fresh pixels to the entry branch through bounded camera motion."""
-    observation.entry_match_status = "no_recent_guide"
-    if guide is None or guide.points is None:
-        return None
-    if observation.exit_branch.valid:
-        observation.entry_match_status = "exit_fork_excluded"
+    """Match current pixels to the existing left branch despite modest yaw."""
+    if guide is None or guide.points is None or observation.exit_branch.valid:
         return None
     reference = guide.points[np.argsort(guide.points[:, 1])]
     if len(reference) < 2:
         return None
     main = observation.main
     main_points = main.points if observation.valid and main.valid else None
-    blocks = []
+    candidates = []
     for x, y in observation.block_points:
+        if not reference[0, 1] <= y <= reference[-1, 1]:
+            continue
         if main_points is not None and main_points[0, 1] <= y <= main_points[-1, 1]:
-            if np.interp(y, main_points[:, 1], main_points[:, 0])-x < .04*width:
+            if np.interp(y, main_points[:, 1], main_points[:, 0]) - x < .04*width:
                 continue
-        blocks.append((x,y))
+        shift = x-np.interp(y, reference[:, 1], reference[:, 0])
+        if abs(shift) <= .14*width:
+            candidates.append((x,y,shift))
     matches = {}
-    for shift_y in (0., .025, .05, .075):
-        candidates = []
-        for x,y in blocks:
-            reference_y = y-shift_y*height
-            if reference[0,1] <= reference_y <= reference[-1,1]:
-                dx=x-np.interp(reference_y, reference[:,1], reference[:,0])
-                if abs(dx) <= .14*width:
-                    candidates.append((x,y,dx))
-        for _,_,shift in candidates:
-            group=tuple(sorted((x,y) for x,y,dx in candidates if abs(dx-shift) <= .025*width))
-            group=tuple(sorted(group,key=lambda point:point[1]))
-            if len(group)<2 or np.min(np.diff([p[1] for p in group])) < .035*height:
-                continue
-            candidate=_path(np.asarray(group),width,height,tuning,"vv_entry_tracked_dashes")
-            if (candidate.route_observed or (np.ptp(candidate.points[:,1]) >= .10*height
-                                            and np.max(candidate.points[:,1]) >= .55*height)):
-                matches[group]=candidate
-    # The same chain can produce short subsets under different row shifts.
-    maximal=[key for key in matches if not any(set(key)<set(other) for other in matches)]
-    if len(maximal)!=1:
-        observation.entry_match_status="ambiguous_dash_match" if maximal else "no_matching_dash_pair"
+    for _, _, shift in candidates:
+        group = sorted((p for p in candidates if abs(p[2]-shift) <= .025*width),
+                       key=lambda p:p[1])
+        if len(group) < 2 or min(np.diff([p[1] for p in group])) < .035*height:
+            continue
+        candidate = _path(np.asarray(group)[:, :2],width,height,tuning,"vv_entry_tracked_dashes")
+        if candidate.route_observed:
+            matches[tuple(group)] = candidate
+    if len(matches) != 1:
         return None
-    candidate=matches[maximal[0]]
-    observation.entry_match_status="matched_observed_route" if candidate.route_observed else "matched_sparse_branch"
-    candidate.route_locked=candidate.route_observed
+    candidate = next(iter(matches.values()))
+    candidate.route_locked = True
     return candidate

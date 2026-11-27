@@ -118,26 +118,3 @@ def test_approach_distance_cap_requires_left_evidence_and_rejects_late_fork():
         assert not any(r.course.rings)
         if expected == "SEEK":
             assert r.ring_release_source == "entry_approach_distance_limit"
-
-def test_entry_dash_match_follows_forward_image_motion_and_rejects_exit():
-    import numpy as np
-    from patrol_dash_entry import DashObservation, match_entry_dashes
-
-    tuning = PatrolTuning()
-    guide = PathEstimate(True, points=np.array([[60., 120.], [80., 200.]]))
-    cue = DashObservation(block_points=((60., 132.), (80., 212.)))
-    candidate = match_entry_dashes(cue, guide, 320, 240, tuning)
-    assert candidate is not None and candidate.route_observed and candidate.route_locked
-    cue.exit_branch = PathEstimate(True)
-    assert match_entry_dashes(cue, guide, 320, 240, tuning) is None
-
-
-def test_sparse_entry_match_is_evidence_without_route_ownership():
-    import numpy as np
-    from patrol_dash_entry import DashObservation, match_entry_dashes
-
-    guide = PathEstimate(True, points=np.array([[60., 100.], [80., 160.]]))
-    cue = DashObservation(block_points=((60., 100.), (80., 160.)))
-    candidate = match_entry_dashes(cue, guide, 320, 240, PatrolTuning())
-    assert candidate is not None and not candidate.route_observed and not candidate.route_locked
-    assert cue.entry_match_status == "matched_sparse_branch"
