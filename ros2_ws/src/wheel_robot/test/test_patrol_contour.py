@@ -3745,3 +3745,79 @@ def test_failed_entry_hands_valid_path_back_without_zero_command(node_module, mo
     node._run_control_cycle()
     assert router.phase == "SEEK" and not router.fault
     assert commands[-1][0] > 0.
+
+
+@pytest.mark.parametrize("age,retained", [(.32, True), (.36, False)])
+@pytest.mark.parametrize("exit_seen", [False, True])
+def test_entry_anchor_matches_the_router_evidence_lifetime(monkeypatch, age, retained, exit_seen):
+    from patrol_dash_entry import DashObservation
+    module = load_actual_vision_module(monkeypatch)
+    vision = module.PatrolVision()
+    vision.router._phase("APPROACH", 0.)
+    vision.router.started_at = 0.
+    branch = PathEstimate(True, confidence=.8, points=np.array([[80., 120.], [100., 160.]]))
+    cue = DashObservation(valid=True, blocks=4, branch=branch,
+                          exit_branch=PathEstimate(exit_seen))
+    monkeypatch.setattr(module, "detect_vv_dashes_compatible", lambda *a, **kw: cue)
+    monkeypatch.setattr(vision.router, "observe", lambda *a, **kw: None)
+    image = np.full((240, 320, 3), 245, np.uint8)
+    vision.estimate(image, PatrolTuning(), .1)
+    cue = DashObservation()
+    monkeypatch.setattr(vision.router, "observe",
+                        lambda *a, **kw: vision.router._phase("ENTRY", .1+age))
+    vision.estimate(image, PatrolTuning(), .1+age)
+    assert (vision.entry_dash_anchor is not None) is retained
+    if retained:
+        assert vision.entry_dash_anchor[0] == .1
+
+
+def test_ring_blind_turn_expires_without_single_frame_rearming(node_module, monkeypatch):
+    node, commands = make_node(node_module, monkeypatch)
+    router = node_module.RoundaboutRouter()
+    router._phase("FOLLOW", 9.)
+    node.vision.router = router
+    clock = [10.]
+    monkeypatch.setattr(node_module.time, "monotonic", lambda: clock[0])
+    path = PathEstimate(False, reason="lost_ring")
+    node.vision.estimate = lambda *a, **kw: path
+    node.patrol_controller.last_valid_at = 9.97
+    node.patrol_controller.last_time = 9.97
+    node.patrol_controller.last_command = (.3, .4)
+    node._last_command = (.3, .4)
+
+    def cycle(at):
+        clock[0] = at
+        node._frame_sequence += 1
+        node._latest_frame_time = at
+        node._run_control_cycle()
+
+    cycle(10.)
+    started = node._ring_loss_started_at
+    # One genuine observation may steer, but cannot renew the loss budget.
+    path = PathEstimate(True, -.2, .9, route_observed=True, route_locked=True)
+    cycle(10.4)
+    assert node._ring_loss_started_at == started
+    path = PathEstimate(False)
+    cycle(10.81)
+    assert commands[-1][1] == 0.
+    assert commands[-1][0] <= node.patrol_tuning.ring_dash_recovery_speed_m_s
+    assert node._ring_loss_started_at == started
+
+    path = PathEstimate(True, -.2, .9, route_observed=True, route_locked=True)
+    for at in (10.9, 10.95, 11.):
+        cycle(at)
+    assert not node._ring_loss_episode and node._ring_loss_started_at is None
+    path = PathEstimate(False)
+    cycle(11.05)
+    assert node._ring_loss_started_at == 11.05
+
+
+@pytest.mark.parametrize("field,value", [
+    ("ring_entry_evidence_seconds", 0.),
+    ("ring_entry_evidence_seconds", .51),
+    ("ring_dash_recovery_turn_seconds", 0.),
+    ("ring_dash_recovery_turn_seconds", 2.1),
+])
+def test_ring_temporal_parameter_limits(field, value):
+    with pytest.raises(ValueError):
+        replace(PatrolTuning(), **{field: value}).validate()

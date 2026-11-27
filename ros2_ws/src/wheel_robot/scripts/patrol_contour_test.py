@@ -214,12 +214,12 @@ class PatrolVision(base.CourseVision):
                 crosswalk=detected and self.router.crosswalk_armed(now,tuning)
         cue = self.dash_observation
         if self.router.phase in ("SEEK", "APPROACH"):
-            if cue.exit_branch.valid:
+            if cue.exit_branch.valid and not cue.branch.valid:
                 self.approach_dash_anchor = None
             elif cue.branch.valid and cue.branch.points is not None and len(cue.branch.points) >= 2:
                 self.approach_dash_anchor = (now, cue.branch)
             elif (self.approach_dash_anchor is not None
-                  and not 0 <= now-self.approach_dash_anchor[0] <= .30):
+                  and not 0 <= now-self.approach_dash_anchor[0] <= tuning.ring_entry_evidence_seconds):
                 self.approach_dash_anchor = None
         self.router.observe(gate,self.gate_score,now,tuning,self.motion_command,self.motion_pose,
                             gate_near=self.gate_near,exit_solid=exit_solid,crosswalk=crosswalk,gate_tracked=self.gate_tracked,
@@ -240,7 +240,7 @@ class PatrolVision(base.CourseVision):
             self.dash_observation=cue  # retain this fresh frame for diagnostics
             if entry.valid and entry.points is not None and len(entry.points) >= 2:
                 self.entry_dash_anchor = (now, entry)
-            elif approach_anchor is not None and 0 <= now-approach_anchor[0] <= .30:
+            elif approach_anchor is not None and 0 <= now-approach_anchor[0] <= tuning.ring_entry_evidence_seconds:
                 self.entry_dash_anchor = approach_anchor
             if self.ring_memory.at is None or now - self.ring_memory.at > tuning.roundabout_route_memory_seconds:
                 self.ring_memory.reset()
@@ -316,9 +316,9 @@ class PatrolVision(base.CourseVision):
             if not (branch.valid and branch.route_observed):
                 branch = None
                 anchor = self.entry_dash_anchor
-                if anchor is not None and 0 <= now-anchor[0] <= .30:
+                if anchor is not None and 0 <= now-anchor[0] <= tuning.ring_entry_evidence_seconds:
                     branch = match_entry_dashes(self.dash_observation,anchor[1],width,height,tuning)
-                elif self.ring_memory.at is not None and 0 <= now-self.ring_memory.at <= .30:
+                elif self.ring_memory.at is not None and 0 <= now-self.ring_memory.at <= tuning.ring_entry_evidence_seconds:
                     branch = match_entry_dashes(self.dash_observation,self.ring_memory.path,width,height,tuning)
             if branch is not None and branch.valid:
                 self.entry_dash_anchor = (now, branch)
@@ -957,6 +957,7 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 self._ring_entry_session = entry_session
                 self._ring_had_guide = False
                 self._ring_loss_episode = False
+                self._ring_loss_started_at = None
                 self._ring_reacquire_frames = 0
         owned_ring_path = (path.valid and path.route_observed and path.route_locked
                            and not path.rescue and not path.handoff)
@@ -977,6 +978,13 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 self._ring_loss_episode = False
         else:
             self._ring_reacquire_frames = 0
+        # One clock per loss episode: isolated valid frames do not renew
+        # the blind-turn budget. Only confirmed reacquisition resets it.
+        if getattr(self, "_ring_loss_episode", False):
+            if getattr(self, "_ring_loss_started_at", None) is None:
+                self._ring_loss_started_at = done
+        else:
+            self._ring_loss_started_at = None
         lost_ring = (router is not None and (not path.valid or ring_path_missing)
                      and getattr(self, "_ring_loss_episode", False))
         if router is not None and getattr(self, "_ring_loss_episode", False) and not router.fault:
@@ -988,9 +996,14 @@ class PatrolTestNode(base.WheelLegRaceNode):
                                     tuning.ring_dash_recovery_turn_rad_s))
             if previous_turn*angular < 0:
                 angular = 0.
+            blind_age = max(0., done-self._ring_loss_started_at)
+            if blind_age >= tuning.ring_dash_recovery_turn_seconds:
+                angular = 0.
             self.patrol_controller.last_command = (linear, angular)
             planned_target = min(planned_target, tuning.ring_dash_recovery_speed_m_s)
-            mode = "ring_dash_recovery"
+            mode = ("ring_dash_recovery_straight"
+                    if blind_age >= tuning.ring_dash_recovery_turn_seconds
+                    else "ring_dash_recovery")
         if router is not None and getattr(self, "_ring_loss_episode", False):
             self.patrol_controller.last_command = (linear, angular)
         source = self.vision.source

@@ -176,6 +176,10 @@ patrol_test:
   # 环岛虚线完全失效时的短时恢复上限，避免继续小半径盲转。
   ring_dash_recovery_speed_m_s: 0.12
   ring_dash_recovery_turn_rad_s: 0.40
+  # 单次环岛失线的无视觉转向最长时间；到期取消盲转，仍受原有失线保护约束。
+  ring_dash_recovery_turn_seconds: 0.80
+  # 状态机左支证据、接近阶段参考和入环匹配参考共用的有效期。
+  ring_entry_evidence_seconds: 0.35
   ring_entry_probe_seconds: 0.50
   # 0/1，默认1：ENTRY后仅当当前帧仍确认发散左支或已看到环内路线时，才把探左延长到 ring_entry_probe_max_seconds。
   # 证据消失立即按原0.25s扩展/超时退出，不是无条件盲转；0回到固定0.50s+0.25s上限。

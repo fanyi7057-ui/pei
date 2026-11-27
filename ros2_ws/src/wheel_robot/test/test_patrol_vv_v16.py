@@ -395,9 +395,8 @@ def test_entry_follows_an_existing_left_curve_without_a_second_blind_ramp():
     assert r.phase=="SEEK" and r.ring_release_source=="entry_no_route_abort"
 
 
-def test_entry_follows_an_existing_curve_from_cumulative_recent_turn():
-    """20:38: the car already circles the roundabout dash circle when the fork
-    latches; per-frame w is moderate but the last second accumulated ~0.5rad."""
+def test_recent_cumulative_turn_alone_does_not_skip_left_probe():
+    """A preceding bend must not suppress the current entry probe."""
     r,t=armed()
     main=PathEstimate(True,near_error=-.12,mid_error=-.25,route_observed=True)
     branch=PathEstimate(True,near_error=-.35,mid_error=-.45,route_observed=True,route_locked=True)
@@ -409,8 +408,8 @@ def test_entry_follows_an_existing_curve_from_cumulative_recent_turn():
     assert r.phase=="APPROACH" and r.recent_turn_abs>=.35
     r.distance=r.first_marker_distance+t.ring_entry_advance_m+.01
     r.observe(True,1.,.80,t,(.65,.8),dash_cue=c)
-    assert r.phase=="ENTRY" and r.entry_follow_only
-    assert r.entry_detection_reason=="vv_follow_existing_curve"
+    assert r.phase=="ENTRY" and not r.entry_follow_only
+    assert r.entry_detection_reason=="vv_distance_complete_left_probe"
 
 
 def test_entry_still_probes_when_approach_was_not_already_turning_left():
@@ -516,3 +515,40 @@ def test_latched_distance_sequence_replaces_retired_five_four_cooldown():
     assert r.entry_detection_reason=="vv_wait_diverging_left_branch"
     r._observe_vv_entry(DashObservation(valid=True,branch=PathEstimate(True)),.53,t,.03,.01,(.3,0.))
     assert r.phase=="ENTRY"
+
+
+@pytest.mark.parametrize("age,enters", [(.32, True), (.36, False)])
+def test_left_evidence_uses_configured_freshness(age, enters):
+    r, t = armed()
+    t = replace(t, ring_entry_main_curve_enabled=0)
+    r._phase("APPROACH", 0.)
+    r.first_marker_distance = 0.
+    r.entry_left_seen_at = .1
+    r.distance = t.ring_entry_advance_m+.01
+    r._observe_vv_entry(DashObservation(), .1+age, t, .1, .01, (.3, 0.))
+    assert (r.phase == "ENTRY") is enters
+    if enters:
+        assert not r.entry_follow_only
+
+
+@pytest.mark.parametrize("branch", [
+    PathEstimate(False),
+    PathEstimate(True, near_error=-.35, mid_error=-.45, route_observed=False),
+    PathEstimate(True, near_error=.15, mid_error=.25, route_observed=True),
+])
+def test_strong_previous_left_without_current_left_geometry_does_not_skip_probe(branch):
+    r, t = armed()
+    r._phase("APPROACH", 0.)
+    r.first_marker_distance = 0.
+    r.entry_left_seen_at = .1
+    r.distance = t.ring_entry_advance_m+.01
+    r.recent_turn_abs = 1.2
+    r._observe_vv_entry(DashObservation(valid=True, blocks=4, branch=branch),
+                        .2, t, .1, .01, (.3, 1.2))
+    assert r.phase == "ENTRY" and not r.entry_follow_only
+
+
+def test_right_turn_cannot_skip_left_probe_even_with_left_branch():
+    r, t = entry_with_previous_steering(-1.2)
+    assert not r.entry_follow_only
+    assert r.motion_override(.30, t)[1] > 0.

@@ -77,6 +77,8 @@ class PatrolTuning:
     ring_entry_main_curve_min_near_ratio: float = 0.75
     ring_dash_recovery_speed_m_s: float = 0.12
     ring_dash_recovery_turn_rad_s: float = 0.40
+    ring_dash_recovery_turn_seconds: float = 0.80
+    ring_entry_evidence_seconds: float = 0.35
     ring_entry_probe_seconds: float = 0.30
     ring_entry_probe_extend_enabled: int = 1
     ring_entry_probe_max_seconds: float = 0.90
@@ -390,6 +392,10 @@ class PatrolTuning:
             raise ValueError("ring dash recovery speed exceeds approach speed")
         if not (0 < self.ring_dash_recovery_turn_rad_s <= self.max_turn_rad_s):
             raise ValueError("ring dash recovery turn exceeds angular limit")
+        if not 0 < self.ring_dash_recovery_turn_seconds <= 2.:
+            raise ValueError("ring dash blind recovery duration must be in (0, 2]")
+        if not 0 < self.ring_entry_evidence_seconds <= .5:
+            raise ValueError("entry evidence lifetime must be in (0, 0.5]")
         if not 0 < self.ring_entry_probe_max_turn_deg <= 180:
             raise ValueError("ring_entry_probe_max_turn_deg 必须在(0,180]度")
         if self.roundabout_heading_source not in (0,1,2):
@@ -2001,29 +2007,25 @@ class RoundaboutRouter:
                 return
             advance = self.distance-self.first_marker_distance
             distance_ready = advance >= tuning.ring_entry_advance_m
-            left_ready = ((self.entry_left_seen_at is not None and now-self.entry_left_seen_at <= .35)
+            left_ready = ((self.entry_left_seen_at is not None
+                           and 0 <= now-self.entry_left_seen_at <= tuning.ring_entry_evidence_seconds)
                           or self.entry_main_curve_frames >= tuning.ring_entry_main_curve_frames)
             if moving and distance_ready and left_ready and advance <= tuning.ring_entry_approach_max_m:
                 deadline = self.ring_deadline(tuning)
                 self.entry_started_in_grace = deadline is not None and deadline <= now < deadline+1.20
                 self._phase("ENTRY",now)
-                # 2026-11-25 20:16/20:38: at some entry poses the car is ALREADY
-                # following a curve when the VV fork latches - the ring's left
-                # turn (20:16) or the roundabout's own clockwise dash circle
-                # (20:38, where the car circles the ring and the fork is
-                # re-detected every lap). A second blind 1.2rad/s ramp then
-                # yanks the car out of the curve it is already tracking: camera
-                # ends up across the ring interior, the line is lost for
-                # seconds, the post-release left search adds more yaw and the
-                # car visibly shakes its head while reacquiring. When the VV
-                # fork is detected while the car has already turned >=~20deg
-                # within the last second (either direction), keep ordinary
-                # tracking on the existing curve instead of adding a blind
-                # ramp. The measured curve still has to satisfy the bounded
-                # ENTRY/FOLLOW contract before the ring task owns it.
+                # Only a currently observed LEFT branch plus strong LEFT
+                # steering can skip the probe. Earlier bends and alternating
+                # steering contribute to recent_turn_abs but prove no entry.
+                current_left_branch = bool(
+                    hit and entry_branch is not None and entry_branch.valid
+                    and entry_branch.route_observed
+                    and entry_branch.near_error < -.03
+                    and entry_branch.mid_error < -.08)
                 prev_w = float(command[1]) if command is not None else 0.
-                self.entry_follow_only = bool(prev_w >= .75*tuning.roundabout_entry_turn_rad_s
-                                              or self.recent_turn_abs >= .35)
+                self.entry_follow_only = bool(
+                    current_left_branch
+                    and prev_w >= .75*tuning.roundabout_entry_turn_rad_s)
                 if self.entry_follow_only:
                     self.entry_dash_proven = True
                     self.entry_detection_reason = "vv_follow_existing_curve"
