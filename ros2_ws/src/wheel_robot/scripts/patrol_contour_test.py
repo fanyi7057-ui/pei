@@ -929,17 +929,23 @@ class PatrolTestNode(base.WheelLegRaceNode):
                 angular = tuning.roundabout_post_exit_left_limit_rad_s
                 self.patrol_controller.last_command = (linear, angular)
             planned_target=min(control_tuning.fixed_speed_m_s,control_tuning.search_degraded_speed_m_s) if self.patrol_controller.degraded else control_tuning.fixed_speed_m_s
+        in_ring = router is not None and router.phase in ("ENTRY", "FOLLOW")
+        owned_ring_path = (path.valid and path.route_observed and path.route_locked
+                           and not path.rescue and not path.handoff)
+        ring_path_missing = in_ring and not owned_ring_path
         if router is None or not base.ENABLE_MOTION or router.phase in ("EXIT", "SEEK_CROSSWALK", "FINISHED"):
             self._ring_loss_episode = False
-        elif not path.valid and (router.phase in ("ENTRY", "FOLLOW") or router.entry_search_active(done, tuning)):
+        elif ring_path_missing or (not path.valid and router.entry_search_active(done, tuning)):
             self._ring_loss_episode = True
-        if path.valid and path.route_observed and not path.rescue and not path.handoff:
+        if (path.valid and path.route_observed and not path.rescue and not path.handoff
+                and (not in_ring or owned_ring_path)):
             self._ring_reacquire_frames = getattr(self, "_ring_reacquire_frames", 0)+1
             if self._ring_reacquire_frames >= tuning.roundabout_path_confirm_frames:
                 self._ring_loss_episode = False
         else:
             self._ring_reacquire_frames = 0
-        lost_ring = (router is not None and not path.valid and getattr(self, "_ring_loss_episode", False))
+        lost_ring = (router is not None and (not path.valid or ring_path_missing)
+                     and getattr(self, "_ring_loss_episode", False))
         if router is not None and getattr(self, "_ring_loss_episode", False) and not router.fault:
             linear = min(linear, tuning.ring_dash_recovery_speed_m_s)
             planned_target = min(planned_target, tuning.ring_dash_recovery_speed_m_s)
