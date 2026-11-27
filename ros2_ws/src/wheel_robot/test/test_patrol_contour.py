@@ -706,8 +706,16 @@ def test_real_node_starts_left_search_right_after_failed_probe(node_module, monk
         node._latest_frame_time=clock[0]
         node._run_control_cycle()
         clock[0]+=0.05
-    # No (0,0) hold: the failed probe must continue as an active left search.
-    assert commands[-1][1] > .5
+    # Failed entry recovery stays below the ring-specific turn/speed limits.
+    assert 0 < commands[-1][1] <= node_module.PatrolTuning().ring_dash_recovery_turn_rad_s
+    assert commands[-1][0] <= node_module.PatrolTuning().ring_dash_recovery_speed_m_s
+
+    clock[0] += node_module.PatrolTuning().roundabout_entry_search_seconds
+    node._frame_sequence += 1
+    node._latest_frame_time = clock[0]
+    node._run_control_cycle()
+    assert abs(commands[-1][1]) <= node_module.PatrolTuning().ring_dash_recovery_turn_rad_s
+    assert commands[-1][0] <= node_module.PatrolTuning().ring_dash_recovery_speed_m_s
 
 
 def test_real_node_keeps_right_corrections_after_real_exit(node_module, monkeypatch):
@@ -1745,8 +1753,8 @@ def test_v7_left_entry_cancels_stale_right_command_without_dropping_cruise():
     r.branch_acquired=True  # an observed owned route, not angle alone
     r.entry_dash_proven = True
     observed = PathEstimate(True, route_locked=True, route_observed=True)
-    assert r.motion_override(1.20,t,path=observed)[2] == "roundabout_left_acquire"
-    assert r.motion_override(1.23,t,path=observed)[2] == "roundabout_left_acquire"
+    assert r.motion_override(1.20,t,path=observed) is None
+    assert r.motion_override(1.23,t,path=observed) is None
     assert r.motion_override(1.26,t,path=observed) is None
     r._phase("APPROACH",1.3)
     assert r.motion_override(1.3,t) is None
@@ -2731,7 +2739,8 @@ def test_v10_follow_search_uses_left_not_stale_right_command(node_module,monkeyp
     node.patrol_controller.last_good_turn=-.8
     node._run_control_cycle()
     assert node.patrol_controller.raw_angular>0
-    assert commands[-1][0]==.65
+    assert commands[-1][0] <= node_module.PatrolTuning().ring_dash_recovery_speed_m_s
+    assert abs(commands[-1][1]) <= node_module.PatrolTuning().ring_dash_recovery_turn_rad_s
     assert not node.patrol_controller.fault_latched
 
 
@@ -3660,3 +3669,24 @@ def test_far_bend_needs_visible_points_and_two_frames():
     assert controller.far_bend_visible and not controller.bend_slow
     controller.command(path, .15, tuning, ordinary_guidance=True)
     assert controller.bend_slow
+
+
+def test_entry_current_left_branch_keeps_priority_over_generic_mainline(monkeypatch):
+    from patrol_dash_entry import DashObservation
+
+    module = load_actual_vision_module(monkeypatch)
+    vision = module.PatrolVision()
+    tuning = PatrolTuning()
+    vision.router._phase("ENTRY", 0.)
+    vision.router.started_at = 0.
+    main = PathEstimate(True, confidence=.8, route_observed=True,
+                        points=np.array([[160., 100.], [160., 210.]]))
+    branch = PathEstimate(True, -.3, .8, np.array([[80., 110.], [120., 210.]]),
+                          near_error=-.25, mid_error=-.45, far_error=-.5,
+                          route_observed=True, route_locked=True)
+    cue = DashObservation(valid=True, blocks=4, main=main, branch=branch)
+    monkeypatch.setattr(module, "detect_vv_dashes_compatible", lambda *args, **kwargs: cue)
+    image = np.full((240, 320, 3), 245, np.uint8)
+    path = vision.estimate(image, tuning, .1)
+    assert path.valid and path.route_locked and path.error < -.2
+    assert vision.router.entry_dash_proven

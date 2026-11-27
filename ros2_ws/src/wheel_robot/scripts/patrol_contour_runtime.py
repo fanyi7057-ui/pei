@@ -75,6 +75,8 @@ class PatrolTuning:
     ring_entry_main_curve_max_mid: float = 0.30
     # 虚线链近端至少到画面多低（0..1），默认0.75；太远不算。
     ring_entry_main_curve_min_near_ratio: float = 0.75
+    ring_dash_recovery_speed_m_s: float = 0.12
+    ring_dash_recovery_turn_rad_s: float = 0.40
     ring_entry_probe_seconds: float = 0.30
     ring_entry_probe_extend_enabled: int = 1
     ring_entry_probe_max_seconds: float = 0.90
@@ -384,6 +386,10 @@ class PatrolTuning:
         for name in ("search_degraded_enabled", "roundabout_heading_enabled", "roundabout_scale_tracking_turn", "crosswalk_resume_tracking", "roundabout_entry_branch_rearm_enabled", "ring_entry_probe_extend_enabled"):
             if getattr(self,name) not in (0,1):
                 raise ValueError(f"{name} 必须为0或1")
+        if not (0 < self.ring_dash_recovery_speed_m_s <= self.search_recovery_speed_m_s):
+            raise ValueError("ring dash recovery speed exceeds approach speed")
+        if not (0 < self.ring_dash_recovery_turn_rad_s <= self.max_turn_rad_s):
+            raise ValueError("ring dash recovery turn exceeds angular limit")
         if not 0 < self.ring_entry_probe_max_turn_deg <= 180:
             raise ValueError("ring_entry_probe_max_turn_deg 必须在(0,180]度")
         if self.roundabout_heading_source not in (0,1,2):
@@ -2372,7 +2378,7 @@ class RoundaboutRouter:
                 self.entry_visual_at, self.entry_visual_errors = now, errors
                 if self.entry_visual_frames >= max(2, tuning.roundabout_path_confirm_frames):
                     self.entry_visual_tracking = True
-                    return None
+                return None
             else:
                 self.entry_visual_frames = 0
                 self.entry_visual_at = None
